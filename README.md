@@ -79,4 +79,6 @@ ENCRYPTION_KEY=your-secure-random-string
 
 ## License
 
-MIT
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
+
+This means you are free to use, modify, and distribute this software, but any derivative works must also be open-sourced under GPL-3.0.
