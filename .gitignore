@@ -24,6 +24,19 @@
 .DS_Store
 *.pem
 
+# Service account credentials (NEVER commit these)
+*-service-account*.json
+*credentials*.json
+*service-account*.json
+*.private-key.json
+AuthKey*.p8
+
+# Session storage (contains encrypted credentials)
+.sessions.json
+
+# Exchange rates cache
+.exchange-rates.json
+
 # debug
 npm-debug.log*
 yarn-debug.log*
@@ -35,6 +48,9 @@ yarn-error.log*
 
 # vercel
 .vercel
+
+# Claude Code local settings
+.claude/
 
 # typescript
 *.tsbuildinfo

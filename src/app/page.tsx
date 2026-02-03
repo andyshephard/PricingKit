@@ -1,65 +1,176 @@
-import Image from "next/image";
+'use client';
+
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import {
+  Store,
+  DollarSign,
+  Package,
+  TrendingUp,
+  BookOpen,
+  ArrowRight,
+} from 'lucide-react';
+import { ServiceAccountUpload } from '@/components/auth/service-account-upload';
+import { AppleConnectUpload } from '@/components/auth/apple-connect-upload';
+import { useAuthStore } from '@/store/auth-store';
+import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+
+type PlatformTab = 'google' | 'apple';
 
 export default function Home() {
+  const router = useRouter();
+  const isGoogleAuthenticated = useAuthStore(
+    (state) => state.isGoogleAuthenticated
+  );
+  const isAppleAuthenticated = useAuthStore(
+    (state) => state.isAppleAuthenticated
+  );
+  const [activeTab, setActiveTab] = useState<PlatformTab>('google');
+
+  useEffect(() => {
+    // Redirect if both platforms are connected
+    if (isGoogleAuthenticated && isAppleAuthenticated) {
+      router.push('/dashboard');
+    }
+    // If only one is connected, still redirect (they can add more from settings)
+    else if (isGoogleAuthenticated || isAppleAuthenticated) {
+      router.push('/dashboard');
+    }
+  }, [isGoogleAuthenticated, isAppleAuthenticated, router]);
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <div className="min-h-screen bg-gradient-to-b from-background to-muted">
+      <div className="container mx-auto px-4 py-16">
+        <div className="flex flex-col items-center text-center mb-12">
+          <div className="flex items-center gap-2 mb-4">
+            <Store className="h-10 w-10 text-primary" />
+            <h1 className="text-4xl font-bold">Pricing.io</h1>
+          </div>
+          <p className="text-xl text-muted-foreground max-w-2xl">
+            Manage in-app product and subscription pricing for Google Play and
+            Apple App Store
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+        <div className="grid md:grid-cols-2 gap-12 max-w-5xl mx-auto">
+          <div className="flex flex-col justify-center space-y-8">
+            <div className="space-y-6">
+              <div className="flex items-start gap-4">
+                <div className="rounded-lg bg-primary/10 p-2">
+                  <Package className="h-6 w-6 text-primary" />
+                </div>
+                <div>
+                  <h3 className="font-semibold mb-1">In-App Products</h3>
+                  <p className="text-sm text-muted-foreground">
+                    View and manage pricing for all your one-time purchase
+                    products across regions
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-4">
+                <div className="rounded-lg bg-primary/10 p-2">
+                  <TrendingUp className="h-6 w-6 text-primary" />
+                </div>
+                <div>
+                  <h3 className="font-semibold mb-1">Subscriptions</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Manage subscription plans and regional pricing
+                    configurations
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-4">
+                <div className="rounded-lg bg-primary/10 p-2">
+                  <DollarSign className="h-6 w-6 text-primary" />
+                </div>
+                <div>
+                  <h3 className="font-semibold mb-1">Multi-Platform</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Connect both Google Play and Apple App Store to manage all
+                    your apps in one place
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-lg border bg-card p-4">
+              <div className="flex items-start gap-3">
+                <div className="rounded-lg bg-primary/10 p-2">
+                  <BookOpen className="h-5 w-5 text-primary" />
+                </div>
+                <div className="flex-1">
+                  <h4 className="font-medium mb-1">New here?</h4>
+                  <p className="text-sm text-muted-foreground mb-3">
+                    Follow our step-by-step guides to set up your API access.
+                  </p>
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" asChild>
+                      <Link href="/setup-guide">
+                        Google Play Guide
+                        <ArrowRight className="ml-2 h-4 w-4" />
+                      </Link>
+                    </Button>
+                    <Button variant="outline" size="sm" asChild>
+                      <Link href="/setup-guide/apple">
+                        Apple Guide
+                        <ArrowRight className="ml-2 h-4 w-4" />
+                      </Link>
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {activeTab === 'google' ? (
+              <div className="text-sm text-muted-foreground">
+                <p className="font-medium mb-2">What you&apos;ll need:</p>
+                <ul className="space-y-1">
+                  <li>
+                    • A Google Cloud project with Play Developer API enabled
+                  </li>
+                  <li>• A service account JSON key file</li>
+                  <li>
+                    • Your app&apos;s package name (e.g., com.example.app)
+                  </li>
+                </ul>
+              </div>
+            ) : (
+              <div className="text-sm text-muted-foreground">
+                <p className="font-medium mb-2">What you&apos;ll need:</p>
+                <ul className="space-y-1">
+                  <li>• An Apple Developer Program membership ($99/year)</li>
+                  <li>• An API key (.p8 file) from App Store Connect</li>
+                  <li>• Your Key ID and Issuer ID</li>
+                  <li>• Your app&apos;s Bundle ID (e.g., com.example.app)</li>
+                </ul>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-start justify-center pt-4">
+            <Tabs
+              value={activeTab}
+              onValueChange={(v) => setActiveTab(v as PlatformTab)}
+              className="w-full max-w-md"
+            >
+              <TabsList className="grid w-full grid-cols-2 mb-4">
+                <TabsTrigger value="google">Google Play</TabsTrigger>
+                <TabsTrigger value="apple">Apple App Store</TabsTrigger>
+              </TabsList>
+              <TabsContent value="google">
+                <ServiceAccountUpload />
+              </TabsContent>
+              <TabsContent value="apple">
+                <AppleConnectUpload />
+              </TabsContent>
+            </Tabs>
+          </div>
         </div>
-      </main>
+      </div>
     </div>
   );
 }
