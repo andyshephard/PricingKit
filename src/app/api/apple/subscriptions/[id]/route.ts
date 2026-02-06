@@ -10,6 +10,7 @@ import {
   AppleApiError,
 } from '@/lib/apple-connect';
 import { executeWithRateLimit, RateLimitError } from '@/lib/utils/rate-limit';
+import { createNdjsonStream, NDJSON_HEADERS } from '@/lib/utils/ndjson-stream';
 import {
   validateAndDecodeAppleProductId,
   ValidationError,
@@ -188,16 +189,6 @@ export async function PATCH(
       }
     }
 
-    // Execute deletions first (rate-limited)
-    if (deleteTasks.length > 0) {
-      await executeWithRateLimit(deleteTasks, {
-        concurrency: 3,
-        delayBetweenBatches: 350,
-        maxRetries: 5,
-        retryDelay: 2000,
-      });
-    }
-
     // Create task functions (not promises) for rate-limited execution
     const createTasks = priceEntries.map(
       ([territoryCode, { pricePointId, startDate }]) =>
@@ -210,54 +201,70 @@ export async function PATCH(
         )
     );
 
-    // Execute with rate limiting: 3 concurrent requests, retry on 429/5xx errors
-    await executeWithRateLimit(createTasks, {
-      concurrency: 3,
-      delayBetweenBatches: 350,
-      maxRetries: 5,
-      retryDelay: 2000,
-    });
+    // Stream progress back to the client
+    const { stream, writer } = createNdjsonStream();
+    const credentials = auth.credentials;
+    const subscriptionId = subscription.id;
 
-    // Fetch updated subscription by its ID
-    const updatedSubscription = await getSubscriptionById(auth.credentials, subscription.id);
-    if (updatedSubscription) {
-      const updatedPricesResult = await getSubscriptionPrices(
-        auth.credentials,
-        updatedSubscription.id
-      );
-      updatedSubscription.prices = updatedPricesResult.current;
-      updatedSubscription.scheduledPrices = Object.keys(updatedPricesResult.scheduled).length > 0
-        ? updatedPricesResult.scheduled
-        : undefined;
-    }
+    (async () => {
+      try {
+        // Execute deletions first (rate-limited)
+        if (deleteTasks.length > 0) {
+          await executeWithRateLimit(deleteTasks, {
+            concurrency: 2,
+            delayBetweenBatches: 500,
+            maxRetries: 5,
+            retryDelay: 2000,
+            onProgress: (completed, total) => writer.progress(completed, total, 'delete'),
+          });
+        }
 
-    return NextResponse.json({
-      success: true,
-      subscription: updatedSubscription,
-    });
+        // Execute creates with rate limiting
+        await executeWithRateLimit(createTasks, {
+          concurrency: 2,
+          delayBetweenBatches: 500,
+          maxRetries: 5,
+          retryDelay: 2000,
+          onProgress: (completed, total) => writer.progress(completed, total, 'create'),
+        });
+
+        // Fetch updated subscription by its ID
+        const updatedSubscription = await getSubscriptionById(credentials, subscriptionId);
+        if (updatedSubscription) {
+          const updatedPricesResult = await getSubscriptionPrices(
+            credentials,
+            updatedSubscription.id
+          );
+          updatedSubscription.prices = updatedPricesResult.current;
+          updatedSubscription.scheduledPrices = Object.keys(updatedPricesResult.scheduled).length > 0
+            ? updatedPricesResult.scheduled
+            : undefined;
+        }
+
+        writer.done({
+          success: true,
+          subscription: updatedSubscription,
+        });
+      } catch (error) {
+        console.error('Error updating Apple subscription:', error);
+
+        if (error instanceof RateLimitError) {
+          writer.error(
+            `Failed to update prices: ${error.successCount} of ${error.totalCount} regions succeeded before failure`,
+            error.successCount,
+            error.totalCount
+          );
+        } else if (error instanceof AppleApiError) {
+          writer.error(error.detail || 'Failed to update subscription');
+        } else {
+          writer.error('Failed to update subscription');
+        }
+      }
+    })();
+
+    return new Response(stream, { headers: NDJSON_HEADERS });
   } catch (error) {
     console.error('Error updating Apple subscription:', error);
-
-    // Handle rate limit errors with partial success information
-    if (error instanceof RateLimitError) {
-      const originalError = error.originalError;
-      const statusCode = originalError instanceof AppleApiError
-        ? originalError.statusCode
-        : 500;
-
-      return NextResponse.json(
-        {
-          error: `Failed to update prices: ${error.successCount} of ${error.totalCount} regions succeeded before failure`,
-          successCount: error.successCount,
-          totalCount: error.totalCount,
-          failedIndex: error.failedIndex,
-          originalError: originalError instanceof AppleApiError
-            ? originalError.detail
-            : originalError.message,
-        },
-        { status: statusCode }
-      );
-    }
 
     if (error instanceof AppleApiError) {
       return NextResponse.json(

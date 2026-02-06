@@ -886,7 +886,9 @@ export function AppleSubscriptionBulkPricingModal({
             {isSaving || updateMutation.isPending ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Processing (This might take a while)
+                {updateMutation.progress
+                  ? `${updateMutation.progress.phase === 'delete' ? 'Clearing' : 'Updating'} ${updateMutation.progress.completed} of ${updateMutation.progress.total}...`
+                  : 'Resolving price points...'}
               </>
             ) : (
               `Apply to ${previewPrices.filter(p => !p.noTierData).length} Regions`

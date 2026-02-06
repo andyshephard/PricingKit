@@ -8,6 +8,7 @@ import {
   AppleApiError,
 } from '@/lib/apple-connect';
 import { executeWithRateLimit, RateLimitError } from '@/lib/utils/rate-limit';
+import { createNdjsonStream, NDJSON_HEADERS } from '@/lib/utils/ndjson-stream';
 import {
   validateAndDecodeAppleProductId,
   ValidationError,
@@ -78,8 +79,10 @@ export async function POST(
       });
     }
 
+    // Stream progress back to the client
+    const { stream, writer } = createNdjsonStream();
+
     // Create deletion tasks that catch 409 STATE_ERROR as skips
-    // Apple returns 409 for prices it considers no longer "future" (e.g., taking effect tomorrow)
     const deleteTasks = scheduledPriceEntries.map(
       ([territory, price]) =>
         async () => {
@@ -95,52 +98,57 @@ export async function POST(
         }
     );
 
-    // Execute deletions with rate limiting
-    const results = await executeWithRateLimit(deleteTasks, {
-      concurrency: 3,
-      delayBetweenBatches: 350,
-      maxRetries: 5,
-      retryDelay: 2000,
-    });
+    // Kick off async work — the stream is returned immediately
+    const credentials = auth.credentials;
+    const subscriptionId = subscription.id;
 
-    const deleted = results.filter(r => r.deleted);
-    const skipped = results.filter(r => !r.deleted);
+    (async () => {
+      try {
+        const results = await executeWithRateLimit(deleteTasks, {
+          concurrency: 2,
+          delayBetweenBatches: 500,
+          maxRetries: 5,
+          retryDelay: 2000,
+          onProgress: (completed, total) => writer.progress(completed, total),
+        });
 
-    // Fetch updated prices to confirm
-    const updatedPricesResult = await getSubscriptionPrices(auth.credentials, subscription.id);
+        const deleted = results.filter(r => r.deleted);
+        const skipped = results.filter(r => !r.deleted);
 
-    return NextResponse.json({
-      success: true,
-      message: skipped.length > 0
-        ? `Cleared ${deleted.length} scheduled price${deleted.length !== 1 ? 's' : ''}, ${skipped.length} skipped (no longer deletable)`
-        : `Cleared ${deleted.length} scheduled price${deleted.length !== 1 ? 's' : ''}`,
-      deletedCount: deleted.length,
-      skippedCount: skipped.length,
-      remainingScheduled: Object.keys(updatedPricesResult.scheduled).length,
-    });
+        // Fetch updated prices to confirm
+        const updatedPricesResult = await getSubscriptionPrices(credentials, subscriptionId);
+
+        const message = skipped.length > 0
+          ? `Cleared ${deleted.length} scheduled price${deleted.length !== 1 ? 's' : ''}, ${skipped.length} skipped (no longer deletable)`
+          : `Cleared ${deleted.length} scheduled price${deleted.length !== 1 ? 's' : ''}`;
+
+        writer.done({
+          success: true,
+          message,
+          deletedCount: deleted.length,
+          skippedCount: skipped.length,
+          remainingScheduled: Object.keys(updatedPricesResult.scheduled).length,
+        });
+      } catch (error) {
+        console.error('Error clearing scheduled prices:', error);
+
+        if (error instanceof RateLimitError) {
+          writer.error(
+            `Failed to clear scheduled prices: ${error.successCount} of ${error.totalCount} deleted before failure`,
+            error.successCount,
+            error.totalCount
+          );
+        } else if (error instanceof AppleApiError) {
+          writer.error(error.detail || 'Failed to clear scheduled prices');
+        } else {
+          writer.error('Failed to clear scheduled prices');
+        }
+      }
+    })();
+
+    return new Response(stream, { headers: NDJSON_HEADERS });
   } catch (error) {
     console.error('Error clearing scheduled prices:', error);
-
-    // Handle rate limit errors with partial success information
-    if (error instanceof RateLimitError) {
-      const originalError = error.originalError;
-      const statusCode = originalError instanceof AppleApiError
-        ? originalError.statusCode
-        : 500;
-
-      return NextResponse.json(
-        {
-          error: `Failed to clear scheduled prices: ${error.successCount} of ${error.totalCount} deleted before failure`,
-          successCount: error.successCount,
-          totalCount: error.totalCount,
-          failedIndex: error.failedIndex,
-          originalError: originalError instanceof AppleApiError
-            ? originalError.detail
-            : originalError.message,
-        },
-        { status: statusCode }
-      );
-    }
 
     if (error instanceof AppleApiError) {
       return NextResponse.json(

@@ -14,6 +14,8 @@ export interface RateLimitOptions {
   retryDelay?: number;
   /** HTTP status codes that should trigger a retry (default: [500, 502, 503, 504, 429]) */
   retryableStatusCodes?: number[];
+  /** Called after each successful task completion */
+  onProgress?: (completed: number, total: number) => void;
 }
 
 export class RateLimitError extends Error {
@@ -133,6 +135,7 @@ export async function executeWithRateLimit<T>(
         const { result } = await processWithRetry(task, absoluteIndex);
         results[absoluteIndex] = result;
         completedCount++;
+        options?.onProgress?.(completedCount, tasks.length);
         return { success: true as const, index: absoluteIndex };
       } catch (error) {
         const attempts = (error && typeof error === 'object' && 'attempts' in error)

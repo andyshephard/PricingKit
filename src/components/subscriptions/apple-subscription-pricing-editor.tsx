@@ -325,8 +325,8 @@ export function AppleSubscriptionPricingEditor({
     try {
       const result = await clearScheduledMutation.mutateAsync({
         subscriptionId: subscription.id,
-      });
-      toast.success(result.message || 'Scheduled prices cleared');
+      }) as { message?: string };
+      toast.success(result?.message || 'Scheduled prices cleared');
       setClearScheduledConfirmOpen(false);
     } catch (error) {
       toast.error(
@@ -413,11 +413,18 @@ export function AppleSubscriptionPricingEditor({
                 disabled={updateMutation.isPending}
               >
                 {updateMutation.isPending ? (
-                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                  <>
+                    <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                    {updateMutation.progress
+                      ? `${updateMutation.progress.phase === 'delete' ? 'Clearing' : 'Saving'} ${updateMutation.progress.completed} of ${updateMutation.progress.total}...`
+                      : 'Saving...'}
+                  </>
                 ) : (
-                  <Check className="mr-1 h-3 w-3" />
+                  <>
+                    <Check className="mr-1 h-3 w-3" />
+                    Save Changes
+                  </>
                 )}
-                Save Changes
               </Button>
             </div>
           </div>
@@ -812,7 +819,9 @@ export function AppleSubscriptionPricingEditor({
               {clearScheduledMutation.isPending ? (
                 <>
                   <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                  Clearing...
+                  {clearScheduledMutation.progress
+                    ? `Clearing ${clearScheduledMutation.progress.completed} of ${clearScheduledMutation.progress.total}...`
+                    : 'Clearing...'}
                 </>
               ) : (
                 'Clear All'

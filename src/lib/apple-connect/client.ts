@@ -192,12 +192,34 @@ export async function appleApiRequest<T>(
     fetchOptions.body = JSON.stringify(body);
   }
 
-  const response = await fetch(url, {
+  let response = await fetch(url, {
     ...fetchOptions,
     signal: AbortSignal.timeout(30_000), // 30 second timeout
   });
 
   // console.log('[Apple API Response] Status:', response.status);
+
+  // Handle 429 rate limiting: respect Retry-After header and retry once
+  if (response.status === 429) {
+    const retryAfterHeader = response.headers.get('Retry-After');
+    let waitSeconds = 30; // default if header is absent
+    if (retryAfterHeader) {
+      const parsed = Number(retryAfterHeader);
+      if (!Number.isNaN(parsed) && parsed > 0) {
+        waitSeconds = Math.min(parsed, 60); // cap at 60s
+      }
+    }
+    console.log(
+      `[Apple API] Rate limited (429) on ${method} ${endpoint}. Waiting ${waitSeconds}s...`
+    );
+    await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
+
+    // Retry once with a fresh timeout
+    response = await fetch(url, {
+      ...fetchOptions,
+      signal: AbortSignal.timeout(30_000),
+    });
+  }
 
   if (!response.ok) {
     const errorData = (await response.json()) as AppleApiErrorResponse;

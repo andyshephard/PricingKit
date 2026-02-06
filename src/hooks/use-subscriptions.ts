@@ -3,6 +3,7 @@ import type { Subscription, RegionalBasePlanConfig } from '@/lib/google-play/typ
 import type { RawAppleSubscription, SubscriptionsListResponse, SubscriptionResponse } from '@/types/api';
 import type { AppleProductPrice } from '@/lib/apple-connect/types';
 import { useAuthStore } from '@/store/auth-store';
+import { useStreamingMutation } from './use-streaming-mutation';
 
 export function useSubscriptions() {
   const platform = useAuthStore((state) => state.platform);
@@ -236,46 +237,45 @@ export function useSubscriptionPricePoints(subscriptionId: string, territoryCode
   });
 }
 
-// Hook to update Apple subscription prices
+// Hook to update Apple subscription prices (with streaming progress)
 export function useUpdateAppleSubscriptionPrices() {
   const queryClient = useQueryClient();
+  const streaming = useStreamingMutation();
 
-  return useMutation({
-    mutationFn: async ({
-      subscriptionId,
-      prices,
-    }: {
-      subscriptionId: string;
-      prices: Record<string, { pricePointId: string; startDate?: string }>;
-    }) => {
-      const response = await fetch(
-        `/api/apple/subscriptions/${encodeURIComponent(subscriptionId)}`,
-        {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prices }),
-        }
-      );
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          throw new Error('401: Unauthorized');
-        }
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to update subscription prices');
+  const mutateAsync = async ({
+    subscriptionId,
+    prices,
+  }: {
+    subscriptionId: string;
+    prices: Record<string, { pricePointId: string; startDate?: string }>;
+  }) => {
+    const result = await streaming.mutateAsync(
+      `/api/apple/subscriptions/${encodeURIComponent(subscriptionId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prices }),
       }
+    );
 
-      return response.json();
-    },
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['subscriptions', 'apple'] });
-      queryClient.invalidateQueries({
-        queryKey: ['subscriptions', 'apple', variables.subscriptionId],
-      });
-      queryClient.invalidateQueries({ queryKey: ['apple', 'subscriptions'] });
-      queryClient.invalidateQueries({ queryKey: ['platform-subscriptions', 'apple'] });
-    },
-  });
+    // Invalidate caches after streaming completes
+    queryClient.invalidateQueries({ queryKey: ['subscriptions', 'apple'] });
+    queryClient.invalidateQueries({
+      queryKey: ['subscriptions', 'apple', subscriptionId],
+    });
+    queryClient.invalidateQueries({ queryKey: ['apple', 'subscriptions'] });
+    queryClient.invalidateQueries({ queryKey: ['platform-subscriptions', 'apple'] });
+
+    return result;
+  };
+
+  return {
+    mutateAsync,
+    isPending: streaming.isPending,
+    progress: streaming.progress,
+    error: streaming.error,
+    reset: streaming.reset,
+  };
 }
 
 // Hook to delete Apple subscription price for a territory
@@ -320,41 +320,40 @@ export function useDeleteAppleSubscriptionPrice() {
   });
 }
 
-// Hook to clear all scheduled (future) prices for an Apple subscription
+// Hook to clear all scheduled (future) prices for an Apple subscription (with streaming progress)
 export function useClearScheduledPrices() {
   const queryClient = useQueryClient();
+  const streaming = useStreamingMutation();
 
-  return useMutation({
-    mutationFn: async ({
-      subscriptionId,
-    }: {
-      subscriptionId: string;
-    }) => {
-      const response = await fetch(
-        `/api/apple/subscriptions/${encodeURIComponent(subscriptionId)}/clear-scheduled`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-        }
-      );
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          throw new Error('401: Unauthorized');
-        }
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to clear scheduled prices');
+  const mutateAsync = async ({
+    subscriptionId,
+  }: {
+    subscriptionId: string;
+  }) => {
+    const result = await streaming.mutateAsync(
+      `/api/apple/subscriptions/${encodeURIComponent(subscriptionId)}/clear-scheduled`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
       }
+    );
 
-      return response.json();
-    },
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['subscriptions', 'apple'] });
-      queryClient.invalidateQueries({
-        queryKey: ['subscriptions', 'apple', variables.subscriptionId],
-      });
-      queryClient.invalidateQueries({ queryKey: ['apple', 'subscriptions'] });
-      queryClient.invalidateQueries({ queryKey: ['platform-subscriptions', 'apple'] });
-    },
-  });
+    // Invalidate caches after streaming completes
+    queryClient.invalidateQueries({ queryKey: ['subscriptions', 'apple'] });
+    queryClient.invalidateQueries({
+      queryKey: ['subscriptions', 'apple', subscriptionId],
+    });
+    queryClient.invalidateQueries({ queryKey: ['apple', 'subscriptions'] });
+    queryClient.invalidateQueries({ queryKey: ['platform-subscriptions', 'apple'] });
+
+    return result;
+  };
+
+  return {
+    mutateAsync,
+    isPending: streaming.isPending,
+    progress: streaming.progress,
+    error: streaming.error,
+    reset: streaming.reset,
+  };
 }
