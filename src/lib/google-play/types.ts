@@ -378,7 +378,7 @@ export type RegionCode = typeof GOOGLE_PLAY_REGIONS[number]['code'];
 
 // Helper function to format Money to display string
 export function formatMoney(money: Money): string {
-  const amount = parseFloat(money.units) + (money.nanos ? money.nanos / 1_000_000_000 : 0);
+  const amount = safeParseUnits(money.units) + (money.nanos ? money.nanos / 1_000_000_000 : 0);
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: money.currencyCode,
@@ -387,6 +387,7 @@ export function formatMoney(money: Money): string {
 
 // Safely parse money units string to number, throwing on invalid values
 function safeParseUnits(units: string): number {
+  if (units == null || units === '') return 0;
   const value = parseFloat(units);
   if (isNaN(value) || !Number.isFinite(value)) {
     throw new Error(`Invalid price units value: "${units}"`);

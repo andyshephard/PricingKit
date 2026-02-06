@@ -192,9 +192,9 @@ export async function PATCH(
     if (deleteTasks.length > 0) {
       await executeWithRateLimit(deleteTasks, {
         concurrency: 3,
-        delayBetweenBatches: 100,
-        maxRetries: 3,
-        retryDelay: 1000,
+        delayBetweenBatches: 350,
+        maxRetries: 5,
+        retryDelay: 2000,
       });
     }
 
@@ -210,12 +210,12 @@ export async function PATCH(
         )
     );
 
-    // Execute with rate limiting: 3 concurrent requests, retry on 500 errors
+    // Execute with rate limiting: 3 concurrent requests, retry on 429/5xx errors
     await executeWithRateLimit(createTasks, {
       concurrency: 3,
-      delayBetweenBatches: 100,
-      maxRetries: 3,
-      retryDelay: 1000,
+      delayBetweenBatches: 350,
+      maxRetries: 5,
+      retryDelay: 2000,
     });
 
     // Fetch updated subscription by its ID

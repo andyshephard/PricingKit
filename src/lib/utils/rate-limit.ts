@@ -78,13 +78,15 @@ export async function executeWithRateLimit<T>(
   async function processWithRetry(
     task: () => Promise<T>,
     index: number
-  ): Promise<T> {
+  ): Promise<{ result: T; attempts: number }> {
     let lastError: Error | undefined;
+    let attempts = 0;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      attempts++;
       try {
         const result = await task();
-        return result;
+        return { result, attempts };
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
 
@@ -106,7 +108,7 @@ export async function executeWithRateLimit<T>(
     }
 
     // Task failed after all retries
-    throw lastError;
+    throw Object.assign(lastError!, { attempts });
   }
 
   // Process tasks in batches with controlled concurrency
@@ -128,15 +130,19 @@ export async function executeWithRateLimit<T>(
     const batchPromises = batch.map(async (task, batchIndex) => {
       const absoluteIndex = batchStartIndex + batchIndex;
       try {
-        const result = await processWithRetry(task, absoluteIndex);
+        const { result } = await processWithRetry(task, absoluteIndex);
         results[absoluteIndex] = result;
         completedCount++;
         return { success: true as const, index: absoluteIndex };
       } catch (error) {
+        const attempts = (error && typeof error === 'object' && 'attempts' in error)
+          ? (error as { attempts: number }).attempts
+          : 1;
         return {
           success: false as const,
           index: absoluteIndex,
           error: error instanceof Error ? error : new Error(String(error)),
+          attempts,
         };
       }
     });
@@ -147,7 +153,7 @@ export async function executeWithRateLimit<T>(
     const failure = batchResults.find(r => !r.success);
     if (failure && !failure.success) {
       throw new RateLimitError(
-        `Task ${failure.index + 1} of ${tasks.length} failed after ${maxRetries + 1} attempts: ${failure.error.message}`,
+        `Task ${failure.index + 1} of ${tasks.length} failed after ${failure.attempts} attempt${failure.attempts !== 1 ? 's' : ''}: ${failure.error.message}`,
         completedCount,
         tasks.length,
         failure.index,

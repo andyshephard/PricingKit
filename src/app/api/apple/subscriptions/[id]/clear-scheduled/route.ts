@@ -78,27 +78,44 @@ export async function POST(
       });
     }
 
-    // Create deletion tasks
+    // Create deletion tasks that catch 409 STATE_ERROR as skips
+    // Apple returns 409 for prices it considers no longer "future" (e.g., taking effect tomorrow)
     const deleteTasks = scheduledPriceEntries.map(
-      ([, price]) =>
-        () => deleteSubscriptionPrice(auth.credentials, price.subscriptionPriceId!)
+      ([territory, price]) =>
+        async () => {
+          try {
+            await deleteSubscriptionPrice(auth.credentials, price.subscriptionPriceId!);
+            return { territory, deleted: true as const };
+          } catch (error) {
+            if (error instanceof AppleApiError && error.statusCode === 409) {
+              return { territory, deleted: false as const, reason: error.detail };
+            }
+            throw error;
+          }
+        }
     );
 
     // Execute deletions with rate limiting
-    await executeWithRateLimit(deleteTasks, {
+    const results = await executeWithRateLimit(deleteTasks, {
       concurrency: 3,
-      delayBetweenBatches: 100,
-      maxRetries: 3,
-      retryDelay: 1000,
+      delayBetweenBatches: 350,
+      maxRetries: 5,
+      retryDelay: 2000,
     });
+
+    const deleted = results.filter(r => r.deleted);
+    const skipped = results.filter(r => !r.deleted);
 
     // Fetch updated prices to confirm
     const updatedPricesResult = await getSubscriptionPrices(auth.credentials, subscription.id);
 
     return NextResponse.json({
       success: true,
-      message: `Cleared ${scheduledPriceEntries.length} scheduled price${scheduledPriceEntries.length !== 1 ? 's' : ''}`,
-      deletedCount: scheduledPriceEntries.length,
+      message: skipped.length > 0
+        ? `Cleared ${deleted.length} scheduled price${deleted.length !== 1 ? 's' : ''}, ${skipped.length} skipped (no longer deletable)`
+        : `Cleared ${deleted.length} scheduled price${deleted.length !== 1 ? 's' : ''}`,
+      deletedCount: deleted.length,
+      skippedCount: skipped.length,
       remainingScheduled: Object.keys(updatedPricesResult.scheduled).length,
     });
   } catch (error) {

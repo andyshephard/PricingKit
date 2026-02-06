@@ -12,7 +12,7 @@ import {
   ValidationError,
   moneySchema,
   regionCodeSchema,
-  googlePlaySkuSchema,
+  googlePlayBasePlanIdSchema,
 } from '@/lib/validation';
 
 const regionalConfigSchema = z.object({
@@ -22,12 +22,12 @@ const regionalConfigSchema = z.object({
 });
 
 const updateBasePlanSchema = z.object({
-  basePlanId: googlePlaySkuSchema,
+  basePlanId: googlePlayBasePlanIdSchema,
   regionalConfigs: z.array(regionalConfigSchema),
 });
 
 const deleteRegionSchema = z.object({
-  basePlanId: googlePlaySkuSchema,
+  basePlanId: googlePlayBasePlanIdSchema,
   regionCode: regionCodeSchema,
 });
 

@@ -16,6 +16,21 @@ export const googlePlaySkuSchema = z
   );
 
 /**
+ * Base plan ID validation for Google Play
+ * - Same as SKU but also allows hyphens
+ * - Must start with a letter or number
+ * - Max 150 characters
+ */
+export const googlePlayBasePlanIdSchema = z
+  .string()
+  .min(1, 'Base plan ID cannot be empty')
+  .max(150, 'Base plan ID exceeds maximum length of 150 characters')
+  .regex(
+    /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/,
+    'Base plan ID must start with a letter or number and contain only letters, numbers, underscores, periods, or hyphens'
+  );
+
+/**
  * Product ID validation for Apple App Store Connect
  * - Must be alphanumeric, underscores, or periods
  * - Must start with a letter or number

@@ -70,11 +70,11 @@ function formatPrice(price: string | number, currency: string): string {
   }
 }
 
-// Get tomorrow's date in YYYY-MM-DD format
-function getTomorrowDate(): string {
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  return tomorrow.toISOString().split('T')[0];
+// Get earliest allowed effective date (2 days from now) in YYYY-MM-DD format
+function getEarliestEffectiveDate(): string {
+  const date = new Date();
+  date.setDate(date.getDate() + 2);
+  return date.toISOString().split('T')[0];
 }
 
 interface PPPApiResponse {
@@ -194,7 +194,7 @@ export function AppleSubscriptionBulkPricingModal({
       const existingRegions = new Set(Object.keys(subscription.prices || {}));
       setSelectedRegions(existingRegions);
       if (isApproved) {
-        setStartDate(getTomorrowDate());
+        setStartDate(getEarliestEffectiveDate());
       }
     }
   }, [open, subscription.prices, isApproved]);
@@ -484,7 +484,7 @@ export function AppleSubscriptionBulkPricingModal({
       setApplyToAllRegions(true);
       setSelectedRegions(new Set(Object.keys(subscription.prices || {})));
       if (isApproved) {
-        setStartDate(getTomorrowDate());
+        setStartDate(getEarliestEffectiveDate());
       } else {
         setStartDate('');
       }
@@ -566,7 +566,7 @@ export function AppleSubscriptionBulkPricingModal({
                       id="start-date"
                       type="date"
                       value={startDate}
-                      min={getTomorrowDate()}
+                      min={getEarliestEffectiveDate()}
                       onChange={(e) => setStartDate(e.target.value)}
                       className="flex h-10 w-48 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                     />

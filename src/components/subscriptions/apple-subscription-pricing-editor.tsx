@@ -98,11 +98,11 @@ function formatPrice(price: string, currency: string): string {
   }
 }
 
-// Get tomorrow's date in YYYY-MM-DD format
-function getTomorrowDate(): string {
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  return tomorrow.toISOString().split('T')[0];
+// Get earliest allowed effective date (2 days from now) in YYYY-MM-DD format
+function getEarliestEffectiveDate(): string {
+  const date = new Date();
+  date.setDate(date.getDate() + 2);
+  return date.toISOString().split('T')[0];
 }
 
 // Format date for display
@@ -235,7 +235,7 @@ export function AppleSubscriptionPricingEditor({
     // For approved subscriptions, we need to show the date picker
     if (isApproved) {
       setSelectedPricePoint(pricePoint);
-      setSelectedStartDate(getTomorrowDate());
+      setSelectedStartDate(getEarliestEffectiveDate());
       return;
     }
 
@@ -639,7 +639,7 @@ export function AppleSubscriptionPricingEditor({
                   id="start-date"
                   type="date"
                   value={selectedStartDate}
-                  min={getTomorrowDate()}
+                  min={getEarliestEffectiveDate()}
                   onChange={(e) => setSelectedStartDate(e.target.value)}
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 />
