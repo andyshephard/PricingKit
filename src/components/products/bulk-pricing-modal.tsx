@@ -176,18 +176,16 @@ export function BulkPricingModal({
   }, [platform, normalizedPrices]);
 
   // Fetch PPP data and exchange rates when modal opens
-  // Using separate "fetched" flags to prevent infinite loops
+  // Only depend on `open` to prevent infinite retry loops on fetch failure
   useEffect(() => {
     if (open && !pppFetched && !pppLoading) {
       fetchPPPData();
     }
-  }, [open, pppFetched, pppLoading]);
-
-  useEffect(() => {
     if (open && !exchangeRatesFetched && !exchangeRatesLoading) {
       fetchExchangeRates();
     }
-  }, [open, exchangeRatesFetched, exchangeRatesLoading]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const fetchPPPData = async (forceRefresh = false) => {
     setPppLoading(true);

@@ -79,7 +79,7 @@ import { encrypt, decrypt, isEncryptionAvailable } from '../encryption';
 
 export async function createSession(credentials: ServiceAccountCredentials): Promise<string> {
   if (isEncryptionAvailable()) {
-    return encrypt(JSON.stringify(credentials));
+    return await encrypt(JSON.stringify(credentials));
   } else if (process.env.NODE_ENV === 'production') {
     throw new Error('ENCRYPTION_KEY environment variable is required in production. Set it to a 32+ character random string.');
   } else {
@@ -91,7 +91,7 @@ export async function createSession(credentials: ServiceAccountCredentials): Pro
 export async function getSessionCredentials(cookieValue: string): Promise<ServiceAccountCredentials | null> {
   try {
     if (isEncryptionAvailable()) {
-      const decrypted = decrypt(cookieValue);
+      const decrypted = await decrypt(cookieValue);
       return JSON.parse(decrypted) as ServiceAccountCredentials;
     } else {
       const decoded = Buffer.from(cookieValue, 'base64').toString('utf-8');

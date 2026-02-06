@@ -1,67 +1,91 @@
-import crypto from 'crypto';
-
-const ALGORITHM = 'aes-256-gcm';
+const ALGORITHM = 'AES-GCM';
 const IV_LENGTH = 12;
-const AUTH_TAG_LENGTH = 16;
 const SALT_LENGTH = 16;
 const KEY_LENGTH = 32;
+const PBKDF2_ITERATIONS = 100000;
 
 /**
- * Derives a 256-bit key from the ENCRYPTION_KEY environment variable using PBKDF2.
- * This allows the env var to be any string while producing a proper AES key.
+ * Derives a 256-bit AES-GCM key from the ENCRYPTION_KEY environment variable using PBKDF2.
+ * Uses the Web Crypto API for Cloudflare Workers compatibility.
  */
-function deriveKey(salt: Buffer): Buffer {
+async function deriveKey(salt: Uint8Array): Promise<CryptoKey> {
   const encryptionKey = process.env.ENCRYPTION_KEY;
   if (!encryptionKey) {
     throw new Error('ENCRYPTION_KEY environment variable is required for secure session storage');
   }
-  return crypto.pbkdf2Sync(encryptionKey, salt, 100000, KEY_LENGTH, 'sha256');
+
+  const encoder = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(encryptionKey),
+    'PBKDF2',
+    false,
+    ['deriveKey'],
+  );
+
+  return crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: salt.buffer as ArrayBuffer,
+      iterations: PBKDF2_ITERATIONS,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    { name: ALGORITHM, length: KEY_LENGTH * 8 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
 }
 
 /**
- * Encrypts data using AES-256-GCM.
- * Returns a base64 string containing: salt + iv + authTag + ciphertext
+ * Encrypts data using AES-256-GCM via Web Crypto API.
+ * Returns a base64 string containing: salt + iv + ciphertext (authTag appended by GCM)
  */
-export function encrypt(plaintext: string): string {
-  const salt = crypto.randomBytes(SALT_LENGTH);
-  const key = deriveKey(salt);
-  const iv = crypto.randomBytes(IV_LENGTH);
+export async function encrypt(plaintext: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH));
+  const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
+  const key = await deriveKey(salt);
 
-  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
-  const encrypted = Buffer.concat([
-    cipher.update(plaintext, 'utf8'),
-    cipher.final(),
-  ]);
-  const authTag = cipher.getAuthTag();
+  const encoder = new TextEncoder();
+  const encrypted = await crypto.subtle.encrypt(
+    { name: ALGORITHM, iv },
+    key,
+    encoder.encode(plaintext),
+  );
 
-  // Combine: salt (16) + iv (12) + authTag (16) + ciphertext
-  const combined = Buffer.concat([salt, iv, authTag, encrypted]);
-  return combined.toString('base64');
+  // Combine: salt (16) + iv (12) + ciphertext+authTag (GCM appends 16-byte tag)
+  const combined = new Uint8Array(salt.length + iv.length + encrypted.byteLength);
+  combined.set(salt, 0);
+  combined.set(iv, salt.length);
+  combined.set(new Uint8Array(encrypted), salt.length + iv.length);
+
+  return btoa(String.fromCharCode(...combined));
 }
 
 /**
  * Decrypts data encrypted with the encrypt function.
  */
-export function decrypt(encryptedBase64: string): string {
-  const combined = Buffer.from(encryptedBase64, 'base64');
+export async function decrypt(encryptedBase64: string): Promise<string> {
+  const binaryStr = atob(encryptedBase64);
+  const combined = new Uint8Array(binaryStr.length);
+  for (let i = 0; i < binaryStr.length; i++) {
+    combined[i] = binaryStr.charCodeAt(i);
+  }
 
   // Extract components
   const salt = combined.subarray(0, SALT_LENGTH);
   const iv = combined.subarray(SALT_LENGTH, SALT_LENGTH + IV_LENGTH);
-  const authTag = combined.subarray(SALT_LENGTH + IV_LENGTH, SALT_LENGTH + IV_LENGTH + AUTH_TAG_LENGTH);
-  const ciphertext = combined.subarray(SALT_LENGTH + IV_LENGTH + AUTH_TAG_LENGTH);
+  const ciphertextWithTag = combined.subarray(SALT_LENGTH + IV_LENGTH);
 
-  const key = deriveKey(salt);
+  const key = await deriveKey(salt);
 
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
-  decipher.setAuthTag(authTag);
+  const decrypted = await crypto.subtle.decrypt(
+    { name: ALGORITHM, iv },
+    key,
+    ciphertextWithTag,
+  );
 
-  const decrypted = Buffer.concat([
-    decipher.update(ciphertext),
-    decipher.final(),
-  ]);
-
-  return decrypted.toString('utf8');
+  return new TextDecoder().decode(decrypted);
 }
 
 /**

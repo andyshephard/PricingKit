@@ -240,7 +240,7 @@ export async function createAppleSession(
   credentials: AppleConnectCredentials
 ): Promise<string> {
   if (isEncryptionAvailable()) {
-    return encrypt(JSON.stringify(credentials));
+    return await encrypt(JSON.stringify(credentials));
   } else if (process.env.NODE_ENV === 'production') {
     throw new Error('ENCRYPTION_KEY environment variable is required in production. Set it to a 32+ character random string.');
   } else {
@@ -254,7 +254,7 @@ export async function getAppleSessionCredentials(
 ): Promise<AppleConnectCredentials | null> {
   try {
     if (isEncryptionAvailable()) {
-      const decrypted = decrypt(cookieValue);
+      const decrypted = await decrypt(cookieValue);
       return JSON.parse(decrypted) as AppleConnectCredentials;
     } else {
       const decoded = Buffer.from(cookieValue, 'base64').toString('utf-8');

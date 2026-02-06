@@ -1,11 +1,7 @@
 // Open Exchange Rates API client with caching
 // API Documentation: https://docs.openexchangerates.org/
 
-import fs from 'fs/promises';
-import path from 'path';
-
 const API_BASE_URL = 'https://openexchangerates.org/api';
-const CACHE_FILE = path.join(process.cwd(), '.exchange-rates.json');
 const CACHE_DURATION_MS = 6 * 60 * 60 * 1000; // 6 hours (free tier updates hourly)
 
 export interface ExchangeRatesData {
@@ -38,7 +34,10 @@ function getApiKey(providedKey?: string): string | null {
  */
 async function loadFromDisk(): Promise<ExchangeRatesData | null> {
   try {
-    const data = await fs.readFile(CACHE_FILE, 'utf-8');
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const cacheFile = path.join(process.cwd(), '.exchange-rates.json');
+    const data = await fs.readFile(cacheFile, 'utf-8');
     return JSON.parse(data) as ExchangeRatesData;
   } catch {
     return null;
@@ -50,9 +49,12 @@ async function loadFromDisk(): Promise<ExchangeRatesData | null> {
  */
 async function saveToDisk(data: ExchangeRatesData): Promise<void> {
   try {
-    await fs.writeFile(CACHE_FILE, JSON.stringify(data, null, 2), 'utf-8');
-  } catch (error) {
-    console.error('Failed to save exchange rates cache:', error);
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const cacheFile = path.join(process.cwd(), '.exchange-rates.json');
+    await fs.writeFile(cacheFile, JSON.stringify(data, null, 2), 'utf-8');
+  } catch {
+    // Silently ignore - disk caching not available (e.g. Cloudflare Workers)
   }
 }
 

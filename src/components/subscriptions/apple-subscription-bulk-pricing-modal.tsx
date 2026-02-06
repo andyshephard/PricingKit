@@ -200,6 +200,7 @@ export function AppleSubscriptionBulkPricingModal({
   }, [open, subscription.prices, isApproved]);
 
   // Fetch PPP data and exchange rates when modal opens
+  // Only depend on `open` to prevent infinite retry loops on fetch failure
   useEffect(() => {
     if (open) {
       if (!pppData && !pppLoading) {
@@ -209,7 +210,8 @@ export function AppleSubscriptionBulkPricingModal({
         fetchExchangeRates();
       }
     }
-  }, [open, pppData, pppLoading, exchangeRates, exchangeRatesLoading]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const fetchPPPData = async (forceRefresh = false) => {
     setPppLoading(true);
