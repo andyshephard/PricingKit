@@ -278,6 +278,41 @@ export function useUpdateAppleSubscriptionPrices() {
   };
 }
 
+// Hook to resolve Apple subscription price points in batch (server-side)
+export interface BatchResolvedPricePoints {
+  resolved: Record<string, { pricePointId: string; tierPrice: number }>;
+  skipped: string[];
+}
+
+export function useResolveAppleSubscriptionPricePoints() {
+  const streaming = useStreamingMutation<BatchResolvedPricePoints>();
+
+  const mutateAsync = async ({
+    subscriptionId,
+    territories,
+  }: {
+    subscriptionId: string;
+    territories: Record<string, { targetPrice: number; currency: string }>;
+  }) => {
+    return streaming.mutateAsync(
+      `/api/apple/subscriptions/${encodeURIComponent(subscriptionId)}/price-points/batch`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ territories }),
+      }
+    );
+  };
+
+  return {
+    mutateAsync,
+    isPending: streaming.isPending,
+    progress: streaming.progress,
+    error: streaming.error,
+    reset: streaming.reset,
+  };
+}
+
 // Hook to delete Apple subscription price for a territory
 export function useDeleteAppleSubscriptionPrice() {
   const queryClient = useQueryClient();

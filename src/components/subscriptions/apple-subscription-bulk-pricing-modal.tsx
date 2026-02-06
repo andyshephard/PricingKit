@@ -55,7 +55,7 @@ import {
   type DynamicPPPData,
   type DynamicExchangeRates,
 } from '@/lib/google-play/currency';
-import { useUpdateAppleSubscriptionPrices } from '@/hooks/use-subscriptions';
+import { useUpdateAppleSubscriptionPrices, useResolveAppleSubscriptionPricePoints } from '@/hooks/use-subscriptions';
 
 // Format price with currency
 function formatPrice(price: string | number, currency: string): string {
@@ -160,6 +160,7 @@ export function AppleSubscriptionBulkPricingModal({
   const [exchangeRates, setExchangeRates] = useState<DynamicExchangeRates | null>(null);
   const [exchangeRatesLoading, setExchangeRatesLoading] = useState(false);
 
+  const resolveMutation = useResolveAppleSubscriptionPricePoints();
   const updateMutation = useUpdateAppleSubscriptionPrices();
 
   const basePriceNum = parseFloat(basePrice) || 0;
@@ -391,75 +392,42 @@ export function AppleSubscriptionBulkPricingModal({
     setIsSaving(true);
 
     try {
-      // Build prices payload by fetching price points per territory
-      // Each territory needs its own territory-specific price point ID
-      const prices: Record<string, { pricePointId: string; startDate?: string }> = {};
-      let successCount = 0;
-      let skipCount = 0;
-
-      // Process territories in parallel batches to avoid overwhelming the API
-      const BATCH_SIZE = 10;
-
-      for (let i = 0; i < validPrices.length; i += BATCH_SIZE) {
-        const batch = validPrices.slice(i, i + BATCH_SIZE);
-
-        await Promise.all(batch.map(async (territory) => {
-          const alpha3Code = territory.territoryAlpha3;
-
-          try {
-            const response = await fetch(
-              `/api/apple/subscriptions/${encodeURIComponent(subscription.id)}/price-points?territory=${encodeURIComponent(alpha3Code)}`
-            );
-
-            if (!response.ok) {
-              console.warn(`Failed to fetch price points for ${alpha3Code}`);
-              skipCount++;
-              return;
-            }
-
-            const data = await response.json();
-            const pricePoints: Array<{ id: string; customerPrice: string; proceeds: string }> = data.pricePoints || [];
-
-            // Find the closest price point instead of exact match
-            // This handles cases where local tier data doesn't align with Apple's territory-specific price points
-            const matchingPoint = pricePoints.length > 0
-              ? pricePoints.reduce((closest, pp) => {
-                  const ppPrice = parseFloat(pp.customerPrice);
-                  const closestPrice = parseFloat(closest.customerPrice);
-                  const diff = Math.abs(ppPrice - territory.tierPrice);
-                  const closestDiff = Math.abs(closestPrice - territory.tierPrice);
-                  return diff < closestDiff ? pp : closest;
-                })
-              : null;
-
-            if (matchingPoint) {
-              prices[territory.territoryCode] = {
-                pricePointId: matchingPoint.id,
-                ...(isApproved && startDate ? { startDate } : {}),
-              };
-              successCount++;
-            } else {
-              console.warn(`No price point found for ${territory.territoryCode} at ${territory.tierPrice} ${territory.currency}`);
-              skipCount++;
-            }
-          } catch (error) {
-            console.error(`Error fetching price points for ${alpha3Code}:`, error);
-            skipCount++;
-          }
-        }));
+      // Phase 1: Resolve price points server-side in a single request
+      const territories: Record<string, { targetPrice: number; currency: string }> = {};
+      for (const p of validPrices) {
+        territories[p.territoryCode] = {
+          targetPrice: p.tierPrice,
+          currency: p.currency,
+        };
       }
 
-      if (Object.keys(prices).length === 0) {
+      const { resolved, skipped } = await resolveMutation.mutateAsync({
+        subscriptionId: subscription.id,
+        territories,
+      });
+
+      const skipCount = skipped.length;
+
+      if (Object.keys(resolved).length === 0) {
         toast.error('Failed to resolve any prices to Apple price points');
         return;
       }
 
-      // Update prices via mutation
+      // Phase 2: Build prices payload and update via streaming mutation
+      const prices: Record<string, { pricePointId: string; startDate?: string }> = {};
+      for (const [territoryCode, { pricePointId }] of Object.entries(resolved)) {
+        prices[territoryCode] = {
+          pricePointId,
+          ...(isApproved && startDate ? { startDate } : {}),
+        };
+      }
+
       await updateMutation.mutateAsync({
         subscriptionId: subscription.id,
         prices,
       });
 
+      const successCount = Object.keys(resolved).length;
       if (skipCount > 0) {
         toast.success(`Updated ${successCount} regions (${skipCount} skipped)`);
       } else {
@@ -882,14 +850,16 @@ export function AppleSubscriptionBulkPricingModal({
           </Button>
           <Button
             onClick={handleApply}
-            disabled={previewPrices.length === 0 || isSaving || updateMutation.isPending}
+            disabled={previewPrices.length === 0 || isSaving || resolveMutation.isPending || updateMutation.isPending}
           >
-            {isSaving || updateMutation.isPending ? (
+            {isSaving || resolveMutation.isPending || updateMutation.isPending ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                {updateMutation.progress
-                  ? `${updateMutation.progress.phase === 'delete' ? 'Clearing' : 'Updating'} ${updateMutation.progress.completed} of ${updateMutation.progress.total}...`
-                  : 'Resolving price points...'}
+                {resolveMutation.isPending && resolveMutation.progress
+                  ? `Resolving price points ${resolveMutation.progress.completed} of ${resolveMutation.progress.total}...`
+                  : updateMutation.progress
+                    ? `${updateMutation.progress.phase === 'delete' ? 'Clearing' : 'Updating'} ${updateMutation.progress.completed} of ${updateMutation.progress.total}...`
+                    : 'Resolving price points...'}
               </>
             ) : (
               `Apply to ${previewPrices.filter(p => !p.noTierData).length} Regions`
