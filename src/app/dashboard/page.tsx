@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Store, ChevronRight } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { useAuthStore } from '@/store/auth-store';
 
@@ -57,10 +57,7 @@ export default function DashboardPage() {
   return (
     <div className="flex flex-col h-full">
       <div className="flex h-14 items-center border-b px-6">
-        <div className="flex items-center gap-2">
-          <Store className="h-6 w-6 text-primary" />
-          <span className="font-semibold">PricingKit</span>
-        </div>
+        <span className="font-semibold">PricingKit</span>
       </div>
 
       <div className="flex-1 flex items-center justify-center p-6">
