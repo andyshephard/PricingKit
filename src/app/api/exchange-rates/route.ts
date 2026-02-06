@@ -3,6 +3,7 @@ import { cookies } from 'next/headers';
 import {
   getExchangeRates,
   getCacheStatus,
+  NoApiKeyError,
 } from '@/lib/exchange-rates/client';
 
 const API_KEY_COOKIE = 'exchange_rates_api_key';
@@ -42,6 +43,14 @@ export async function GET(request: Request) {
       },
     });
   } catch (error) {
+    if (error instanceof NoApiKeyError) {
+      return NextResponse.json({
+        success: false,
+        noApiKey: true,
+        error: error.message,
+      });
+    }
+
     console.error('Exchange rates API error:', error);
 
     return NextResponse.json(

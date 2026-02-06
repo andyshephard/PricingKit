@@ -74,6 +74,8 @@ interface PPPApiResponse {
 
 interface ExchangeRatesApiResponse {
   success: boolean;
+  noApiKey?: boolean;
+  error?: string;
   data: {
     base: string;
     rates: Record<string, number>;
@@ -198,7 +200,7 @@ export function BulkPricingModal({
         setPppData(data.data);
         setPppMetadata(data.metadata);
         if (data.metadata.fallback) {
-          toast.warning('Using cached PPP data (World Bank API unavailable)');
+          console.info('Using static PPP data (World Bank API unavailable)');
         }
       }
     } catch (error) {
@@ -223,6 +225,8 @@ export function BulkPricingModal({
           rates: data.data.rates,
           fetchedAt: data.data.fetchedAt,
         });
+      } else if (data.noApiKey) {
+        toast.info('Add an Open Exchange Rates API key in Settings for live exchange rates.');
       }
     } catch (error) {
       console.error('Failed to fetch exchange rates:', error);

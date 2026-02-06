@@ -4,6 +4,13 @@
 const API_BASE_URL = 'https://openexchangerates.org/api';
 const CACHE_DURATION_MS = 6 * 60 * 60 * 1000; // 6 hours (free tier updates hourly)
 
+export class NoApiKeyError extends Error {
+  constructor() {
+    super('No API key available. Please add your Open Exchange Rates API key in Settings.');
+    this.name = 'NoApiKeyError';
+  }
+}
+
 export interface ExchangeRatesData {
   base: string;
   rates: Record<string, number>;
@@ -73,7 +80,7 @@ async function fetchFromApi(providedApiKey?: string): Promise<ExchangeRatesData>
   const apiKey = getApiKey(providedApiKey);
 
   if (!apiKey) {
-    throw new Error('No API key available. Please set OPEN_EXCHANGE_RATES_APP_ID or provide an API key in settings.');
+    throw new NoApiKeyError();
   }
 
   const url = `${API_BASE_URL}/latest.json?app_id=${apiKey}`;
