@@ -14,16 +14,16 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "PricingKit - App/Play Store Pricing Manager",
+  title: "PricingKit - Free, Open-Source tool for Google Play / App Store Pricing",
   description: "A free and open-source tool to manage in-app product and subscription pricing for Google Play and Apple App Store",
   openGraph: {
-    title: "PricingKit - App/Play Store Pricing Manager",
+    title: "PricingKit - Free, Open-Source tool for Google Play / App Store Pricing",
     description: "A free and open-source tool to manage in-app product and subscription pricing for Google Play and Apple App Store",
     images: [{ url: '/banner.webp' }],
   },
   twitter: {
     card: 'summary_large_image',
-    title: "PricingKit - App/Play Store Pricing Manager",
+    title: "PricingKit - Free, Open-Source tool for Google Play / App Store Pricing",
     description: "A free and open-source tool to manage in-app product and subscription pricing for Google Play and Apple App Store",
     images: ['/banner.webp'],
   },

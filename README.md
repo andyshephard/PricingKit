@@ -1,5 +1,3 @@
-# PricingKit - App/Play Store Pricing Manager
-
 ![PricingKit Banner](public/banner.webp)
 
 A Next.js webapp for managing in-app product and subscription pricing across **Google Play Store** and **Apple App Store**.
