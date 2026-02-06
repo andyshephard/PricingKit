@@ -22,21 +22,20 @@ export function Sidebar() {
   // Build platform-specific navigation links
   const getNavigation = (platform: Platform | null) => {
     if (!platform) {
-      // Fallback to generic routes (shouldn't happen in normal use)
       return [
-        { name: 'Overview', href: '/dashboard', icon: LayoutDashboard },
-        { name: 'Products', href: '/dashboard/products', icon: Package },
-        { name: 'Subscriptions', href: '/dashboard/subscriptions', icon: CreditCard },
-        { name: 'Settings', href: '/dashboard/settings', icon: Settings },
+        { name: 'Overview', href: '/dashboard', icon: LayoutDashboard, disabled: false },
+        { name: 'Products', href: '/dashboard/products', icon: Package, disabled: true },
+        { name: 'Subscriptions', href: '/dashboard/subscriptions', icon: CreditCard, disabled: true },
+        { name: 'Settings', href: '/dashboard/settings', icon: Settings, disabled: false },
       ];
     }
 
     const basePath = `/dashboard/${platform}`;
     return [
-      { name: 'Overview', href: basePath, icon: LayoutDashboard },
-      { name: 'Products', href: `${basePath}/products`, icon: Package },
-      { name: 'Subscriptions', href: `${basePath}/subscriptions`, icon: CreditCard },
-      { name: 'Settings', href: '/dashboard/settings', icon: Settings },
+      { name: 'Overview', href: basePath, icon: LayoutDashboard, disabled: false },
+      { name: 'Products', href: `${basePath}/products`, icon: Package, disabled: false },
+      { name: 'Subscriptions', href: `${basePath}/subscriptions`, icon: CreditCard, disabled: false },
+      { name: 'Settings', href: '/dashboard/settings', icon: Settings, disabled: false },
     ];
   };
 
@@ -66,6 +65,18 @@ export function Sidebar() {
               : item.href === '/dashboard'
                 ? pathname === '/dashboard'
                 : pathname.startsWith(item.href);
+
+            if (item.disabled) {
+              return (
+                <span
+                  key={item.name}
+                  className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted-foreground/50 cursor-not-allowed"
+                >
+                  <item.icon className="h-4 w-4" />
+                  {item.name}
+                </span>
+              );
+            }
 
             return (
               <Link
