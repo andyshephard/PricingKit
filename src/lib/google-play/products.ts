@@ -1,6 +1,6 @@
 import type { AndroidPublisher } from './client';
 import type { InAppProduct, Money } from './types';
-import type { androidpublisher_v3 } from 'googleapis';
+import type { androidpublisher_v3 } from '@googleapis/androidpublisher';
 
 // Type for regional pricing config
 interface RegionalPricingConfig {

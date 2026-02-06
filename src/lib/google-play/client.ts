@@ -1,4 +1,5 @@
-import { google, androidpublisher_v3 } from 'googleapis';
+import { androidpublisher, type androidpublisher_v3 } from '@googleapis/androidpublisher';
+import { GoogleAuth } from 'google-auth-library';
 import type { ServiceAccountCredentials } from './types';
 
 export type AndroidPublisher = androidpublisher_v3.Androidpublisher;
@@ -17,7 +18,7 @@ export function createGooglePlayClient(credentials: ServiceAccountCredentials): 
     return cachedClient;
   }
 
-  const auth = new google.auth.GoogleAuth({
+  const auth = new GoogleAuth({
     credentials: {
       client_email: credentials.client_email,
       private_key: credentials.private_key,
@@ -25,7 +26,7 @@ export function createGooglePlayClient(credentials: ServiceAccountCredentials): 
     scopes: ['https://www.googleapis.com/auth/androidpublisher'],
   });
 
-  cachedClient = google.androidpublisher({
+  cachedClient = androidpublisher({
     version: 'v3',
     auth,
   });
