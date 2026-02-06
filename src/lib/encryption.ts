@@ -26,7 +26,7 @@ async function deriveKey(salt: Uint8Array): Promise<CryptoKey> {
   return crypto.subtle.deriveKey(
     {
       name: 'PBKDF2',
-      salt: salt.buffer as ArrayBuffer,
+      salt: salt.buffer.slice(salt.byteOffset, salt.byteOffset + salt.byteLength) as ArrayBuffer,
       iterations: PBKDF2_ITERATIONS,
       hash: 'SHA-256',
     },
@@ -72,10 +72,11 @@ export async function decrypt(encryptedBase64: string): Promise<string> {
     combined[i] = binaryStr.charCodeAt(i);
   }
 
-  // Extract components
-  const salt = combined.subarray(0, SALT_LENGTH);
-  const iv = combined.subarray(SALT_LENGTH, SALT_LENGTH + IV_LENGTH);
-  const ciphertextWithTag = combined.subarray(SALT_LENGTH + IV_LENGTH);
+  // Extract components — use slice() to create copies with their own ArrayBuffers,
+  // since subarray() shares the parent buffer and .buffer would return the entire thing
+  const salt = combined.slice(0, SALT_LENGTH);
+  const iv = combined.slice(SALT_LENGTH, SALT_LENGTH + IV_LENGTH);
+  const ciphertextWithTag = combined.slice(SALT_LENGTH + IV_LENGTH);
 
   const key = await deriveKey(salt);
 
