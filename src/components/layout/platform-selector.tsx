@@ -1,11 +1,13 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { Plus, Check } from 'lucide-react';
-import { useAuthStore, type Platform } from '@/store/auth-store';
-import { Button } from '@/components/ui/button';
+import { useAuthStore } from '@/store/auth-store';
 import { cn } from '@/lib/utils';
 import { ConnectPlatformModal } from './connect-platform-modal';
+import { switchPlatformRoute, type Platform } from '@/lib/utils/platform-routes';
+import { usePathname } from 'next/navigation';
 
 // Platform icons as SVG components
 function GooglePlayIcon({ className }: { className?: string }) {
@@ -31,7 +33,7 @@ interface PlatformItemProps {
   identifier: string | null;
   isConnected: boolean;
   isActive: boolean;
-  onSelect: () => void;
+  href: string;
   onConnect: () => void;
 }
 
@@ -42,7 +44,7 @@ function PlatformItem({
   identifier,
   isConnected,
   isActive,
-  onSelect,
+  href,
   onConnect,
 }: PlatformItemProps) {
   if (!isConnected) {
@@ -64,8 +66,8 @@ function PlatformItem({
   }
 
   return (
-    <button
-      onClick={onSelect}
+    <Link
+      href={href}
       className={cn(
         'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border-2 transition-colors text-left',
         isActive
@@ -88,12 +90,16 @@ function PlatformItem({
         </p>
       </div>
       {isActive && <Check className="h-4 w-4 text-primary flex-shrink-0" />}
-    </button>
+    </Link>
   );
 }
 
-export function PlatformSelector() {
-  const platform = useAuthStore((state) => state.platform);
+interface PlatformSelectorProps {
+  currentPlatform: Platform | null;
+}
+
+export function PlatformSelector({ currentPlatform }: PlatformSelectorProps) {
+  const pathname = usePathname();
   const isGoogleAuthenticated = useAuthStore(
     (state) => state.isGoogleAuthenticated
   );
@@ -102,7 +108,6 @@ export function PlatformSelector() {
   );
   const packageName = useAuthStore((state) => state.packageName);
   const bundleId = useAuthStore((state) => state.bundleId);
-  const setPlatform = useAuthStore((state) => state.setPlatform);
 
   const [connectModalOpen, setConnectModalOpen] = useState(false);
   const [connectPlatform, setConnectPlatform] = useState<'google' | 'apple'>(
@@ -113,6 +118,10 @@ export function PlatformSelector() {
     setConnectPlatform(p);
     setConnectModalOpen(true);
   };
+
+  // Generate navigation links that preserve the current route section
+  const googleHref = switchPlatformRoute(pathname, 'google');
+  const appleHref = switchPlatformRoute(pathname, 'apple');
 
   return (
     <>
@@ -128,8 +137,8 @@ export function PlatformSelector() {
             icon={GooglePlayIcon}
             identifier={packageName}
             isConnected={isGoogleAuthenticated}
-            isActive={platform === 'google'}
-            onSelect={() => setPlatform('google')}
+            isActive={currentPlatform === 'google'}
+            href={googleHref}
             onConnect={() => handleConnect('google')}
           />
 
@@ -139,8 +148,8 @@ export function PlatformSelector() {
             icon={AppleIcon}
             identifier={bundleId}
             isConnected={isAppleAuthenticated}
-            isActive={platform === 'apple'}
-            onSelect={() => setPlatform('apple')}
+            isActive={currentPlatform === 'apple'}
+            href={appleHref}
             onConnect={() => handleConnect('apple')}
           />
         </div>

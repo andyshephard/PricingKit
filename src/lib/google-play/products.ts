@@ -256,7 +256,11 @@ export function calculateNewPrice(
   currentPrice: Money,
   operation: { type: 'fixed' | 'percentage' | 'round'; value?: number; roundTo?: number }
 ): Money {
-  const currentAmount = parseFloat(currentPrice.units) + (currentPrice.nanos ? currentPrice.nanos / 1_000_000_000 : 0);
+  const parsedUnits = parseFloat(currentPrice.units);
+  if (isNaN(parsedUnits) || !Number.isFinite(parsedUnits)) {
+    throw new Error(`Invalid price units value: "${currentPrice.units}"`);
+  }
+  const currentAmount = parsedUnits + (currentPrice.nanos ? currentPrice.nanos / 1_000_000_000 : 0);
 
   let newAmount: number;
 
@@ -278,8 +282,14 @@ export function calculateNewPrice(
   // Ensure non-negative
   newAmount = Math.max(0, newAmount);
 
-  const units = Math.floor(newAmount);
-  const nanos = Math.round((newAmount - units) * 1_000_000_000);
+  let units = Math.floor(newAmount);
+  let nanos = Math.round((newAmount - units) * 1_000_000_000);
+
+  // Clamp nanos to valid range, carrying overflow into units
+  if (nanos > 999_999_999) {
+    units += Math.floor(nanos / 1_000_000_000);
+    nanos = nanos % 1_000_000_000;
+  }
 
   return {
     currencyCode: currentPrice.currencyCode,

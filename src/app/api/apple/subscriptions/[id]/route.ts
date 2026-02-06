@@ -3,18 +3,26 @@ import { z } from 'zod';
 import { getAppleAuthFromCookies } from '../../auth/route';
 import {
   getSubscription,
+  getSubscriptionById,
   getSubscriptionPrices,
   updateSubscriptionPrice,
   deleteSubscriptionPrice,
   AppleApiError,
 } from '@/lib/apple-connect';
+import { executeWithRateLimit, RateLimitError } from '@/lib/utils/rate-limit';
 import {
   validateAndDecodeAppleProductId,
   ValidationError,
   regionCodeSchema,
 } from '@/lib/validation';
 
+// Check if the ID is a numeric Apple subscription ID (e.g., "6746950587")
+function isNumericSubscriptionId(id: string): boolean {
+  return /^\d+$/.test(id);
+}
+
 // GET /api/apple/subscriptions/[id] - Get a single subscription with prices
+// Supports both numeric subscription ID (e.g., "6746950587") and productId (e.g., "com.example.subscription")
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -30,21 +38,28 @@ export async function GET(
 
     const { id } = await params;
 
-    // Validate and decode product ID
-    let productId: string;
-    try {
-      productId = validateAndDecodeAppleProductId(id);
-    } catch (error) {
-      if (error instanceof ValidationError) {
-        return NextResponse.json(
-          { error: error.message, details: error.details },
-          { status: 400 }
-        );
+    let subscription;
+
+    if (isNumericSubscriptionId(id)) {
+      // Fetch directly by Apple subscription ID
+      subscription = await getSubscriptionById(auth.credentials, id);
+    } else {
+      // Validate and decode product ID, then look up
+      let productId: string;
+      try {
+        productId = validateAndDecodeAppleProductId(id);
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          return NextResponse.json(
+            { error: error.message, details: error.details },
+            { status: 400 }
+          );
+        }
+        throw error;
       }
-      throw error;
+      subscription = await getSubscription(auth.credentials, productId);
     }
 
-    const subscription = await getSubscription(auth.credentials, productId);
     if (!subscription) {
       return NextResponse.json(
         { error: 'Subscription not found' },
@@ -53,8 +68,11 @@ export async function GET(
     }
 
     // Fetch prices for this subscription
-    const prices = await getSubscriptionPrices(auth.credentials, subscription.id);
-    subscription.prices = prices;
+    const pricesResult = await getSubscriptionPrices(auth.credentials, subscription.id);
+    subscription.prices = pricesResult.current;
+    subscription.scheduledPrices = Object.keys(pricesResult.scheduled).length > 0
+      ? pricesResult.scheduled
+      : undefined;
 
     return NextResponse.json({ subscription });
   } catch (error) {
@@ -86,6 +104,7 @@ const updatePriceSchema = z.object({
 });
 
 // PATCH /api/apple/subscriptions/[id] - Update subscription prices
+// Supports both numeric subscription ID and productId
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -101,21 +120,15 @@ export async function PATCH(
 
     const { id } = await params;
 
-    // Validate and decode product ID
-    let productId: string;
+    let body;
     try {
-      productId = validateAndDecodeAppleProductId(id);
-    } catch (error) {
-      if (error instanceof ValidationError) {
-        return NextResponse.json(
-          { error: error.message, details: error.details },
-          { status: 400 }
-        );
-      }
-      throw error;
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: 'Invalid JSON in request body' },
+        { status: 400 }
+      );
     }
-
-    const body = await request.json();
     const result = updatePriceSchema.safeParse(body);
 
     if (!result.success) {
@@ -125,8 +138,26 @@ export async function PATCH(
       );
     }
 
-    // Get the subscription to find its internal ID
-    const subscription = await getSubscription(auth.credentials, productId);
+    // Get the subscription (by ID or productId)
+    let subscription;
+    if (isNumericSubscriptionId(id)) {
+      subscription = await getSubscriptionById(auth.credentials, id);
+    } else {
+      let productId: string;
+      try {
+        productId = validateAndDecodeAppleProductId(id);
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          return NextResponse.json(
+            { error: error.message, details: error.details },
+            { status: 400 }
+          );
+        }
+        throw error;
+      }
+      subscription = await getSubscription(auth.credentials, productId);
+    }
+
     if (!subscription) {
       return NextResponse.json(
         { error: 'Subscription not found' },
@@ -134,11 +165,43 @@ export async function PATCH(
       );
     }
 
-    // Update prices for each territory
+    // Update prices for each territory with rate limiting to avoid overwhelming Apple's API
     const { prices } = result.data;
-    const updates = Object.entries(prices).map(
+    const priceEntries = Object.entries(prices);
+
+    // Fetch current scheduled prices to check for conflicts
+    // Apple only allows one scheduled (future) price per territory
+    const currentPricesResult = await getSubscriptionPrices(auth.credentials, subscription.id);
+    const scheduledPrices = currentPricesResult.scheduled;
+
+    // For each territory being updated with a future startDate, delete existing scheduled price first
+    const deleteTasks: (() => Promise<void>)[] = [];
+
+    for (const [territoryCode, { startDate }] of priceEntries) {
+      if (startDate && scheduledPrices[territoryCode]?.subscriptionPriceId) {
+        deleteTasks.push(() =>
+          deleteSubscriptionPrice(
+            auth.credentials,
+            scheduledPrices[territoryCode].subscriptionPriceId!
+          )
+        );
+      }
+    }
+
+    // Execute deletions first (rate-limited)
+    if (deleteTasks.length > 0) {
+      await executeWithRateLimit(deleteTasks, {
+        concurrency: 3,
+        delayBetweenBatches: 100,
+        maxRetries: 3,
+        retryDelay: 1000,
+      });
+    }
+
+    // Create task functions (not promises) for rate-limited execution
+    const createTasks = priceEntries.map(
       ([territoryCode, { pricePointId, startDate }]) =>
-        updateSubscriptionPrice(
+        () => updateSubscriptionPrice(
           auth.credentials,
           subscription.id,
           pricePointId,
@@ -147,15 +210,25 @@ export async function PATCH(
         )
     );
 
-    await Promise.all(updates);
+    // Execute with rate limiting: 3 concurrent requests, retry on 500 errors
+    await executeWithRateLimit(createTasks, {
+      concurrency: 3,
+      delayBetweenBatches: 100,
+      maxRetries: 3,
+      retryDelay: 1000,
+    });
 
-    // Fetch updated subscription
-    const updatedSubscription = await getSubscription(auth.credentials, productId);
+    // Fetch updated subscription by its ID
+    const updatedSubscription = await getSubscriptionById(auth.credentials, subscription.id);
     if (updatedSubscription) {
-      updatedSubscription.prices = await getSubscriptionPrices(
+      const updatedPricesResult = await getSubscriptionPrices(
         auth.credentials,
         updatedSubscription.id
       );
+      updatedSubscription.prices = updatedPricesResult.current;
+      updatedSubscription.scheduledPrices = Object.keys(updatedPricesResult.scheduled).length > 0
+        ? updatedPricesResult.scheduled
+        : undefined;
     }
 
     return NextResponse.json({
@@ -164,6 +237,27 @@ export async function PATCH(
     });
   } catch (error) {
     console.error('Error updating Apple subscription:', error);
+
+    // Handle rate limit errors with partial success information
+    if (error instanceof RateLimitError) {
+      const originalError = error.originalError;
+      const statusCode = originalError instanceof AppleApiError
+        ? originalError.statusCode
+        : 500;
+
+      return NextResponse.json(
+        {
+          error: `Failed to update prices: ${error.successCount} of ${error.totalCount} regions succeeded before failure`,
+          successCount: error.successCount,
+          totalCount: error.totalCount,
+          failedIndex: error.failedIndex,
+          originalError: originalError instanceof AppleApiError
+            ? originalError.detail
+            : originalError.message,
+        },
+        { status: statusCode }
+      );
+    }
 
     if (error instanceof AppleApiError) {
       return NextResponse.json(
@@ -198,7 +292,15 @@ export async function DELETE(
       );
     }
 
-    const body = await request.json();
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: 'Invalid JSON in request body' },
+        { status: 400 }
+      );
+    }
     const result = deletePriceSchema.safeParse(body);
 
     if (!result.success) {

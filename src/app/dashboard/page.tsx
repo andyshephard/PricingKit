@@ -1,168 +1,127 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
-import { Package, CreditCard } from 'lucide-react';
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Header } from '@/components/layout';
-import { useAuthStore, type Platform } from '@/store/auth-store';
+import { Store, ChevronRight } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { useAuthStore } from '@/store/auth-store';
 
-interface StatsResponse {
-  products: {
-    total: number;
-    active: number;
-  };
-  subscriptions: {
-    total: number;
-    activePlans: number;
-  };
+// Platform icons as SVG components
+function GooglePlayIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M3.609 1.814L13.792 12 3.61 22.186a.996.996 0 0 1-.61-.92V2.734a1 1 0 0 1 .609-.92zm10.89 10.893l2.302 2.302-10.937 6.333 8.635-8.635zm3.199-3.198l2.807 1.626a1 1 0 0 1 0 1.73l-2.808 1.626L15.206 12l2.492-2.491zM5.864 2.658L16.8 8.99l-2.302 2.302-8.634-8.634z" />
+    </svg>
+  );
 }
 
-function StatCard({
-  title,
-  value,
-  description,
-  icon: Icon,
-  href,
-  isLoading,
-}: {
-  title: string;
-  value: number | string;
-  description: string;
-  icon: React.ComponentType<{ className?: string }>;
-  href: string;
-  isLoading?: boolean;
-}) {
+function AppleIcon({ className }: { className?: string }) {
   return (
-    <Link href={href}>
-      <Card className="hover:border-primary/50 transition-colors cursor-pointer">
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium">{title}</CardTitle>
-          <Icon className="h-4 w-4 text-muted-foreground" />
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <Skeleton className="h-8 w-16" />
-          ) : (
-            <div className="text-2xl font-bold">{value}</div>
-          )}
-          <p className="text-xs text-muted-foreground">{description}</p>
-        </CardContent>
-      </Card>
-    </Link>
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z" />
+    </svg>
   );
 }
 
 export default function DashboardPage() {
-  const platform = useAuthStore((state) => state.platform);
+  const router = useRouter();
+  const isGoogleAuthenticated = useAuthStore((state) => state.isGoogleAuthenticated);
+  const isAppleAuthenticated = useAuthStore((state) => state.isAppleAuthenticated);
   const packageName = useAuthStore((state) => state.packageName);
   const bundleId = useAuthStore((state) => state.bundleId);
-  const appIdentifier = platform === 'google' ? packageName : bundleId;
 
-  const { data: stats, isLoading, refetch, isRefetching } = useQuery<StatsResponse>({
-    queryKey: ['stats', platform],
-    queryFn: async () => {
-      if (!platform) {
-        return {
-          products: { total: 0, active: 0 },
-          subscriptions: { total: 0, activePlans: 0 },
-        };
-      }
+  useEffect(() => {
+    // Auto-redirect based on authentication state
+    if (isGoogleAuthenticated && !isAppleAuthenticated) {
+      router.replace('/dashboard/google');
+    } else if (isAppleAuthenticated && !isGoogleAuthenticated) {
+      router.replace('/dashboard/apple');
+    }
+    // If both or neither are authenticated, show the selector
+  }, [isGoogleAuthenticated, isAppleAuthenticated, router]);
 
-      // Use platform-specific API endpoints
-      const productsUrl = platform === 'google' ? '/api/products' : '/api/apple/products';
-      const subscriptionsUrl = platform === 'google' ? '/api/subscriptions' : '/api/apple/subscriptions';
+  // If only one platform is authenticated, we'll redirect (handled by useEffect above)
+  // Show nothing while redirecting to avoid flash
+  if ((isGoogleAuthenticated && !isAppleAuthenticated) || (isAppleAuthenticated && !isGoogleAuthenticated)) {
+    return null;
+  }
 
-      const [productsRes, subscriptionsRes] = await Promise.all([
-        fetch(productsUrl),
-        fetch(subscriptionsUrl),
-      ]);
+  // If neither is authenticated, redirect to home
+  if (!isGoogleAuthenticated && !isAppleAuthenticated) {
+    router.replace('/');
+    return null;
+  }
 
-      console.log('[Dashboard] Products response status:', productsRes.status);
-      console.log('[Dashboard] Subscriptions response status:', subscriptionsRes.status);
-
-      const products = productsRes.ok ? await productsRes.json() : { products: [] };
-      const subscriptions = subscriptionsRes.ok
-        ? await subscriptionsRes.json()
-        : { subscriptions: [] };
-
-      console.log('[Dashboard] Products data:', products);
-      console.log('[Dashboard] Subscriptions data:', subscriptions);
-
-      let activeProducts = 0;
-      let activePlans = 0;
-
-      if (platform === 'google') {
-        activeProducts = products.products?.filter(
-          (p: { status: string }) => p.status === 'active'
-        ).length || 0;
-
-        activePlans = subscriptions.subscriptions?.reduce(
-          (acc: number, sub: { basePlans?: { state: string }[] }) =>
-            acc + (sub.basePlans?.filter((bp) => bp.state?.toLowerCase() === 'active').length || 0),
-          0
-        ) || 0;
-      } else {
-        // Apple uses different status names
-        activeProducts = products.products?.filter(
-          (p: { state: string }) => p.state === 'APPROVED' || p.state === 'READY_TO_SUBMIT'
-        ).length || 0;
-
-        activePlans = subscriptions.subscriptions?.filter(
-          (sub: { state: string }) => sub.state === 'APPROVED' || sub.state === 'READY_TO_SUBMIT'
-        ).length || 0;
-      }
-
-      return {
-        products: {
-          total: products.products?.length || 0,
-          active: activeProducts,
-        },
-        subscriptions: {
-          total: subscriptions.subscriptions?.length || 0,
-          activePlans,
-        },
-      };
-    },
-    enabled: !!platform,
-  });
-
+  // Both platforms are authenticated - show the platform selector
   return (
     <div className="flex flex-col h-full">
-      <Header
-        onRefresh={() => refetch()}
-        isRefreshing={isRefetching}
-        showSearch={false}
-      />
-
-      <div className="flex-1 p-6 space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold">Dashboard</h1>
-          <p className="text-muted-foreground">
-            Overview for <span className="font-mono">{appIdentifier}</span>
-          </p>
+      <div className="flex h-14 items-center border-b px-6">
+        <div className="flex items-center gap-2">
+          <Store className="h-6 w-6 text-primary" />
+          <span className="font-semibold">PricingKit</span>
         </div>
+      </div>
 
-        <div className="grid gap-4 md:grid-cols-2">
-          <StatCard
-            title="In-App Products"
-            value={stats?.products.total ?? 0}
-            description={`${stats?.products.active ?? 0} active`}
-            icon={Package}
-            href="/dashboard/products"
-            isLoading={isLoading}
-          />
-          <StatCard
-            title="Subscriptions"
-            value={stats?.subscriptions.total ?? 0}
-            description={`${stats?.subscriptions.activePlans ?? 0} active base plans`}
-            icon={CreditCard}
-            href="/dashboard/subscriptions"
-            isLoading={isLoading}
-          />
+      <div className="flex-1 flex items-center justify-center p-6">
+        <div className="max-w-2xl w-full space-y-6">
+          <div className="text-center">
+            <h1 className="text-3xl font-bold">Select Platform</h1>
+            <p className="text-muted-foreground mt-2">
+              Choose which platform dashboard you&apos;d like to manage
+            </p>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <Link href="/dashboard/google">
+              <Card className="hover:border-primary/50 transition-colors cursor-pointer h-full">
+                <CardHeader>
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center">
+                      <GooglePlayIcon className="h-6 w-6 text-primary" />
+                    </div>
+                    <div className="flex-1">
+                      <CardTitle className="text-lg">Google Play</CardTitle>
+                      <CardDescription className="font-mono text-xs">
+                        {packageName}
+                      </CardDescription>
+                    </div>
+                    <ChevronRight className="h-5 w-5 text-muted-foreground" />
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm text-muted-foreground">
+                    Manage in-app products and subscriptions for the Google Play Store
+                  </p>
+                </CardContent>
+              </Card>
+            </Link>
+
+            <Link href="/dashboard/apple">
+              <Card className="hover:border-primary/50 transition-colors cursor-pointer h-full">
+                <CardHeader>
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center">
+                      <AppleIcon className="h-6 w-6 text-primary" />
+                    </div>
+                    <div className="flex-1">
+                      <CardTitle className="text-lg">App Store</CardTitle>
+                      <CardDescription className="font-mono text-xs">
+                        {bundleId}
+                      </CardDescription>
+                    </div>
+                    <ChevronRight className="h-5 w-5 text-muted-foreground" />
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm text-muted-foreground">
+                    Manage in-app purchases and subscriptions for the Apple App Store
+                  </p>
+                </CardContent>
+              </Card>
+            </Link>
+          </div>
         </div>
-
       </div>
     </div>
   );

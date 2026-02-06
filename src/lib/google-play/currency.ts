@@ -51,7 +51,12 @@ function getExchangeRate(
     return dynamicRates.rates[currencyCode];
   }
   // Fall back to static rates
-  return FALLBACK_EXCHANGE_RATES[currencyCode] || 1.0;
+  const fallbackRate = FALLBACK_EXCHANGE_RATES[currencyCode];
+  if (fallbackRate === undefined) {
+    console.warn(`[Currency] No exchange rate found for ${currencyCode}, defaulting to 1.0 (USD parity)`);
+    return 1.0;
+  }
+  return fallbackRate;
 }
 
 

@@ -132,7 +132,15 @@ export async function PATCH(
       throw error;
     }
 
-    const body = await request.json();
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: 'Invalid JSON in request body' },
+        { status: 400 }
+      );
+    }
     const result = updatePriceSchema.safeParse(body);
 
     if (!result.success) {
@@ -186,8 +194,6 @@ export async function PATCH(
         );
       }
 
-      console.log(`[Apple PATCH] Processing PPP prices for ${Object.keys(moneyPrices).length} territories`);
-
       // Resolve all PPP prices to price points (batched parallel requests)
       const result: PPPResolutionResult = await resolvePPPPricesToPricePoints(
         auth.credentials,
@@ -207,11 +213,6 @@ export async function PATCH(
         );
       }
 
-      if (result.skipped.length > 0) {
-        console.warn(`[Apple PATCH] Skipped ${result.skipped.length} territories:`, result.skipped);
-      }
-
-      console.log(`[Apple PATCH] Resolved ${result.resolved.length} price points, sending to Apple API`);
 
       // Update all prices at once
       await updateInAppPurchasePrices(
@@ -222,7 +223,6 @@ export async function PATCH(
       );
 
       updatedCount = result.resolved.length;
-      console.log(`[Apple PATCH] Successfully updated ${result.resolved.length} manual prices`);
     } else {
       // Direct pricePointId format - update each territory
       const updates: Promise<void>[] = [];

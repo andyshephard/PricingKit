@@ -15,7 +15,15 @@ const COOKIE_MAX_AGE = 24 * 60 * 60; // 24 hours
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: 'Invalid JSON in request body' },
+        { status: 400 }
+      );
+    }
     const { privateKey, keyId, issuerId, bundleId } = body;
 
     if (!privateKey || !keyId || !issuerId || !bundleId) {
@@ -49,7 +57,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Create session and store session ID in cookie
-    const sessionId = createAppleSession(credentials);
+    const sessionId = await createAppleSession(credentials);
 
     const cookieStore = await cookies();
 
@@ -93,7 +101,7 @@ export async function GET() {
       return NextResponse.json({ authenticated: false });
     }
 
-    const credentials = getAppleSessionCredentials(sessionId);
+    const credentials = await getAppleSessionCredentials(sessionId);
     if (!credentials) {
       return NextResponse.json({ authenticated: false });
     }
@@ -118,7 +126,7 @@ export async function DELETE() {
 
     // Delete the session
     if (sessionId) {
-      deleteAppleSession(sessionId);
+      await deleteAppleSession(sessionId);
     }
 
     cookieStore.delete(SESSION_COOKIE);
@@ -146,7 +154,7 @@ export async function getAppleAuthFromCookies(): Promise<{
     return null;
   }
 
-  const credentials = getAppleSessionCredentials(sessionId);
+  const credentials = await getAppleSessionCredentials(sessionId);
   if (!credentials) {
     return null;
   }

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Pricing.io is a Next.js application for managing in-app product and subscription pricing across Google Play Store and Apple App Store. It enables developers to view, edit, and bulk-update pricing by region with currency conversion and PPP (Purchasing Power Parity) adjustment support.
+PricingKit is a Next.js application for managing in-app product and subscription pricing across Google Play Store and Apple App Store. It enables developers to view, edit, and bulk-update pricing by region with currency conversion and PPP (Purchasing Power Parity) adjustment support.
 
 ## Commands
 

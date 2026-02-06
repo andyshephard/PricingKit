@@ -122,7 +122,15 @@ export async function PATCH(
       throw error;
     }
 
-    const body = await request.json();
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: 'Invalid JSON in request body' },
+        { status: 400 }
+      );
+    }
 
     const result = updateBasePlanSchema.safeParse(body);
     if (!result.success) {
@@ -190,7 +198,15 @@ export async function DELETE(
       throw error;
     }
 
-    const body = await request.json();
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: 'Invalid JSON in request body' },
+        { status: 400 }
+      );
+    }
 
     const result = deleteRegionSchema.safeParse(body);
     if (!result.success) {
@@ -213,6 +229,19 @@ export async function DELETE(
   } catch (error: unknown) {
     console.error('Region price delete error:', error);
     const err = error as { code?: number; message?: string };
+
+    if (err.code === 401) {
+      return NextResponse.json(
+        { error: 'Authentication expired. Please reconnect.' },
+        { status: 401 }
+      );
+    }
+    if (err.code === 404) {
+      return NextResponse.json(
+        { error: 'Subscription or region not found' },
+        { status: 404 }
+      );
+    }
 
     return NextResponse.json(
       { error: err.message || 'Failed to delete region price' },

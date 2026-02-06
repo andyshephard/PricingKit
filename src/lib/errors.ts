@@ -1,5 +1,5 @@
 /**
- * Standardized Error Classes for Pricing.io
+ * Standardized Error Classes for PricingKit
  *
  * These error classes provide consistent error handling across the application
  * with proper HTTP status codes and structured error information.
@@ -76,25 +76,11 @@ export class NotFoundError extends AppError {
 
 /**
  * Validation error (400).
- * Thrown when request data fails validation.
+ * NOTE: Use ValidationError from '@/lib/validation' instead.
+ * This re-export ensures backward compatibility.
  */
-export class ValidationError extends AppError {
-  constructor(
-    message: string = 'Invalid request data',
-    public validationErrors?: Array<{ path?: string; message: string }>
-  ) {
-    super(message, 400, 'VALIDATION_ERROR', validationErrors);
-    this.name = 'ValidationError';
-  }
-
-  override toJSON() {
-    return {
-      error: this.message,
-      code: this.code,
-      details: this.validationErrors,
-    };
-  }
-}
+// ValidationError is defined in src/lib/validation.ts to co-locate with Zod schemas.
+// Import it from there: import { ValidationError } from '@/lib/validation';
 
 /**
  * Rate limit error (429).

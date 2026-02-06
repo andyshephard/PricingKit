@@ -1,4 +1,6 @@
-# Pricing.io - App/Play Store Pricing Manager
+# PricingKit - App/Play Store Pricing Manager
+
+![PricingKit Banner](public/banner.webp)
 
 A Next.js webapp for managing in-app product and subscription pricing across **Google Play Store** and **Apple App Store**.
 
@@ -101,3 +103,9 @@ OPEN_EXCHANGE_RATES_APP_ID=your-api-key
 This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
 
 This means you are free to use, modify, and distribute this software, but any derivative works must also be open-sourced under GPL-3.0.
+
+## Support
+
+PricingKit is free and always will be. If you find it useful, consider buying me a coffee!
+
+<a href="https://www.buymeacoffee.com/andyshephard" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>

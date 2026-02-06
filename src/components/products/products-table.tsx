@@ -30,7 +30,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import type { InAppProduct } from '@/lib/google-play/types';
 import { formatMoney } from '@/lib/google-play/types';
-import { useAuthStore } from '@/store/auth-store';
+import { getProductDetailRoute, type Platform } from '@/lib/utils/platform-routes';
 
 type SortField = 'sku' | 'status' | 'price' | 'regions' | 'type';
 type SortOrder = 'asc' | 'desc';
@@ -41,6 +41,7 @@ interface ProductsTableProps {
   selectedSkus: string[];
   onSelectionChange: (skus: string[]) => void;
   searchQuery: string;
+  platform: Platform;
 }
 
 function getProductTitle(product: InAppProduct): string {
@@ -72,8 +73,8 @@ export function ProductsTable({
   selectedSkus,
   onSelectionChange,
   searchQuery,
+  platform,
 }: ProductsTableProps) {
-  const platform = useAuthStore((state) => state.platform);
   const [sortField, setSortField] = useState<SortField>('sku');
   const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
 
@@ -209,101 +210,107 @@ export function ProductsTable({
                 <SortIcon field="status" />
               </Button>
             </TableHead>
-            <TableHead>
-              <Button
-                variant="ghost"
-                className="h-auto p-0 font-semibold hover:bg-transparent"
-                onClick={() => handleSort('price')}
-              >
-                Base Price{products[0]?.defaultPrice?.currencyCode ? ` (${products[0].defaultPrice.currencyCode})` : ''}
-                <SortIcon field="price" />
-              </Button>
-            </TableHead>
-            <TableHead>
-              <Button
-                variant="ghost"
-                className="h-auto p-0 font-semibold hover:bg-transparent"
-                onClick={() => handleSort('regions')}
-              >
-                Regions
-                <SortIcon field="regions" />
-              </Button>
-            </TableHead>
+            {platform !== 'apple' && (
+              <TableHead>
+                <Button
+                  variant="ghost"
+                  className="h-auto p-0 font-semibold hover:bg-transparent"
+                  onClick={() => handleSort('price')}
+                >
+                  Base Price{products[0]?.defaultPrice?.currencyCode ? ` (${products[0].defaultPrice.currencyCode})` : ''}
+                  <SortIcon field="price" />
+                </Button>
+              </TableHead>
+            )}
+            {platform !== 'apple' && (
+              <TableHead>
+                <Button
+                  variant="ghost"
+                  className="h-auto p-0 font-semibold hover:bg-transparent"
+                  onClick={() => handleSort('regions')}
+                >
+                  Regions
+                  <SortIcon field="regions" />
+                </Button>
+              </TableHead>
+            )}
             <TableHead className="w-12"></TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {sortedProducts.map((product) => (
-            <TableRow
-              key={product.sku}
-              className={
-                selectedSkus.includes(product.sku) ? 'bg-muted/50' : ''
-              }
-            >
-              <TableCell>
-                <Checkbox
-                  checked={selectedSkus.includes(product.sku)}
-                  onCheckedChange={() => handleSelectOne(product.sku)}
-                  aria-label={`Select ${product.sku}`}
-                />
-              </TableCell>
-              <TableCell>
-                <Link
-                  href={`/dashboard/products/${encodeURIComponent(product.sku)}`}
-                  className="hover:underline"
-                >
-                  <div className="font-medium">{getProductTitle(product)}</div>
-                  <div className="text-sm text-muted-foreground font-mono">
-                    {product.sku}
-                  </div>
-                </Link>
-              </TableCell>
-              <TableCell>
-                <Badge
-                  variant={product.status === 'active' ? 'default' : 'secondary'}
-                >
-                  {product.status}
-                </Badge>
-              </TableCell>
-              <TableCell>
-                {product.defaultPrice && product.defaultPrice.units !== '0' ? (
-                  formatMoney(product.defaultPrice)
-                ) : (
-                  <span className="text-muted-foreground">—</span>
+          {sortedProducts.map((product) => {
+            const detailHref = getProductDetailRoute(platform, product.sku);
+
+            return (
+              <TableRow
+                key={product.sku}
+                className={
+                  selectedSkus.includes(product.sku) ? 'bg-muted/50' : ''
+                }
+              >
+                <TableCell>
+                  <Checkbox
+                    checked={selectedSkus.includes(product.sku)}
+                    onCheckedChange={() => handleSelectOne(product.sku)}
+                    aria-label={`Select ${product.sku}`}
+                  />
+                </TableCell>
+                <TableCell>
+                  <Link
+                    href={detailHref}
+                    className="hover:underline"
+                  >
+                    <div className="font-medium">{getProductTitle(product)}</div>
+                    <div className="text-sm text-muted-foreground font-mono">
+                      {product.sku}
+                    </div>
+                  </Link>
+                </TableCell>
+                <TableCell>
+                  <Badge
+                    variant={product.status === 'active' ? 'default' : 'secondary'}
+                  >
+                    {product.status}
+                  </Badge>
+                </TableCell>
+                {platform !== 'apple' && (
+                  <TableCell>
+                    {product.defaultPrice && product.defaultPrice.units !== '0' ? (
+                      formatMoney(product.defaultPrice)
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
                 )}
-              </TableCell>
-              <TableCell>
-                {platform === 'apple' ? (
-                  <span className="text-muted-foreground">—</span>
-                ) : (
-                  <div className="flex items-center gap-1">
-                    <Globe className="h-4 w-4 text-muted-foreground" />
-                    <span>{getRegionCount(product)}</span>
-                  </div>
+                {platform !== 'apple' && (
+                  <TableCell>
+                    <div className="flex items-center gap-1">
+                      <Globe className="h-4 w-4 text-muted-foreground" />
+                      <span>{getRegionCount(product)}</span>
+                    </div>
+                  </TableCell>
                 )}
-              </TableCell>
-              <TableCell>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon">
-                      <MoreHorizontal className="h-4 w-4" />
-                      <span className="sr-only">Actions</span>
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem asChild>
-                      <Link
-                        href={`/dashboard/products/${encodeURIComponent(product.sku)}`}
-                      >
-                        <Edit className="mr-2 h-4 w-4" />
-                        Edit Pricing
-                      </Link>
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </TableCell>
-            </TableRow>
-          ))}
+                <TableCell>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon">
+                        <MoreHorizontal className="h-4 w-4" />
+                        <span className="sr-only">Actions</span>
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem asChild>
+                        <Link href={detailHref}>
+                          <Edit className="mr-2 h-4 w-4" />
+                          Edit Pricing
+                        </Link>
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </TableCell>
+              </TableRow>
+            );
+          })}
         </TableBody>
       </Table>
     </div>

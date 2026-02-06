@@ -49,9 +49,11 @@ export {
   listSubscriptionGroups,
   listSubscriptions,
   getSubscription,
+  getSubscriptionById,
   getSubscriptionPrices,
   getSubscriptionPricePoints,
   updateSubscriptionPrice,
   deleteSubscriptionPrice,
   formatSubscriptionPeriod,
+  type SubscriptionPricesResult,
 } from './subscriptions';

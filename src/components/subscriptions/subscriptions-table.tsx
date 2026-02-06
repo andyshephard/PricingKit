@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import { useState, useMemo, Fragment } from 'react';
 import Link from 'next/link';
 import {
   ChevronDown,
@@ -28,33 +28,37 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { Subscription, BasePlan, Money } from '@/lib/google-play/types';
 import { formatMoney } from '@/lib/google-play/types';
-import { useAuthStore } from '@/store/auth-store';
+import { getSubscriptionDetailRoute, type Platform } from '@/lib/utils/platform-routes';
 
 type SortField = 'productId' | 'basePlans' | 'status';
 type SortOrder = 'asc' | 'desc';
 type StatusFilter = 'all' | 'active' | 'inactive';
 
+// Type for the Apple-specific data attached to normalized subscriptions
+interface AppleSubscriptionData {
+  id?: string;
+  state?: string;
+  period?: string;
+  basePrice?: { customerPrice?: string; currency?: string };
+  prices?: Record<string, unknown>;
+}
+
+// Safely extract Apple subscription data from a normalized subscription
+function getAppleSubscriptionData(subscription: Subscription): AppleSubscriptionData | undefined {
+  const data = (subscription as unknown as Record<string, unknown>)._appleSubscription;
+  return data && typeof data === 'object' ? data as AppleSubscriptionData : undefined;
+}
+
 // Check if a subscription is active (works for both Google and Apple)
-function isSubscriptionActive(subscription: Subscription, platform: string | null): boolean {
+function isSubscriptionActive(subscription: Subscription, platform: Platform): boolean {
   if (platform === 'apple') {
-    const appleSub = (subscription as { _appleSubscription?: { state?: string } })._appleSubscription;
-    const state = appleSub?.state || '';
+    const state = getAppleSubscriptionData(subscription)?.state || '';
     return state === 'APPROVED' || state === 'READY_TO_SUBMIT';
   }
   // Google: check if any base plans are active
-  return subscription.basePlans?.some((bp) => bp.state?.toLowerCase() === 'active') || false;
-}
-
-// Legacy function for backward compatibility
-function hasActiveBasePlans(subscription: Subscription): boolean {
   return subscription.basePlans?.some((bp) => bp.state?.toLowerCase() === 'active') || false;
 }
 
@@ -64,6 +68,7 @@ interface SubscriptionsTableProps {
   selectedIds: string[];
   onSelectionChange: (ids: string[]) => void;
   searchQuery: string;
+  platform: Platform;
 }
 
 function getSubscriptionTitle(subscription: Subscription): string {
@@ -138,14 +143,43 @@ function formatApplePeriod(period: string): string {
 
 // Get Apple subscription period from normalized data
 function getApplePeriod(subscription: Subscription): string {
-  const appleSub = (subscription as { _appleSubscription?: { period?: string } })._appleSubscription;
-  return appleSub?.period || '';
+  return getAppleSubscriptionData(subscription)?.period || '';
 }
 
 // Get Apple subscription status
 function getAppleStatus(subscription: Subscription): string {
-  const appleSub = (subscription as { _appleSubscription?: { state?: string } })._appleSubscription;
-  return appleSub?.state || 'unknown';
+  return getAppleSubscriptionData(subscription)?.state || 'unknown';
+}
+
+// Get Apple base price (from normalized _appleSubscription data)
+function getAppleBasePrice(subscription: Subscription): { price: string; currency: string } | null {
+  const basePrice = getAppleSubscriptionData(subscription)?.basePrice;
+  if (basePrice?.customerPrice) {
+    return {
+      price: basePrice.customerPrice,
+      currency: basePrice.currency || 'USD',
+    };
+  }
+  return null;
+}
+
+// Get Apple total regions count
+function getAppleTotalRegions(subscription: Subscription): number {
+  const prices = getAppleSubscriptionData(subscription)?.prices;
+  return prices ? Object.keys(prices).length : 0;
+}
+
+// Format Apple price for display
+function formatApplePriceDisplay(price: string, currency: string): string {
+  const amount = parseFloat(price);
+  try {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency,
+    }).format(amount);
+  } catch {
+    return `${currency} ${price}`;
+  }
 }
 
 // Format Apple status for display
@@ -196,32 +230,14 @@ function BasePlanRow({ basePlan }: { basePlan: BasePlan }) {
   );
 }
 
-// Custom Collapsible using shadcn primitives
-function CollapsibleWrapper({
-  children,
-  trigger,
-}: {
-  children: React.ReactNode;
-  trigger: React.ReactNode;
-}) {
-  const [isOpen, setIsOpen] = useState(false);
-
-  return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <CollapsibleTrigger asChild>{trigger}</CollapsibleTrigger>
-      <CollapsibleContent>{children}</CollapsibleContent>
-    </Collapsible>
-  );
-}
-
 export function SubscriptionsTable({
   subscriptions,
   isLoading,
   selectedIds,
   onSelectionChange,
   searchQuery,
+  platform,
 }: SubscriptionsTableProps) {
-  const platform = useAuthStore((state) => state.platform);
   const [sortField, setSortField] = useState<SortField>('productId');
   const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
@@ -460,16 +476,6 @@ export function SubscriptionsTable({
                     <SortIcon field="status" />
                   </Button>
                 </TableHead>
-                <TableHead>
-                  {(() => {
-                    // Get base price currency from first subscription's basePlans regionalConfigs
-                    const firstSubWithPrice = subscriptions.find(s =>
-                      s.basePlans?.[0]?.regionalConfigs?.[0]?.price?.currencyCode
-                    );
-                    const currency = firstSubWithPrice?.basePlans?.[0]?.regionalConfigs?.[0]?.price?.currencyCode;
-                    return `Base Price${currency ? ` (${currency})` : ''}`;
-                  })()}
-                </TableHead>
               </>
             )}
             <TableHead className="w-12"></TableHead>
@@ -478,9 +484,13 @@ export function SubscriptionsTable({
         <TableBody>
           {sortedSubscriptions.map((subscription) => {
             const isExpanded = expandedRows.has(subscription.productId);
+            // For Apple, use the internal subscription ID; for Google, use productId
+            const appleId = getAppleSubscriptionData(subscription)?.id;
+            const routeId = platform === 'apple' && appleId ? appleId : subscription.productId;
+            const detailHref = getSubscriptionDetailRoute(platform, routeId);
 
             return (
-              <React.Fragment key={subscription.productId}>
+              <Fragment key={subscription.productId}>
                 <TableRow
                   className={
                     selectedIds.includes(subscription.productId)
@@ -515,9 +525,7 @@ export function SubscriptionsTable({
                   )}
                   <TableCell>
                     <Link
-                      href={`/dashboard/subscriptions/${encodeURIComponent(
-                        subscription.productId
-                      )}`}
+                      href={detailHref}
                       className="hover:underline"
                     >
                       <div className="font-medium">
@@ -562,24 +570,9 @@ export function SubscriptionsTable({
                         </span>
                       </TableCell>
                       <TableCell>
-                        {(() => {
-                          const status = formatAppleStatus(getAppleStatus(subscription));
-                          return <Badge variant={status.variant}>{status.label}</Badge>;
-                        })()}
-                      </TableCell>
-                      <TableCell>
-                        {(() => {
-                          // Try to get price from basePlans regionalConfigs (which we set up in the hook)
-                          const regionalConfig = subscription.basePlans?.[0]?.regionalConfigs?.[0];
-                          if (regionalConfig?.price) {
-                            return (
-                              <span className="font-medium">
-                                {formatMoney(regionalConfig.price)}
-                              </span>
-                            );
-                          }
-                          return <span className="text-muted-foreground">—</span>;
-                        })()}
+                        <Badge variant={isSubscriptionActive(subscription, 'apple') ? 'default' : 'secondary'}>
+                          {isSubscriptionActive(subscription, 'apple') ? 'active' : 'inactive'}
+                        </Badge>
                       </TableCell>
                     </>
                   )}
@@ -593,11 +586,7 @@ export function SubscriptionsTable({
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem asChild>
-                          <Link
-                            href={`/dashboard/subscriptions/${encodeURIComponent(
-                              subscription.productId
-                            )}`}
-                          >
+                          <Link href={detailHref}>
                             <Edit className="mr-2 h-4 w-4" />
                             Edit Pricing
                           </Link>
@@ -620,7 +609,7 @@ export function SubscriptionsTable({
                     </TableCell>
                   </TableRow>
                 )}
-              </React.Fragment>
+              </Fragment>
             );
           })}
         </TableBody>

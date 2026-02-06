@@ -395,6 +395,8 @@ export interface AppleProductPrice {
   customerPrice: string;
   proceeds: string;
   pricePointId: string;
+  startDate?: string; // ISO 8601 date string (null/undefined = current price)
+  subscriptionPriceId?: string; // The subscription price ID needed for deletion
 }
 
 export interface NormalizedAppleSubscription {
@@ -406,6 +408,7 @@ export interface NormalizedAppleSubscription {
   groupId: string;
   groupName: string;
   prices: Record<string, AppleProductPrice>;
+  scheduledPrices?: Record<string, AppleProductPrice>; // Future scheduled prices by territory
   localizations: Record<string, { name: string; description?: string }>;
 }
 

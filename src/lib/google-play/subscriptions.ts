@@ -314,7 +314,11 @@ export function calculateNewBasePlanPrice(
   currentConfig: RegionalBasePlanConfig,
   operation: { type: 'fixed' | 'percentage' | 'round'; value?: number; roundTo?: number }
 ): RegionalBasePlanConfig {
-  const currentAmount = parseFloat(currentConfig.price.units) +
+  const parsedUnits = parseFloat(currentConfig.price.units);
+  if (isNaN(parsedUnits) || !Number.isFinite(parsedUnits)) {
+    throw new Error(`Invalid price units value: "${currentConfig.price.units}"`);
+  }
+  const currentAmount = parsedUnits +
     (currentConfig.price.nanos ? currentConfig.price.nanos / 1_000_000_000 : 0);
 
   let newAmount: number;
@@ -336,8 +340,14 @@ export function calculateNewBasePlanPrice(
 
   newAmount = Math.max(0, newAmount);
 
-  const units = Math.floor(newAmount);
-  const nanos = Math.round((newAmount - units) * 1_000_000_000);
+  let units = Math.floor(newAmount);
+  let nanos = Math.round((newAmount - units) * 1_000_000_000);
+
+  // Clamp nanos to valid range, carrying overflow into units
+  if (nanos > 999_999_999) {
+    units += Math.floor(nanos / 1_000_000_000);
+    nanos = nanos % 1_000_000_000;
+  }
 
   const newPrice: Money = {
     currencyCode: currentConfig.price.currencyCode,

@@ -75,6 +75,7 @@ export function validateServiceAccountJson(json: unknown): json is ServiceAccoun
 // File-based session store for credentials
 // Persists across server restarts in development
 import fs from 'fs';
+import fsPromises from 'fs/promises';
 import path from 'path';
 import { encrypt, decrypt, isEncryptionAvailable } from '../encryption';
 
@@ -106,31 +107,34 @@ function isEncryptedSession(session: Session | EncryptedSession): session is Enc
 }
 
 // Load sessions from file with caching
-function loadSessions(): SessionStore {
+async function loadSessions(): Promise<SessionStore> {
   const now = Date.now();
   if (sessionCache && now - cacheLoadedAt < CACHE_TTL) {
     return sessionCache;
   }
 
   try {
-    if (fs.existsSync(SESSION_FILE)) {
-      const data = fs.readFileSync(SESSION_FILE, 'utf-8');
-      sessionCache = JSON.parse(data);
-      cacheLoadedAt = now;
-      return sessionCache!;
-    }
+    const data = await fsPromises.readFile(SESSION_FILE, 'utf-8');
+    sessionCache = JSON.parse(data);
+    cacheLoadedAt = now;
+    return sessionCache!;
   } catch (error) {
-    console.error('Error loading sessions:', error);
+    // File doesn't exist or parse error - start fresh
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.error('Error loading sessions:', error);
+    }
   }
   sessionCache = {};
   cacheLoadedAt = now;
   return {};
 }
 
-// Save sessions to file and update cache
+// Save sessions to file and update cache (atomic write via temp file + rename)
 function saveSessions(sessions: SessionStore): void {
   try {
-    fs.writeFileSync(SESSION_FILE, JSON.stringify(sessions, null, 2));
+    const tmpFile = `${SESSION_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tmpFile, JSON.stringify(sessions, null, 2));
+    fs.renameSync(tmpFile, SESSION_FILE);
     sessionCache = sessions;
     cacheLoadedAt = Date.now();
   } catch (error) {
@@ -163,8 +167,8 @@ function generateSessionId(): string {
   return Array.from(array, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export function createSession(credentials: ServiceAccountCredentials): string {
-  let sessions = loadSessions();
+export async function createSession(credentials: ServiceAccountCredentials): Promise<string> {
+  let sessions = await loadSessions();
   sessions = cleanupExpiredSessions(sessions);
 
   const sessionId = generateSessionId();
@@ -175,8 +179,10 @@ export function createSession(credentials: ServiceAccountCredentials): string {
       encryptedCredentials: encrypt(JSON.stringify(credentials)),
       createdAt: Date.now(),
     };
+  } else if (process.env.NODE_ENV === 'production') {
+    throw new Error('ENCRYPTION_KEY environment variable is required in production. Set it to a 32+ character random string.');
   } else {
-    console.warn('Warning: ENCRYPTION_KEY not set. Credentials will be stored in plaintext.');
+    console.warn('Warning: ENCRYPTION_KEY not set. Credentials stored in plaintext (development only).');
     sessions[sessionId] = {
       credentials,
       createdAt: Date.now(),
@@ -187,8 +193,8 @@ export function createSession(credentials: ServiceAccountCredentials): string {
   return sessionId;
 }
 
-export function getSessionCredentials(sessionId: string): ServiceAccountCredentials | null {
-  const sessions = loadSessions();
+export async function getSessionCredentials(sessionId: string): Promise<ServiceAccountCredentials | null> {
+  const sessions = await loadSessions();
   const session = sessions[sessionId];
 
   if (!session) {
@@ -215,8 +221,8 @@ export function getSessionCredentials(sessionId: string): ServiceAccountCredenti
   return session.credentials;
 }
 
-export function deleteSession(sessionId: string): void {
-  const sessions = loadSessions();
+export async function deleteSession(sessionId: string): Promise<void> {
+  const sessions = await loadSessions();
   delete sessions[sessionId];
   saveSessions(sessions);
 }

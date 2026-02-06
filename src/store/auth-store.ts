@@ -30,6 +30,7 @@ interface AuthState {
   bundleId: string | null;
   keyId: string | null;
   issuerId: string | null;
+  appleBaseCountry: string;
 
   // Legacy compatibility - returns true if any platform is authenticated
   isAuthenticated: boolean;
@@ -41,6 +42,7 @@ interface AuthState {
   clearGoogleAuth: () => void;
   clearAppleAuth: () => void;
   clearAuth: () => void;
+  setAppleBaseCountry: (country: string) => void;
 
   // Legacy compatibility
   setAuthenticated: (packageName: string, projectId: string, clientEmail: string) => void;
@@ -63,6 +65,7 @@ export const useAuthStore = create<AuthState>()(
       bundleId: null,
       keyId: null,
       issuerId: null,
+      appleBaseCountry: 'US',
 
       // Legacy compatibility - computed in each action
       isAuthenticated: false,
@@ -149,6 +152,9 @@ export const useAuthStore = create<AuthState>()(
           clientEmail,
           platform: state.platform ?? 'google',
         })),
+
+      // Set Apple base country for price display
+      setAppleBaseCountry: (country) => set({ appleBaseCountry: country }),
     }),
     {
       name: 'auth-storage',

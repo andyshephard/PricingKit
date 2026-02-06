@@ -2,7 +2,8 @@
 
 import { use } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Package } from 'lucide-react';
+import { ArrowLeft, Loader2, Package } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -10,9 +11,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Header } from '@/components/layout';
 import { PricingEditor } from '@/components/products/pricing-editor';
-import { useProduct } from '@/hooks/use-products';
-import { formatMoney } from '@/lib/google-play/types';
-import { useAuthStore } from '@/store/auth-store';
+import { formatMoney, type InAppProduct } from '@/lib/google-play/types';
+import type { RawAppleProduct } from '@/types/api';
 
 function formatAppleProductType(type?: string): string {
   if (!type) return 'Unknown';
@@ -24,26 +24,76 @@ function formatAppleProductType(type?: string): string {
   return typeMap[type] || type;
 }
 
-export default function ProductDetailPage({
+function formatAppleStatus(state?: string): string {
+  if (!state) return 'Unknown';
+  const statusMap: Record<string, string> = {
+    APPROVED: 'Approved',
+    READY_TO_SUBMIT: 'Ready to Submit',
+    WAITING_FOR_REVIEW: 'In Review',
+    DEVELOPER_ACTION_NEEDED: 'Action Needed',
+    IN_REVIEW: 'In Review',
+    REJECTED: 'Rejected',
+    DEVELOPER_REMOVED_FROM_SALE: 'Removed',
+    REMOVED_FROM_SALE: 'Removed',
+  };
+  return statusMap[state] || state;
+}
+
+export default function AppleProductDetailPage({
   params,
 }: {
-  params: Promise<{ sku: string }>;
+  params: Promise<{ id: string }>;
 }) {
-  const { sku } = use(params);
-  const decodedSku = decodeURIComponent(sku);
-  const platform = useAuthStore((state) => state.platform);
+  const { id } = use(params);
+  const decodedId = decodeURIComponent(id);
 
-  const { data, isLoading, error, refetch, isRefetching } = useProduct(decodedSku);
+  const { data, isLoading, error, refetch, isRefetching } = useQuery<{ product: InAppProduct & { _appleProduct?: RawAppleProduct } }>({
+    queryKey: ['products', 'apple', decodedId],
+    queryFn: async () => {
+      const response = await fetch(`/api/apple/products/${encodeURIComponent(decodedId)}`);
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('401: Unauthorized');
+        }
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to fetch product');
+      }
+      const data = await response.json();
+
+      // Normalize Apple product for the editor
+      if (data.product) {
+        const p = data.product as RawAppleProduct;
+        const usaPrice = p.prices?.USA;
+        const defaultPrice = usaPrice
+          ? { currencyCode: usaPrice.currency || 'USD', units: usaPrice.customerPrice }
+          : null;
+
+        data.product = {
+          sku: p.productId,
+          status: p.state === 'APPROVED' ? 'active' : 'inactive',
+          purchaseType: p.type,
+          listings: { 'en-US': { title: p.name } },
+          defaultPrice,
+          prices: p.prices || {},
+          _appleProduct: p,
+        };
+      }
+
+      return data;
+    },
+    enabled: !!decodedId,
+  });
 
   if (error) {
     toast.error(error.message);
   }
 
   const product = data?.product;
+  const appleProduct = product?._appleProduct as RawAppleProduct | undefined;
 
   const getProductTitle = () => {
-    if (!product) return decodedSku;
-    const listing = product.listings?.[product.defaultLanguage];
+    if (!product) return decodedId;
+    const listing = product.listings?.['en-US'];
     return listing?.title || product.sku;
   };
 
@@ -58,7 +108,7 @@ export default function ProductDetailPage({
       <div className="flex-1 p-6 space-y-6">
         <div className="flex items-center gap-4">
           <Button variant="ghost" size="icon" asChild>
-            <Link href="/dashboard/products">
+            <Link href="/dashboard/apple/products">
               <ArrowLeft className="h-4 w-4" />
             </Link>
           </Button>
@@ -68,7 +118,7 @@ export default function ProductDetailPage({
             ) : (
               <>
                 <h1 className="text-2xl font-bold">{getProductTitle()}</h1>
-                <p className="text-muted-foreground font-mono">{decodedSku}</p>
+                <p className="text-muted-foreground font-mono">{decodedId}</p>
               </>
             )}
           </div>
@@ -76,6 +126,10 @@ export default function ProductDetailPage({
 
         {isLoading ? (
           <div className="space-y-4">
+            <div className="flex items-center gap-2 text-muted-foreground py-4">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span className="text-sm">Fetching product information, please wait...</span>
+            </div>
             <Skeleton className="h-32 w-full" />
             <Skeleton className="h-64 w-full" />
           </div>
@@ -96,23 +150,17 @@ export default function ProductDetailPage({
                       variant={product.status === 'active' ? 'default' : 'secondary'}
                       className="mt-1"
                     >
-                      {product.status}
+                      {formatAppleStatus(appleProduct?.state)}
                     </Badge>
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground">Type</p>
                     <p className="font-medium mt-1">
-                      {platform === 'apple'
-                        ? formatAppleProductType(product.purchaseType)
-                        : product.purchaseType === 'managedUser'
-                        ? 'Managed Product'
-                        : product.purchaseType}
+                      {formatAppleProductType(product.purchaseType)}
                     </p>
                   </div>
                   <div>
-                    <p className="text-sm text-muted-foreground">
-                      {platform === 'apple' ? 'Base Price (USD)' : 'Default Price'}
-                    </p>
+                    <p className="text-sm text-muted-foreground">Base Price (USD)</p>
                     <p className="font-medium mt-1">
                       {product.defaultPrice
                         ? formatMoney(product.defaultPrice)
@@ -120,20 +168,18 @@ export default function ProductDetailPage({
                     </p>
                   </div>
                   <div>
-                    <p className="text-sm text-muted-foreground">
-                      {platform === 'apple' ? 'Territories' : 'Regional Prices'}
-                    </p>
+                    <p className="text-sm text-muted-foreground">Territories</p>
                     <p className="font-medium mt-1">
-                      {Object.keys(product.prices || {}).length} {platform === 'apple' ? 'territories' : 'regions'}
+                      {Object.keys(product.prices || {}).length} territories
                     </p>
                   </div>
                 </div>
 
-                {product.listings?.[product.defaultLanguage]?.description && (
+                {product.listings?.['en-US']?.description && (
                   <div className="mt-4 pt-4 border-t">
                     <p className="text-sm text-muted-foreground">Description</p>
                     <p className="mt-1">
-                      {product.listings[product.defaultLanguage].description}
+                      {product.listings['en-US'].description}
                     </p>
                   </div>
                 )}
@@ -147,7 +193,7 @@ export default function ProductDetailPage({
             <CardContent className="py-12 text-center">
               <p className="text-muted-foreground">Product not found</p>
               <Button variant="outline" className="mt-4" asChild>
-                <Link href="/dashboard/products">Back to Products</Link>
+                <Link href="/dashboard/apple/products">Back to Products</Link>
               </Button>
             </CardContent>
           </Card>

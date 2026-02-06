@@ -1,19 +1,34 @@
 'use client';
 
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Header } from '@/components/layout';
 import { ProductsTable } from '@/components/products/products-table';
 import { BulkUpdateModal } from '@/components/pricing/bulk-update-modal';
 import { Button } from '@/components/ui/button';
-import { useProducts } from '@/hooks/use-products';
 import { useSelectionStore } from '@/store/selection-store';
+import type { ProductsListResponse } from '@/types/api';
 
-export default function ProductsPage() {
+export default function GoogleProductsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [bulkModalOpen, setBulkModalOpen] = useState(false);
 
-  const { data, isLoading, refetch, isRefetching, error } = useProducts();
+  const { data, isLoading, refetch, isRefetching, error } = useQuery<ProductsListResponse>({
+    queryKey: ['products', 'google'],
+    queryFn: async () => {
+      const response = await fetch('/api/products');
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('401: Unauthorized');
+        }
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to fetch products');
+      }
+      return response.json();
+    },
+  });
+
   const { selectedProductSkus, setSelectedProducts } = useSelectionStore();
 
   if (error) {
@@ -64,6 +79,7 @@ export default function ProductsPage() {
           selectedSkus={selectedProductSkus}
           onSelectionChange={setSelectedProducts}
           searchQuery={searchQuery}
+          platform="google"
         />
       </div>
 

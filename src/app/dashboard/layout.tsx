@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useState, useRef } from 'react';
+import { useRouter, usePathname } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
-import { Sidebar } from '@/components/layout';
+import { Sidebar, Footer } from '@/components/layout';
 import { useAuthStore } from '@/store/auth-store';
+import { isPlatformRoute } from '@/lib/utils/platform-routes';
 
 export default function DashboardLayout({
   children,
@@ -13,6 +14,7 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
   const queryClient = useQueryClient();
   const isGoogleAuthenticated = useAuthStore(
     (state) => state.isGoogleAuthenticated
@@ -20,7 +22,6 @@ export default function DashboardLayout({
   const isAppleAuthenticated = useAuthStore(
     (state) => state.isAppleAuthenticated
   );
-  const platform = useAuthStore((state) => state.platform);
   const clearAuth = useAuthStore((state) => state.clearAuth);
   const setGoogleAuthenticated = useAuthStore(
     (state) => state.setGoogleAuthenticated
@@ -28,12 +29,19 @@ export default function DashboardLayout({
   const setAppleAuthenticated = useAuthStore(
     (state) => state.setAppleAuthenticated
   );
-  const setPlatform = useAuthStore((state) => state.setPlatform);
-  const currentBundleId = useAuthStore((state) => state.bundleId);
-  const currentPackageName = useAuthStore((state) => state.packageName);
   const [isVerifying, setIsVerifying] = useState(true);
 
+  // Use refs to track auth verification state and previous values
+  // This prevents the useEffect from re-running when store values change
+  const hasVerifiedAuth = useRef(false);
+  const prevBundleId = useRef<string | null>(null);
+  const prevPackageName = useRef<string | null>(null);
+
   useEffect(() => {
+    // Only verify auth once on mount
+    if (hasVerifiedAuth.current) return;
+    hasVerifiedAuth.current = true;
+
     // Verify auth with server on mount
     async function verifyAuth() {
       try {
@@ -49,46 +57,38 @@ export default function DashboardLayout({
         ]);
 
         let hasValidAuth = false;
-        let defaultPlatform: 'google' | 'apple' | null = null;
 
         // Sync Google auth state
         if (googleData.authenticated) {
           // Invalidate queries if packageName changed (prevents stale data)
-          if (currentPackageName && currentPackageName !== googleData.packageName) {
+          if (prevPackageName.current && prevPackageName.current !== googleData.packageName) {
             queryClient.invalidateQueries();
           }
+          prevPackageName.current = googleData.packageName;
           setGoogleAuthenticated({
             packageName: googleData.packageName,
             projectId: googleData.projectId,
             clientEmail: googleData.clientEmail,
           });
           hasValidAuth = true;
-          defaultPlatform = 'google';
         }
 
         // Sync Apple auth state
         if (appleData.authenticated) {
           // Invalidate queries if bundleId changed (prevents stale data)
-          if (currentBundleId && currentBundleId !== appleData.bundleId) {
+          if (prevBundleId.current && prevBundleId.current !== appleData.bundleId) {
             queryClient.invalidateQueries();
           }
+          prevBundleId.current = appleData.bundleId;
           setAppleAuthenticated({
             bundleId: appleData.bundleId,
             keyId: appleData.keyId,
             issuerId: appleData.issuerId,
           });
           hasValidAuth = true;
-          // Prefer Apple if Google not connected, or keep current platform
-          if (!defaultPlatform) {
-            defaultPlatform = 'apple';
-          }
         }
 
         if (hasValidAuth) {
-          // Set platform if not already set
-          if (!platform && defaultPlatform) {
-            setPlatform(defaultPlatform);
-          }
           setIsVerifying(false);
         } else {
           // No valid auth - clear client state and redirect
@@ -108,12 +108,8 @@ export default function DashboardLayout({
     clearAuth,
     setGoogleAuthenticated,
     setAppleAuthenticated,
-    setPlatform,
-    platform,
     router,
     queryClient,
-    currentBundleId,
-    currentPackageName,
   ]);
 
   if (isVerifying) {
@@ -128,10 +124,27 @@ export default function DashboardLayout({
     return null;
   }
 
+  // Check if we're on a platform-specific route - if so, show sidebar
+  // If we're on the root /dashboard (platform selector), don't show sidebar
+  const showSidebar = isPlatformRoute(pathname) || pathname.startsWith('/dashboard/settings');
+
+  if (!showSidebar) {
+    // Platform selector page doesn't need sidebar
+    return (
+      <main className="h-screen overflow-auto flex flex-col">
+        <div className="flex-1">{children}</div>
+        <Footer />
+      </main>
+    );
+  }
+
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar />
-      <main className="flex-1 overflow-auto">{children}</main>
+      <main className="flex-1 overflow-auto flex flex-col">
+        <div className="flex-1">{children}</div>
+        <Footer />
+      </main>
     </div>
   );
 }

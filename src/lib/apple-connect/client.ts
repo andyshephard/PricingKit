@@ -1,5 +1,6 @@
 import * as crypto from 'crypto';
 import fs from 'fs';
+import fsPromises from 'fs/promises';
 import path from 'path';
 import type {
   AppleConnectCredentials,
@@ -167,7 +168,7 @@ export async function appleApiRequest<T>(
     url += `?${params.toString()}`;
   }
 
-  console.log('[Apple API Request]', method, url);
+  // console.log('[Apple API Request]', method, url);
 
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
@@ -183,9 +184,12 @@ export async function appleApiRequest<T>(
     fetchOptions.body = JSON.stringify(body);
   }
 
-  const response = await fetch(url, fetchOptions);
+  const response = await fetch(url, {
+    ...fetchOptions,
+    signal: AbortSignal.timeout(30_000), // 30 second timeout
+  });
 
-  console.log('[Apple API Response] Status:', response.status);
+  // console.log('[Apple API Response] Status:', response.status);
 
   if (!response.ok) {
     const errorData = (await response.json()) as AppleApiErrorResponse;
@@ -261,31 +265,33 @@ function isEncryptedSession(session: CombinedSessionStore[string]): boolean {
 }
 
 // Load sessions from file with caching
-function loadSessions(): CombinedSessionStore {
+async function loadSessions(): Promise<CombinedSessionStore> {
   const now = Date.now();
   if (sessionCache && now - cacheLoadedAt < CACHE_TTL) {
     return sessionCache;
   }
 
   try {
-    if (fs.existsSync(SESSION_FILE)) {
-      const data = fs.readFileSync(SESSION_FILE, 'utf-8');
-      sessionCache = JSON.parse(data);
-      cacheLoadedAt = now;
-      return sessionCache!;
-    }
+    const data = await fsPromises.readFile(SESSION_FILE, 'utf-8');
+    sessionCache = JSON.parse(data);
+    cacheLoadedAt = now;
+    return sessionCache!;
   } catch (error) {
-    console.error('Error loading sessions:', error);
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.error('Error loading sessions:', error);
+    }
   }
   sessionCache = {};
   cacheLoadedAt = now;
   return {};
 }
 
-// Save sessions to file and update cache
+// Save sessions to file and update cache (atomic write via temp file + rename)
 function saveSessions(sessions: CombinedSessionStore): void {
   try {
-    fs.writeFileSync(SESSION_FILE, JSON.stringify(sessions, null, 2));
+    const tmpFile = `${SESSION_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tmpFile, JSON.stringify(sessions, null, 2));
+    fs.renameSync(tmpFile, SESSION_FILE);
     sessionCache = sessions;
     cacheLoadedAt = Date.now();
   } catch (error) {
@@ -322,10 +328,10 @@ function generateAppleSessionId(): string {
   );
 }
 
-export function createAppleSession(
+export async function createAppleSession(
   credentials: AppleConnectCredentials
-): string {
-  let sessions = loadSessions();
+): Promise<string> {
+  let sessions = await loadSessions();
   sessions = cleanupExpiredSessions(sessions);
 
   const sessionId = generateAppleSessionId();
@@ -337,8 +343,10 @@ export function createAppleSession(
       encryptedCredentials: encrypt(JSON.stringify(credentials)),
       createdAt: Date.now(),
     };
+  } else if (process.env.NODE_ENV === 'production') {
+    throw new Error('ENCRYPTION_KEY environment variable is required in production. Set it to a 32+ character random string.');
   } else {
-    console.warn('Warning: ENCRYPTION_KEY not set. Apple credentials will be stored in plaintext.');
+    console.warn('Warning: ENCRYPTION_KEY not set. Apple credentials stored in plaintext (development only).');
     sessions[sessionId] = {
       type: 'apple',
       credentials,
@@ -350,10 +358,10 @@ export function createAppleSession(
   return sessionId;
 }
 
-export function getAppleSessionCredentials(
+export async function getAppleSessionCredentials(
   sessionId: string
-): AppleConnectCredentials | null {
-  const sessions = loadSessions();
+): Promise<AppleConnectCredentials | null> {
+  const sessions = await loadSessions();
   const session = sessions[sessionId];
 
   if (!session || session.type !== 'apple') {
@@ -380,8 +388,8 @@ export function getAppleSessionCredentials(
   return session.credentials as AppleConnectCredentials;
 }
 
-export function deleteAppleSession(sessionId: string): void {
-  const sessions = loadSessions();
+export async function deleteAppleSession(sessionId: string): Promise<void> {
+  const sessions = await loadSessions();
   delete sessions[sessionId];
   saveSessions(sessions);
 }
@@ -433,7 +441,7 @@ export async function getAppIdForBundleId(
   credentials: AppleConnectCredentials
 ): Promise<string | null> {
   try {
-    console.log('[Apple] getAppIdForBundleId - Looking up bundleId:', credentials.bundleId);
+    // console.log('[Apple] getAppIdForBundleId - Looking up bundleId:', credentials.bundleId);
 
     // Fetch apps matching the bundle ID filter (may return partial matches)
     // We need to find the exact match
@@ -452,7 +460,7 @@ export async function getAppIdForBundleId(
       }
     );
 
-    console.log('[Apple] getAppIdForBundleId - Found', response.data?.length ?? 0, 'apps matching filter');
+    // console.log('[Apple] getAppIdForBundleId - Found', response.data?.length ?? 0, 'apps matching filter');
 
     if (response.data && response.data.length > 0) {
       // Find the app with the EXACT bundle ID match
@@ -461,21 +469,21 @@ export async function getAppIdForBundleId(
       );
 
       if (exactMatch) {
-        console.log('[Apple] getAppIdForBundleId - Found exact match:', exactMatch.id, exactMatch.attributes.name);
+        // console.log('[Apple] getAppIdForBundleId - Found exact match:', exactMatch.id, exactMatch.attributes.name);
         return exactMatch.id;
       }
 
       // Log available apps for debugging
-      console.log('[Apple] getAppIdForBundleId - Available apps:', response.data.map(app => ({
+      /* console.log('[Apple] getAppIdForBundleId - Available apps:', response.data.map(app => ({
         id: app.id,
         bundleId: app.attributes.bundleId,
         name: app.attributes.name,
-      })));
+      }))); */
 
-      console.log('[Apple] getAppIdForBundleId - No exact match found for bundleId:', credentials.bundleId);
+      // console.log('[Apple] getAppIdForBundleId - No exact match found for bundleId:', credentials.bundleId);
       return null;
     }
-    console.log('[Apple] getAppIdForBundleId - No apps found for bundleId:', credentials.bundleId);
+    // console.log('[Apple] getAppIdForBundleId - No apps found for bundleId:', credentials.bundleId);
     return null;
   } catch (error) {
     console.error('[Apple] getAppIdForBundleId - Error:', error);

@@ -14,8 +14,28 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Pricing.io - Google Play Pricing Manager",
-  description: "Manage Google Play Store in-app product and subscription pricing",
+  title: "PricingKit - App/Play Store Pricing Manager",
+  description: "A free and open-source tool to manage in-app product and subscription pricing for Google Play and Apple App Store",
+  openGraph: {
+    title: "PricingKit - App/Play Store Pricing Manager",
+    description: "A free and open-source tool to manage in-app product and subscription pricing for Google Play and Apple App Store",
+    images: [{ url: '/banner.webp' }],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: "PricingKit - App/Play Store Pricing Manager",
+    description: "A free and open-source tool to manage in-app product and subscription pricing for Google Play and Apple App Store",
+    images: ['/banner.webp'],
+  },
+  icons: {
+    icon: [
+      { url: '/favicon.ico' },
+      { url: '/favicon/favicon-16x16.png', sizes: '16x16', type: 'image/png' },
+      { url: '/favicon/favicon-32x32.png', sizes: '32x32', type: 'image/png' },
+    ],
+    apple: '/favicon/apple-touch-icon.png',
+  },
+  manifest: '/favicon/site.webmanifest',
 };
 
 export default function RootLayout({

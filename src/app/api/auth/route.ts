@@ -15,7 +15,15 @@ const COOKIE_MAX_AGE = 24 * 60 * 60; // 24 hours
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: 'Invalid JSON in request body' },
+        { status: 400 }
+      );
+    }
     const { credentials, packageName } = body;
 
     if (!credentials || !packageName) {
@@ -85,7 +93,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Create session and store session ID in cookie
-    const sessionId = createSession(credentials as ServiceAccountCredentials);
+    const sessionId = await createSession(credentials as ServiceAccountCredentials);
 
     const cookieStore = await cookies();
 
@@ -112,8 +120,15 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error('Auth error:', error);
+    const err = error as { code?: number; message?: string };
+    if (err.code === 401) {
+      return NextResponse.json(
+        { error: 'Invalid credentials.' },
+        { status: 401 }
+      );
+    }
     return NextResponse.json(
-      { error: 'Failed to authenticate. Please try again.' },
+      { error: err.message || 'Failed to authenticate. Please try again.' },
       { status: 500 }
     );
   }
@@ -125,21 +140,15 @@ export async function GET() {
     const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
     const packageName = cookieStore.get(PACKAGE_NAME_COOKIE)?.value;
 
-    console.log('Auth GET - has session cookie:', !!sessionId);
-    console.log('Auth GET - has packageName cookie:', !!packageName);
-
     if (!sessionId || !packageName) {
-      console.log('Auth GET - missing cookies, returning authenticated: false');
       return NextResponse.json({ authenticated: false });
     }
 
-    const credentials = getSessionCredentials(sessionId);
+    const credentials = await getSessionCredentials(sessionId);
     if (!credentials) {
-      console.log('Auth GET - session not found or expired, returning authenticated: false');
       return NextResponse.json({ authenticated: false });
     }
 
-    console.log('Auth GET - returning authenticated: true');
     return NextResponse.json({
       authenticated: true,
       packageName,
@@ -159,7 +168,7 @@ export async function DELETE() {
 
     // Delete the session from memory
     if (sessionId) {
-      deleteSession(sessionId);
+      await deleteSession(sessionId);
     }
 
     cookieStore.delete(SESSION_COOKIE);
@@ -188,7 +197,7 @@ export async function getAuthFromCookies(): Promise<{
     return null;
   }
 
-  const credentials = getSessionCredentials(sessionId);
+  const credentials = await getSessionCredentials(sessionId);
   if (!credentials) {
     return null;
   }

@@ -132,6 +132,10 @@ export function useUpdateProductPrices() {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['products', platform] });
       queryClient.invalidateQueries({ queryKey: ['products', platform, variables.sku] });
+      if (platform === 'apple') {
+        queryClient.invalidateQueries({ queryKey: ['apple', 'products'] });
+      }
+      queryClient.invalidateQueries({ queryKey: ['platform-products', platform] });
     },
   });
 }
@@ -165,6 +169,10 @@ export function useDeleteRegionPrice() {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['products', platform] });
       queryClient.invalidateQueries({ queryKey: ['products', platform, variables.sku] });
+      if (platform === 'apple') {
+        queryClient.invalidateQueries({ queryKey: ['apple', 'products'] });
+      }
+      queryClient.invalidateQueries({ queryKey: ['platform-products', platform] });
     },
   });
 }

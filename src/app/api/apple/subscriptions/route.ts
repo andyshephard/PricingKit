@@ -7,23 +7,18 @@ import {
 
 export async function GET() {
   try {
-    console.log('[Apple Subscriptions Route] Starting GET request');
     const auth = await getAppleAuthFromCookies();
     if (!auth) {
-      console.log('[Apple Subscriptions Route] Not authenticated');
       return NextResponse.json(
         { error: 'Not authenticated' },
         { status: 401 }
       );
     }
 
-    // Log bundle ID only (non-sensitive identifier)
-    console.log('[Apple Subscriptions Route] Authenticated with bundleId:', auth.credentials.bundleId);
-
     const subscriptionGroups = await listSubscriptionGroups(auth.credentials);
-    console.log('[Apple Subscriptions Route] Subscription groups returned:', subscriptionGroups.length);
 
-    // Flatten subscriptions for easier consumption
+    // For list view, we return subscriptions without prices.
+    // Prices should be fetched when viewing individual subscription.
     const subscriptions = subscriptionGroups.flatMap((group) =>
       group.subscriptions.map((sub) => ({
         ...sub,

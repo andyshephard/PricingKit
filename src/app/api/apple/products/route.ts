@@ -8,21 +8,15 @@ import {
 
 export async function GET() {
   try {
-    console.log('[Apple Products Route] Starting GET request');
     const auth = await getAppleAuthFromCookies();
     if (!auth) {
-      console.log('[Apple Products Route] Not authenticated');
       return NextResponse.json(
         { error: 'Not authenticated' },
         { status: 401 }
       );
     }
 
-    // Log bundle ID only (non-sensitive identifier)
-    console.log('[Apple Products Route] Authenticated with bundleId:', auth.credentials.bundleId);
-
     const products = await listInAppPurchases(auth.credentials);
-    console.log('[Apple Products Route] Products returned:', products.length);
 
     // Optionally fetch prices for each product (can be expensive)
     // For list view, we return products without prices

@@ -1,10 +1,11 @@
 'use client';
 
-import { usePathname } from 'next/navigation';
-import { Search, RefreshCw } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { Search, RefreshCw, LogOut } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Breadcrumbs } from './breadcrumbs';
+import { useAuthStore } from '@/store/auth-store';
 
 interface HeaderProps {
   onRefresh?: () => void;
@@ -21,7 +22,21 @@ export function Header({
   onSearchChange,
   showSearch = true,
 }: HeaderProps) {
-  const pathname = usePathname();
+  const router = useRouter();
+  const clearAuth = useAuthStore((state) => state.clearAuth);
+
+  const handleLogout = async () => {
+    try {
+      await Promise.all([
+        fetch('/api/auth', { method: 'DELETE' }),
+        fetch('/api/apple/auth', { method: 'DELETE' }),
+      ]);
+      clearAuth();
+      router.push('/');
+    } catch (error) {
+      console.error('Logout failed:', error);
+    }
+  };
 
   return (
     <header className="sticky top-0 z-10 flex h-14 items-center gap-4 border-b bg-background px-6">
@@ -54,6 +69,16 @@ export function Header({
             <span className="sr-only">Refresh</span>
           </Button>
         )}
+
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleLogout}
+          className="text-muted-foreground hover:text-destructive"
+        >
+          <LogOut className="h-4 w-4 mr-1.5" />
+          Logout
+        </Button>
       </div>
     </header>
   );

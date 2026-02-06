@@ -162,6 +162,10 @@ export function useUpdatePlatformProductPrices() {
       queryClient.invalidateQueries({
         queryKey: ['platform-products', platform, variables.productId]
       });
+      queryClient.invalidateQueries({ queryKey: ['products', platform] });
+      if (platform === 'apple') {
+        queryClient.invalidateQueries({ queryKey: ['apple', 'products'] });
+      }
     },
   });
 }

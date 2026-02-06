@@ -189,6 +189,10 @@ export function useUpdatePlatformSubscriptionPrices() {
       queryClient.invalidateQueries({
         queryKey: ['platform-subscriptions', platform, variables.productId],
       });
+      queryClient.invalidateQueries({ queryKey: ['subscriptions', platform] });
+      if (platform === 'apple') {
+        queryClient.invalidateQueries({ queryKey: ['apple', 'subscriptions'] });
+      }
     },
   });
 }

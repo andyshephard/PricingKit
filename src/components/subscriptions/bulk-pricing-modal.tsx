@@ -399,7 +399,7 @@ export function SubscriptionBulkPricingModal({
                         className="sr-only"
                       />
                       <TrendingDown className="h-4 w-4 shrink-0" />
-                      <span className="text-sm font-medium truncate">PPP</span>
+                      <span className="text-sm font-medium truncate">PPP (World Bank)</span>
                     </label>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" className="max-w-xs">
@@ -477,7 +477,7 @@ export function SubscriptionBulkPricingModal({
                   checked={rounding === 'charm'}
                   onChange={() => setRounding('charm')}
                 />
-                <span className="text-sm">Charm Pricing (.99)</span>
+                <span className="text-sm">Nearest .99</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -659,7 +659,7 @@ export function SubscriptionBulkPricingModal({
             disabled={previewPrices.length === 0 || updateMutation.isPending}
           >
             {updateMutation.isPending
-              ? 'Applying...'
+              ? 'Processing (This might take a while)'
               : `Apply to ${previewPrices.length} Regions`}
           </Button>
         </DialogFooter>

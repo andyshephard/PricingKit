@@ -6,9 +6,10 @@ import { useAuthStore } from '@/store/auth-store';
 
 export function useSubscriptions() {
   const platform = useAuthStore((state) => state.platform);
+  const appleBaseCountry = useAuthStore((state) => state.appleBaseCountry) || 'US';
 
   return useQuery<SubscriptionsListResponse>({
-    queryKey: ['subscriptions', platform],
+    queryKey: ['subscriptions', platform, platform === 'apple' ? appleBaseCountry : null],
     queryFn: async () => {
       const url = platform === 'apple' ? '/api/apple/subscriptions' : '/api/subscriptions';
       const response = await fetch(url);
@@ -23,15 +24,12 @@ export function useSubscriptions() {
 
       // Normalize Apple subscriptions to match Google subscription structure for table display
       if (platform === 'apple' && data.subscriptions) {
-        console.log('[useSubscriptions] Raw Apple subscriptions:', data.subscriptions.length);
-        console.log('[useSubscriptions] First subscription prices:', data.subscriptions[0]?.prices);
-
         data.subscriptions = data.subscriptions.map((s: RawAppleSubscription) => {
-          // Get the base price (first/only price in the list view - this is the base territory price)
-          const priceEntries = Object.entries(s.prices || {});
-          const basePrice = priceEntries.length > 0 ? priceEntries[0][1] : null;
-
-          console.log('[useSubscriptions] Subscription', s.productId, 'prices:', s.prices, 'basePrice:', basePrice);
+          // Get the base price for selected country, fallback to US, then first available
+          const basePrice = s.prices?.[appleBaseCountry] || s.prices?.['US'] || Object.values(s.prices || {})[0] || null;
+          const basePriceRegion = basePrice
+            ? (s.prices?.[appleBaseCountry] ? appleBaseCountry : (s.prices?.['US'] ? 'US' : Object.keys(s.prices || {})[0]))
+            : null;
 
           return {
             productId: s.productId,
@@ -41,15 +39,15 @@ export function useSubscriptions() {
               basePlanId: 'default',
               state: s.state === 'APPROVED' ? 'active' : 'inactive',
               autoRenewingBasePlanType: { billingPeriodDuration: s.period },
-              regionalConfigs: basePrice ? [{
-                regionCode: priceEntries[0][0], // Territory code (e.g., 'USA')
+              regionalConfigs: basePrice && basePriceRegion ? [{
+                regionCode: basePriceRegion,
                 price: {
                   currencyCode: basePrice.currency || 'USD',
                   units: basePrice.customerPrice,
                 },
               }] : [],
             }],
-            // Keep original Apple data with base price info
+            // Keep original Apple data with base price info (including id for routing)
             _appleSubscription: { ...s, basePrice },
           };
         });
@@ -155,6 +153,11 @@ export function useUpdateBasePlanPrices() {
       queryClient.invalidateQueries({
         queryKey: ['subscriptions', platform, variables.productId],
       });
+      // Also invalidate other hook systems' caches to prevent stale data
+      if (platform === 'apple') {
+        queryClient.invalidateQueries({ queryKey: ['apple', 'subscriptions'] });
+      }
+      queryClient.invalidateQueries({ queryKey: ['platform-subscriptions', platform] });
     },
   });
 }
@@ -198,6 +201,160 @@ export function useDeleteBasePlanRegionPrice() {
       queryClient.invalidateQueries({
         queryKey: ['subscriptions', platform, variables.productId],
       });
+      if (platform === 'apple') {
+        queryClient.invalidateQueries({ queryKey: ['apple', 'subscriptions'] });
+      }
+      queryClient.invalidateQueries({ queryKey: ['platform-subscriptions', platform] });
+    },
+  });
+}
+
+// Hook to fetch available price points for a specific territory
+export interface SubscriptionPricePoint {
+  id: string;
+  customerPrice: string;
+  proceeds: string;
+}
+
+export function useSubscriptionPricePoints(subscriptionId: string, territoryCode: string) {
+  return useQuery<{ pricePoints: SubscriptionPricePoint[] }>({
+    queryKey: ['apple', 'subscriptions', subscriptionId, 'pricePoints', territoryCode],
+    queryFn: async () => {
+      const response = await fetch(
+        `/api/apple/subscriptions/${encodeURIComponent(subscriptionId)}/price-points?territory=${encodeURIComponent(territoryCode)}`
+      );
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('401: Unauthorized');
+        }
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to fetch price points');
+      }
+      return response.json();
+    },
+    enabled: !!subscriptionId && !!territoryCode,
+  });
+}
+
+// Hook to update Apple subscription prices
+export function useUpdateAppleSubscriptionPrices() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      subscriptionId,
+      prices,
+    }: {
+      subscriptionId: string;
+      prices: Record<string, { pricePointId: string; startDate?: string }>;
+    }) => {
+      const response = await fetch(
+        `/api/apple/subscriptions/${encodeURIComponent(subscriptionId)}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prices }),
+        }
+      );
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('401: Unauthorized');
+        }
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to update subscription prices');
+      }
+
+      return response.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['subscriptions', 'apple'] });
+      queryClient.invalidateQueries({
+        queryKey: ['subscriptions', 'apple', variables.subscriptionId],
+      });
+      queryClient.invalidateQueries({ queryKey: ['apple', 'subscriptions'] });
+      queryClient.invalidateQueries({ queryKey: ['platform-subscriptions', 'apple'] });
+    },
+  });
+}
+
+// Hook to delete Apple subscription price for a territory
+export function useDeleteAppleSubscriptionPrice() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      subscriptionId,
+      subscriptionPriceId,
+    }: {
+      subscriptionId: string;
+      subscriptionPriceId: string;
+    }) => {
+      const response = await fetch(
+        `/api/apple/subscriptions/${encodeURIComponent(subscriptionId)}`,
+        {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subscriptionPriceId }),
+        }
+      );
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('401: Unauthorized');
+        }
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to delete subscription price');
+      }
+
+      return response.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['subscriptions', 'apple'] });
+      queryClient.invalidateQueries({
+        queryKey: ['subscriptions', 'apple', variables.subscriptionId],
+      });
+      queryClient.invalidateQueries({ queryKey: ['apple', 'subscriptions'] });
+      queryClient.invalidateQueries({ queryKey: ['platform-subscriptions', 'apple'] });
+    },
+  });
+}
+
+// Hook to clear all scheduled (future) prices for an Apple subscription
+export function useClearScheduledPrices() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      subscriptionId,
+    }: {
+      subscriptionId: string;
+    }) => {
+      const response = await fetch(
+        `/api/apple/subscriptions/${encodeURIComponent(subscriptionId)}/clear-scheduled`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('401: Unauthorized');
+        }
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to clear scheduled prices');
+      }
+
+      return response.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['subscriptions', 'apple'] });
+      queryClient.invalidateQueries({
+        queryKey: ['subscriptions', 'apple', variables.subscriptionId],
+      });
+      queryClient.invalidateQueries({ queryKey: ['apple', 'subscriptions'] });
+      queryClient.invalidateQueries({ queryKey: ['platform-subscriptions', 'apple'] });
     },
   });
 }

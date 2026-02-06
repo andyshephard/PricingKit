@@ -37,6 +37,7 @@ export interface RawAppleProduct {
  * Raw Apple subscription shape as returned from Apple API before normalization
  */
 export interface RawAppleSubscription {
+  id: string;
   productId: string;
   name: string;
   state: string;

@@ -385,15 +385,44 @@ export function formatMoney(money: Money): string {
   }).format(amount);
 }
 
+// Safely parse money units string to number, throwing on invalid values
+function safeParseUnits(units: string): number {
+  const value = parseFloat(units);
+  if (isNaN(value) || !Number.isFinite(value)) {
+    throw new Error(`Invalid price units value: "${units}"`);
+  }
+  return value;
+}
+
+// Clamp nanos to valid range [0, 999_999_999], carrying overflow into units
+function clampNanos(units: number, nanos: number): { units: number; nanos: number } {
+  if (nanos > 999_999_999) {
+    units += Math.floor(nanos / 1_000_000_000);
+    nanos = nanos % 1_000_000_000;
+  }
+  return { units, nanos };
+}
+
 // Helper function to parse string to Money
 export function parseMoney(amount: number, currencyCode: string): Money {
+  if (isNaN(amount) || !Number.isFinite(amount)) {
+    throw new Error(`Invalid price amount: ${amount}`);
+  }
   // Round to 2 decimal places first to avoid floating point precision issues
   // Google Play requires prices to be in valid currency increments
   const roundedAmount = Math.round(amount * 100) / 100;
-  const units = Math.floor(roundedAmount);
+  let units = Math.floor(roundedAmount);
   // nanos must be multiples of 10,000,000 (representing cents for 2-decimal currencies)
   const cents = Math.round((roundedAmount - units) * 100);
-  const nanos = cents * 10_000_000;
+  let nanos = cents * 10_000_000;
+
+  // Clamp nanos to valid range, carrying overflow into units
+  if (nanos > 999_999_999) {
+    const { units: u, nanos: n } = clampNanos(units, nanos);
+    units = u;
+    nanos = n;
+  }
+
   return {
     currencyCode,
     units: units.toString(),
@@ -403,5 +432,5 @@ export function parseMoney(amount: number, currencyCode: string): Money {
 
 // Helper function to get Money as number
 export function moneyToNumber(money: Money): number {
-  return parseFloat(money.units) + (money.nanos ? money.nanos / 1_000_000_000 : 0);
+  return safeParseUnits(money.units) + (money.nanos ? money.nanos / 1_000_000_000 : 0);
 }

@@ -61,7 +61,7 @@ export async function getGoogleAuthFromCookies(): Promise<GoogleAuthResult | nul
       return null;
     }
 
-    const credentials = getSessionCredentials(sessionId);
+    const credentials = await getSessionCredentials(sessionId);
     if (!credentials) {
       return null;
     }
@@ -87,7 +87,7 @@ export async function getAppleAuthFromCookies(): Promise<AppleAuthResult | null>
       return null;
     }
 
-    const credentials = getAppleSessionCredentials(sessionId);
+    const credentials = await getAppleSessionCredentials(sessionId);
     if (!credentials) {
       return null;
     }

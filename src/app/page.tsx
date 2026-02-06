@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
-  Store,
   DollarSign,
   Package,
   TrendingUp,
@@ -16,6 +15,7 @@ import { AppleConnectUpload } from '@/components/auth/apple-connect-upload';
 import { useAuthStore } from '@/store/auth-store';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Footer } from '@/components/layout/footer';
 
 type PlatformTab = 'google' | 'apple';
 
@@ -44,12 +44,9 @@ export default function Home() {
     <div className="min-h-screen bg-gradient-to-b from-background to-muted">
       <div className="container mx-auto px-4 py-16">
         <div className="flex flex-col items-center text-center mb-12">
-          <div className="flex items-center gap-2 mb-4">
-            <Store className="h-10 w-10 text-primary" />
-            <h1 className="text-4xl font-bold">Pricing.io</h1>
-          </div>
+          <h1 className="text-4xl font-bold mb-4">PricingKit</h1>
           <p className="text-xl text-muted-foreground max-w-2xl">
-            Manage in-app product and subscription pricing for Google Play and
+            A free and open-source tool to manage in-app product and subscription pricing for Google Play and
             Apple App Store
           </p>
         </div>
@@ -170,7 +167,10 @@ export default function Home() {
             </Tabs>
           </div>
         </div>
+
       </div>
+
+      <Footer />
     </div>
   );
 }

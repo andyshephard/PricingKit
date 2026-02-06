@@ -10,14 +10,14 @@ import type {
   AppleTerritory,
 } from './types';
 import { appleApiRequest, getAppIdForBundleId } from './client';
-import { getTerritoryByAlpha3, UNSUPPORTED_IAP_TERRITORIES } from './territories';
+import { getTerritoryByAlpha3, alpha3ToAlpha2, UNSUPPORTED_IAP_TERRITORIES } from './territories';
 import { findClosestTierForCurrency, hasTierData } from './price-tier-data';
 
 // List all in-app purchases for an app
 export async function listInAppPurchases(
   credentials: AppleConnectCredentials
 ): Promise<NormalizedAppleProduct[]> {
-  console.log('[Apple] listInAppPurchases - Starting for bundleId:', credentials.bundleId);
+  // console.log('[Apple] listInAppPurchases - Starting for bundleId:', credentials.bundleId);
 
   const appId = await getAppIdForBundleId(credentials);
   if (!appId) {
@@ -25,7 +25,7 @@ export async function listInAppPurchases(
     throw new Error(`App with Bundle ID "${credentials.bundleId}" not found`);
   }
 
-  console.log('[Apple] listInAppPurchases - Got app ID:', appId);
+  // console.log('[Apple] listInAppPurchases - Got app ID:', appId);
 
   const allProducts: NormalizedAppleProduct[] = [];
   const allPriceScheduleMap = new Map<string, string>();
@@ -42,14 +42,20 @@ export async function listInAppPurchases(
     'fields[inAppPurchasePriceSchedules]': 'baseTerritory',
   };
 
+  const MAX_PAGES = 100;
+  let pageCount = 0;
   while (nextUrl) {
+    if (++pageCount > MAX_PAGES) {
+      console.warn('[Apple] listInAppPurchases - Hit max page limit, stopping pagination');
+      break;
+    }
     // Handle pagination - if nextUrl contains full URL, extract path
     const currentUrl = nextUrl;
     const endpoint: string = currentUrl.startsWith('http')
       ? new URL(currentUrl).pathname.replace('/v1', '')
       : currentUrl;
 
-    console.log('[Apple] listInAppPurchases - Fetching endpoint:', endpoint);
+    // console.log('[Apple] listInAppPurchases - Fetching endpoint:', endpoint);
 
     const response: AppleApiListResponse<AppleInAppPurchase> = await appleApiRequest<
       AppleApiListResponse<AppleInAppPurchase>
@@ -57,7 +63,7 @@ export async function listInAppPurchases(
       queryParams: currentUrl.includes('?') ? undefined : queryParams,
     });
 
-    console.log('[Apple] listInAppPurchases - Raw response data count:', response.data?.length ?? 0);
+    // console.log('[Apple] listInAppPurchases - Raw response data count:', response.data?.length ?? 0);
 
     // Build a map of price schedule IDs and base territories from included data
     // Note: Apple's API returns price schedules in `included` but not in product relationships
@@ -79,9 +85,9 @@ export async function listInAppPurchases(
           const baseTerritory = schedule.relationships?.baseTerritory?.data?.id;
           if (baseTerritory) {
             baseTerritoryMap.set(item.id, baseTerritory);
-            console.log('[Apple] listInAppPurchases - Found price schedule', item.id, 'with base territory:', baseTerritory);
+            // console.log('[Apple] listInAppPurchases - Found price schedule', item.id, 'with base territory:', baseTerritory);
           } else {
-            console.log('[Apple] listInAppPurchases - Found price schedule in included:', item.id, '(no base territory)');
+            // console.log('[Apple] listInAppPurchases - Found price schedule in included:', item.id, '(no base territory)');
           }
         }
       }
@@ -92,13 +98,13 @@ export async function listInAppPurchases(
       const priceScheduleRef = product.relationships?.iapPriceSchedule?.data;
       if (priceScheduleRef && !priceScheduleMap.has(product.id)) {
         priceScheduleMap.set(product.id, priceScheduleRef.id);
-        console.log('[Apple] listInAppPurchases - Product', product.id, 'has price schedule from relationship:', priceScheduleRef.id);
+        // console.log('[Apple] listInAppPurchases - Product', product.id, 'has price schedule from relationship:', priceScheduleRef.id);
       }
     }
 
     // Normalize products
     const products = normalizeProducts(response);
-    console.log('[Apple] listInAppPurchases - Normalized products count:', products.length);
+    // console.log('[Apple] listInAppPurchases - Normalized products count:', products.length);
     allProducts.push(...products);
 
     // Merge the price schedule map and base territory map (for products fetched in this page)
@@ -119,25 +125,25 @@ export async function listInAppPurchases(
 
   // Fetch base territory prices for all products in parallel
   if (allProducts.length > 0) {
-    console.log('[Apple] listInAppPurchases - Fetching base prices for', allProducts.length, 'products');
-    console.log('[Apple] listInAppPurchases - Price schedule map:', Object.fromEntries(allPriceScheduleMap));
-    console.log('[Apple] listInAppPurchases - Base territory map:', Object.fromEntries(allBaseTerritoryMap));
+    // console.log('[Apple] listInAppPurchases - Fetching base prices for', allProducts.length, 'products');
+    // console.log('[Apple] listInAppPurchases - Price schedule map:', Object.fromEntries(allPriceScheduleMap));
+    // console.log('[Apple] listInAppPurchases - Base territory map:', Object.fromEntries(allBaseTerritoryMap));
 
     const pricePromises = allProducts.map(async (product) => {
       try {
         // Look up the price schedule ID from our map (built from included data)
         const priceScheduleId = allPriceScheduleMap.get(product.id);
         if (!priceScheduleId) {
-          console.log('[Apple] No price schedule found for product', product.id);
+          // console.log('[Apple] No price schedule found for product', product.id);
           return;
         }
         // Get the base territory for this product (default to USA if not found)
         const baseTerritory = allBaseTerritoryMap.get(product.id) || 'USA';
-        console.log('[Apple] Fetching price for product', product.id, 'using schedule', priceScheduleId, 'base territory', baseTerritory);
+        // console.log('[Apple] Fetching price for product', product.id, 'using schedule', priceScheduleId, 'base territory', baseTerritory);
         const basePrice = await getProductBasePriceBySchedule(credentials, priceScheduleId, baseTerritory);
         if (basePrice) {
           product.prices = { [baseTerritory]: basePrice };
-          console.log('[Apple] Got price for product', product.id, ':', basePrice.customerPrice, basePrice.currency);
+          // console.log('[Apple] Got price for product', product.id, ':', basePrice.customerPrice, basePrice.currency);
         }
       } catch (error) {
         console.error('[Apple] Failed to fetch price for product', product.id, error);
@@ -146,7 +152,7 @@ export async function listInAppPurchases(
     await Promise.all(pricePromises);
   }
 
-  console.log('[Apple] listInAppPurchases - Total products found:', allProducts.length);
+  // console.log('[Apple] listInAppPurchases - Total products found:', allProducts.length);
   return allProducts;
 }
 
@@ -157,7 +163,7 @@ async function getProductBasePriceBySchedule(
   territoryCode: string = 'USA'
 ): Promise<AppleProductPrice | null> {
   try {
-    console.log('[Apple] getProductBasePriceBySchedule - Fetching prices for schedule:', priceScheduleId, 'territory:', territoryCode);
+    // console.log('[Apple] getProductBasePriceBySchedule - Fetching prices for schedule:', priceScheduleId, 'territory:', territoryCode);
 
     // Get the manual prices for this schedule
     const pricesResponse = await appleApiRequest<
@@ -187,7 +193,7 @@ async function getProductBasePriceBySchedule(
       },
     });
 
-    console.log('[Apple] getProductBasePriceBySchedule - Prices response:', JSON.stringify(pricesResponse, null, 2));
+    // console.log('[Apple] getProductBasePriceBySchedule - Prices response:', JSON.stringify(pricesResponse, null, 2));
 
     // Find the price point in included data
     if (pricesResponse.data && pricesResponse.data.length > 0) {
@@ -200,8 +206,8 @@ async function getProductBasePriceBySchedule(
         item => item.type === 'territories'
       );
 
-      console.log('[Apple] getProductBasePriceBySchedule - Found price point:', pricePoint);
-      console.log('[Apple] getProductBasePriceBySchedule - Found territory:', territory);
+      // console.log('[Apple] getProductBasePriceBySchedule - Found price point:', pricePoint);
+      // console.log('[Apple] getProductBasePriceBySchedule - Found territory:', territory);
 
       if (pricePoint) {
         const attrs = pricePoint.attributes as { customerPrice?: string; proceeds?: string } | undefined;
@@ -288,7 +294,7 @@ export async function getInAppPurchasePrices(
   inAppPurchaseId: string
 ): Promise<Record<string, AppleProductPrice>> {
   try {
-    console.log('[Apple] getInAppPurchasePrices - Fetching prices for product:', inAppPurchaseId);
+    // console.log('[Apple] getInAppPurchasePrices - Fetching prices for product:', inAppPurchaseId);
 
     const prices: Record<string, AppleProductPrice> = {};
 
@@ -328,7 +334,7 @@ export async function getInAppPurchasePrices(
       }),
     ]);
 
-    console.log('[Apple] getInAppPurchasePrices - Got', manualResponse.data?.length ?? 0, 'manual prices and', automaticResponse.data?.length ?? 0, 'automatic prices');
+    // console.log('[Apple] getInAppPurchasePrices - Got', manualResponse.data?.length ?? 0, 'manual prices and', automaticResponse.data?.length ?? 0, 'automatic prices');
 
     // Process both responses
     for (const response of [manualResponse, automaticResponse]) {
@@ -366,10 +372,17 @@ export async function getInAppPurchasePrices(
         const territory = territories.get(territoryCode);
 
         // Find the matching price point by territory
+        // Territory codes from decodePriceId are alpha-3 (e.g. "USA"), so normalize both sides
         let matchingPricePoint: { id: string; customerPrice: string; proceeds: string } | null = null;
         for (const [ppId, ppData] of pricePoints) {
           const ppDecoded = decodePriceId(ppId);
-          if (ppDecoded?.territoryCode === territoryCode) {
+          if (!ppDecoded?.territoryCode) continue;
+          // Compare in both formats to handle alpha-2/alpha-3 mismatches
+          if (
+            ppDecoded.territoryCode === territoryCode ||
+            alpha3ToAlpha2(ppDecoded.territoryCode) === territoryCode ||
+            alpha3ToAlpha2(territoryCode) === ppDecoded.territoryCode
+          ) {
             matchingPricePoint = { id: ppId, ...ppData };
             break;
           }
@@ -387,7 +400,7 @@ export async function getInAppPurchasePrices(
       }
     }
 
-    console.log('[Apple] getInAppPurchasePrices - Found prices for', Object.keys(prices).length, 'territories');
+    // console.log('[Apple] getInAppPurchasePrices - Found prices for', Object.keys(prices).length, 'territories');
     return prices;
   } catch (error) {
     console.error('[Apple] getInAppPurchasePrices error:', error);
@@ -562,7 +575,7 @@ export async function updateInAppPurchasePrices(
     const skippedTerritories = manualPrices
       .filter(p => UNSUPPORTED_IAP_TERRITORIES.includes(p.territoryId))
       .map(p => p.territoryId);
-    console.log(`[Apple] Skipping ${skippedCount} unsupported territories: ${skippedTerritories.join(', ')}`);
+    // console.log(`[Apple] Skipping ${skippedCount} unsupported territories: ${skippedTerritories.join(', ')}`);
   }
 
   // Find base territory price (required by Apple)
@@ -573,13 +586,7 @@ export async function updateInAppPurchasePrices(
     return;
   }
 
-  console.log(`[Apple] updateInAppPurchasePrices - Updating ${supportedPrices.length} prices for ${inAppPurchaseId}`);
-
-  // Log Australia price point for debugging
-  const ausPrice = supportedPrices.find(p => p.territoryId === 'AUS');
-  if (ausPrice) {
-    console.log(`[Apple] AUSTRALIA - Sending to Apple API: territoryId=${ausPrice.territoryId}, pricePointId=${ausPrice.pricePointId}`);
-  }
+  // console.log(`[Apple] updateInAppPurchasePrices - Updating ${supportedPrices.length} prices for ${inAppPurchaseId}`);
 
   // Build included array with all price entries
   const included = supportedPrices.map((price, index) => ({
@@ -632,7 +639,7 @@ export async function updateInAppPurchasePrices(
     }
   );
 
-  console.log(`[Apple] updateInAppPurchasePrices - Successfully updated ${supportedPrices.length} prices`);
+  // console.log(`[Apple] updateInAppPurchasePrices - Successfully updated ${supportedPrices.length} prices`);
 }
 
 // Result type for resolvePPPPricesToPricePoints
@@ -647,7 +654,7 @@ async function getSourceIdForIAP(
   credentials: AppleConnectCredentials,
   inAppPurchaseId: string
 ): Promise<string> {
-  console.log(`[Apple] getSourceIdForIAP - Fetching sourceId for ${inAppPurchaseId}`);
+  // console.log(`[Apple] getSourceIdForIAP - Fetching sourceId for ${inAppPurchaseId}`);
 
   type PricePointResponse = AppleApiListResponse<{
     id: string;
@@ -679,7 +686,7 @@ async function getSourceIdForIAP(
     throw new Error(`Could not decode sourceId from price point ID: ${pricePointId}`);
   }
 
-  console.log(`[Apple] getSourceIdForIAP - Got sourceId: ${decoded.sourceId}`);
+  // console.log(`[Apple] getSourceIdForIAP - Got sourceId: ${decoded.sourceId}`);
   return decoded.sourceId;
 }
 
@@ -691,16 +698,16 @@ export async function resolvePPPPricesToPricePoints(
   prices: Record<string, { currencyCode: string; units: string; nanos?: number }>
 ): Promise<PPPResolutionResult> {
   const territories = Object.entries(prices);
-  console.log(`[Apple] resolvePPPPricesToPricePoints - Processing ${territories.length} territories`);
+  // console.log(`[Apple] resolvePPPPricesToPricePoints - Processing ${territories.length} territories`);
 
   // Check if we have cached tier data
   if (hasTierData()) {
-    console.log(`[Apple] Using cached tier data`);
+    // console.log(`[Apple] Using cached tier data`);
     return resolvePPPPricesWithCache(credentials, inAppPurchaseId, prices);
   }
 
   // Fall back to fetching from Apple's API
-  console.log(`[Apple] No cached tier data - fetching from Apple API`);
+  // console.log(`[Apple] No cached tier data - fetching from Apple API`);
   return resolvePPPPricesFromAPI(credentials, inAppPurchaseId, prices);
 }
 
@@ -733,7 +740,7 @@ async function resolvePPPPricesWithCache(
 
     // Log for debugging
     if (territoryCode === 'AUS' || territoryCode === 'USA') {
-      console.log(`[Apple] ${territoryCode} - Requested: ${currency} ${localAmount.toFixed(2)}, Closest tier: ${closestTier.tier} (${currency} ${closestTier.price})`);
+      // console.log(`[Apple] ${territoryCode} - Requested: ${currency} ${localAmount.toFixed(2)}, Closest tier: ${closestTier.tier} (${currency} ${closestTier.price})`);
     }
 
     // Construct the price point ID for this territory using the matched tier
@@ -741,9 +748,9 @@ async function resolvePPPPricesWithCache(
     manualPrices.push({ territoryId: territoryCode, pricePointId });
   }
 
-  console.log(`[Apple] resolvePPPPricesToPricePoints - Resolved ${manualPrices.length} price points (1 API call for sourceId)`);
+  // console.log(`[Apple] resolvePPPPricesToPricePoints - Resolved ${manualPrices.length} price points (1 API call for sourceId)`);
   if (skippedTerritories.length > 0) {
-    console.warn(`[Apple] resolvePPPPricesToPricePoints - Skipped ${skippedTerritories.length} territories:`, skippedTerritories);
+    // console.warn(`[Apple] resolvePPPPricesToPricePoints - Skipped ${skippedTerritories.length} territories:`, skippedTerritories);
   }
 
   return {
@@ -770,7 +777,7 @@ async function resolvePPPPricesFromAPI(
     currencyToTerritories.get(currency)!.push(territoryCode);
   }
 
-  console.log(`[Apple] resolvePPPPricesFromAPI - Found ${currencyToTerritories.size} unique currencies`);
+  // console.log(`[Apple] resolvePPPPricesFromAPI - Found ${currencyToTerritories.size} unique currencies`);
 
   // Step 2: Fetch price points for each unique currency (using first territory as representative)
   const currencyPricePoints = new Map<string, Array<{ id: string; customerPrice: string }>>();
@@ -778,7 +785,7 @@ async function resolvePPPPricesFromAPI(
 
   for (const [currency, territoryList] of currencyToTerritories) {
     const representativeTerritory = territoryList[0];
-    console.log(`[Apple] Fetching price points for ${currency} using territory ${representativeTerritory}`);
+    // console.log(`[Apple] Fetching price points for ${currency} using territory ${representativeTerritory}`);
 
     const pricePoints = await getInAppPurchasePricePointsForTerritory(
       credentials,
@@ -796,7 +803,7 @@ async function resolvePPPPricesFromAPI(
       }
     }
     currencyTierMaps.set(currency, tierMap);
-    console.log(`[Apple] Found ${pricePoints.length} price points for ${currency}`);
+    // console.log(`[Apple] Found ${pricePoints.length} price points for ${currency}`);
   }
 
   // Step 3: Extract sourceId from any price point
@@ -842,7 +849,7 @@ async function resolvePPPPricesFromAPI(
 
     // Log Australia specifically for debugging
     if (territoryCode === 'AUS') {
-      console.log(`[Apple] AUSTRALIA - Requested: ${currency} ${localAmount}, Closest tier: ${currency} ${closest.customerPrice}, Tier: ${tier}`);
+      // console.log(`[Apple] AUSTRALIA - Requested: ${currency} ${localAmount}, Closest tier: ${currency} ${closest.customerPrice}, Tier: ${tier}`);
     }
 
     // Construct the price point ID for this territory using the matched tier
@@ -850,9 +857,9 @@ async function resolvePPPPricesFromAPI(
     manualPrices.push({ territoryId: territoryCode, pricePointId });
   }
 
-  console.log(`[Apple] resolvePPPPricesFromAPI - Resolved ${manualPrices.length} price points (${currencyToTerritories.size} currencies fetched)`);
+  // console.log(`[Apple] resolvePPPPricesFromAPI - Resolved ${manualPrices.length} price points (${currencyToTerritories.size} currencies fetched)`);
   if (skippedTerritories.length > 0) {
-    console.warn(`[Apple] resolvePPPPricesFromAPI - Skipped ${skippedTerritories.length} territories:`, skippedTerritories);
+    // console.warn(`[Apple] resolvePPPPricesFromAPI - Skipped ${skippedTerritories.length} territories:`, skippedTerritories);
   }
 
   return {
@@ -890,7 +897,7 @@ export async function getInAppPurchasePricePointsForTerritory(
   territoryCode: string
 ): Promise<Array<{ id: string; customerPrice: string }>> {
   try {
-    console.log(`[Apple] Fetching IAP price points for ${inAppPurchaseId} in ${territoryCode}`);
+    // console.log(`[Apple] Fetching IAP price points for ${inAppPurchaseId} in ${territoryCode}`);
 
     // Fetch price points for this specific IAP filtered by territory
     // The endpoint is /inAppPurchases/{id}/pricePoints (similar to subscriptions)
@@ -902,7 +909,13 @@ export async function getInAppPurchasePricePointsForTerritory(
       limit: '200',
     };
 
+    const MAX_PRICE_POINT_PAGES = 100;
+    let pricePointPageCount = 0;
     while (nextUrl) {
+      if (++pricePointPageCount > MAX_PRICE_POINT_PAGES) {
+        console.warn(`[Apple] getInAppPurchasePricePointsForTerritory - Hit max page limit for ${territoryCode}`);
+        break;
+      }
       const currentUrl = nextUrl;
       const endpoint: string = currentUrl.startsWith('http')
         ? (() => {
@@ -912,11 +925,11 @@ export async function getInAppPurchasePricePointsForTerritory(
         : currentUrl;
 
       const useQueryParams = !currentUrl.includes('?');
-      console.log(`[Apple IAP Pagination Debug]`, {
+      /* console.log(`[Apple IAP Pagination Debug]`, {
         currentUrl,
         endpoint,
         useQueryParams,
-      });
+      }); */
 
       type IAPPricePointResponse = AppleApiListResponse<{
         id: string;
@@ -933,11 +946,11 @@ export async function getInAppPurchasePricePointsForTerritory(
         }
       );
 
-      console.log(`[Apple IAP Pagination Debug] Response:`, {
+      /* console.log(`[Apple IAP Pagination Debug] Response:`, {
         dataCount: response.data.length,
         hasNextLink: !!response.links?.next,
         nextLink: response.links?.next ?? 'none',
-      });
+      }); */
 
       for (const pp of response.data) {
         allPricePoints.push({
@@ -949,7 +962,7 @@ export async function getInAppPurchasePricePointsForTerritory(
       nextUrl = response.links?.next ?? null;
     }
 
-    console.log(`[Apple] Found ${allPricePoints.length} IAP price points for ${territoryCode}`);
+    // console.log(`[Apple] Found ${allPricePoints.length} IAP price points for ${territoryCode}`);
     return allPricePoints;
   } catch (error) {
     console.error(`[Apple] Failed to get IAP price points for territory ${territoryCode}:`, error);

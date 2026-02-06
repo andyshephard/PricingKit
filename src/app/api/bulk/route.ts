@@ -16,8 +16,8 @@ import type { Money, RegionalBasePlanConfig } from '@/lib/google-play/types';
 
 const bulkOperationSchema = z.object({
   type: z.enum(['fixed', 'percentage', 'round']),
-  value: z.number().optional(),
-  roundTo: z.number().optional(),
+  value: z.number().min(-99, 'Percentage cannot reduce price by more than 99%').max(10000, 'Value cannot exceed 10000').optional(),
+  roundTo: z.number().min(0, 'Round-to value must be non-negative').max(0.99, 'Round-to value must be at most 0.99').optional(),
 });
 
 const bulkUpdateSchema = z.object({
@@ -27,9 +27,10 @@ const bulkUpdateSchema = z.object({
       id: z.string(),
       basePlanId: z.string().optional(),
     })
-  ),
+  ).min(1, 'At least one item is required').max(100, 'Maximum 100 items per bulk update'),
   operation: bulkOperationSchema,
-  targetRegions: z.array(z.string()),
+  targetRegions: z.array(z.string()).min(1, 'At least one target region is required').max(200, 'Maximum 200 target regions per bulk update'),
+  stopOnFailure: z.boolean().optional().default(false),
 });
 
 export async function POST(request: NextRequest) {
@@ -43,7 +44,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const body = await request.json();
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: 'Invalid JSON in request body' },
+        { status: 400 }
+      );
+    }
     const result = bulkUpdateSchema.safeParse(body);
 
     if (!result.success) {
@@ -53,13 +62,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { items, operation, targetRegions } = result.data;
+    const { items, operation, targetRegions, stopOnFailure } = result.data;
     const client = createGooglePlayClient(auth.credentials);
 
     const results: Array<{
       id: string;
       basePlanId?: string;
       success: boolean;
+      committed: boolean;
       error?: string;
       changes?: Array<{
         regionCode: string;
@@ -68,7 +78,20 @@ export async function POST(request: NextRequest) {
       }>;
     }> = [];
 
+    let stopped = false;
+
     for (const item of items) {
+      if (stopped) {
+        results.push({
+          id: item.id,
+          basePlanId: item.basePlanId,
+          success: false,
+          committed: false,
+          error: 'Skipped due to earlier failure (stopOnFailure)',
+        });
+        continue;
+      }
+
       try {
         if (item.type === 'product') {
           const product = await getInAppProduct(
@@ -81,8 +104,10 @@ export async function POST(request: NextRequest) {
             results.push({
               id: item.id,
               success: false,
+              committed: false,
               error: 'Product not found',
             });
+            if (stopOnFailure) { stopped = true; }
             continue;
           }
 
@@ -126,6 +151,7 @@ export async function POST(request: NextRequest) {
           results.push({
             id: item.id,
             success: true,
+            committed: true,
             changes,
           });
         } else if (item.type === 'subscription' && item.basePlanId) {
@@ -140,8 +166,10 @@ export async function POST(request: NextRequest) {
               id: item.id,
               basePlanId: item.basePlanId,
               success: false,
+              committed: false,
               error: 'Subscription not found',
             });
+            if (stopOnFailure) { stopped = true; }
             continue;
           }
 
@@ -154,8 +182,10 @@ export async function POST(request: NextRequest) {
               id: item.id,
               basePlanId: item.basePlanId,
               success: false,
+              committed: false,
               error: 'Base plan not found',
             });
+            if (stopOnFailure) { stopped = true; }
             continue;
           }
 
@@ -207,6 +237,7 @@ export async function POST(request: NextRequest) {
             id: item.id,
             basePlanId: item.basePlanId,
             success: true,
+            committed: true,
             changes,
           });
         }
@@ -215,19 +246,25 @@ export async function POST(request: NextRequest) {
           id: item.id,
           basePlanId: item.basePlanId,
           success: false,
+          committed: false,
           error: error instanceof Error ? error.message : 'Unknown error',
         });
+        if (stopOnFailure) { stopped = true; }
       }
     }
 
     const successful = results.filter((r) => r.success).length;
     const failed = results.filter((r) => !r.success).length;
+    const committed = results.filter((r) => r.committed).length;
+    const skipped = results.filter((r) => !r.success && r.error?.includes('Skipped')).length;
 
     return NextResponse.json({
       success: failed === 0,
       total: items.length,
       successful,
       failed,
+      committed,
+      ...(stopped ? { stoppedEarly: true, skipped } : {}),
       results,
     });
   } catch (error) {

@@ -79,6 +79,8 @@ export function useUpdateAppleSubscriptionPrices() {
       queryClient.invalidateQueries({
         queryKey: ['apple', 'subscriptions', variables.productId],
       });
+      queryClient.invalidateQueries({ queryKey: ['subscriptions', 'apple'] });
+      queryClient.invalidateQueries({ queryKey: ['platform-subscriptions', 'apple'] });
     },
   });
 }
@@ -118,6 +120,8 @@ export function useDeleteAppleSubscriptionPrice() {
       queryClient.invalidateQueries({
         queryKey: ['apple', 'subscriptions', variables.productId],
       });
+      queryClient.invalidateQueries({ queryKey: ['subscriptions', 'apple'] });
+      queryClient.invalidateQueries({ queryKey: ['platform-subscriptions', 'apple'] });
     },
   });
 }
