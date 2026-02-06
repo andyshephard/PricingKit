@@ -124,9 +124,8 @@ export async function DELETE() {
     const cookieStore = await cookies();
     const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
 
-    // Delete the session
     if (sessionId) {
-      await deleteAppleSession(sessionId);
+      await deleteAppleSession();
     }
 
     cookieStore.delete(SESSION_COOKIE);

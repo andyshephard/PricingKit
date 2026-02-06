@@ -166,9 +166,8 @@ export async function DELETE() {
     const cookieStore = await cookies();
     const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
 
-    // Delete the session from memory
     if (sessionId) {
-      await deleteSession(sessionId);
+      await deleteSession();
     }
 
     cookieStore.delete(SESSION_COOKIE);
