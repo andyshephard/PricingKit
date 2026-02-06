@@ -227,9 +227,13 @@ export function calculateRegionalPrice(
           // Billing currency differs from local currency
           // Convert PPP price to billing currency
           //
-          // Safety check: if localExchangeRate is 1.0 for a non-USD currency,
-          // the exchange rate lookup failed. Fall back to static multiplier.
-          if (localCurrency !== 'USD' && localExchangeRate === 1.0) {
+          // Safety check: if the local currency isn't found in any exchange rate data,
+          // the lookup failed. Fall back to static multiplier.
+          // Note: we check for existence rather than rate === 1.0, because USD-pegged
+          // currencies (BSD, PAB, etc.) legitimately have a rate of 1.0.
+          const hasExchangeRate = (dynamicExchangeRates?.rates[localCurrency] !== undefined) ||
+            (FALLBACK_EXCHANGE_RATES[localCurrency] !== undefined);
+          if (localCurrency !== 'USD' && !hasExchangeRate) {
             console.warn(`Missing exchange rate for ${localCurrency} (${alpha2Code}), using static multiplier`);
             calculatedPrice = baseUsdPrice * pppMultiplier * exchangeRate;
             effectiveMultiplier = pppMultiplier;
