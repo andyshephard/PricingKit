@@ -193,9 +193,9 @@ export function SubscriptionBulkPricingModal({
       if (data.success) {
         setPppData(data.data);
         setPppMetadata(data.metadata);
-        if (data.metadata.fallback) {
-          console.info('Using static PPP data (World Bank API unavailable)');
-        }
+          // if (data.metadata.fallback) {
+          //   console.info('Using static PPP data (World Bank API unavailable)');
+          // }
       }
     } catch (error) {
       console.error('Failed to fetch PPP data:', error);
