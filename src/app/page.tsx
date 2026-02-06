@@ -9,6 +9,7 @@ import {
   TrendingUp,
   BookOpen,
   ArrowRight,
+  ExternalLink,
 } from 'lucide-react';
 import { ServiceAccountUpload } from '@/components/auth/service-account-upload';
 import { AppleConnectUpload } from '@/components/auth/apple-connect-upload';
@@ -49,6 +50,16 @@ export default function Home() {
             A free and open-source tool to manage in-app product and subscription pricing for Google Play and
             Apple App Store
           </p>
+          <a
+            href="https://github.com/andyshephard/PricingKit"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <Button variant="outline" className="mt-4">
+              <ExternalLink className="mr-2 h-4 w-4" />
+              View on GitHub
+            </Button>
+          </a>
         </div>
 
         <div className="grid md:grid-cols-2 gap-12 max-w-5xl mx-auto">
