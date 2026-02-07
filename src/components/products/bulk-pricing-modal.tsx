@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect } from 'react';
-import { Calculator, Globe, TrendingDown, Sliders, RefreshCw, Beef } from 'lucide-react';
+import { Calculator, Globe, TrendingDown, Sliders, RefreshCw, Hamburger } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -473,7 +473,7 @@ export function BulkPricingModal({
                         onChange={() => setStrategy('bigmac')}
                         className="sr-only"
                       />
-                      <Beef className="h-4 w-4 shrink-0" />
+                      <Hamburger className="h-4 w-4 shrink-0" />
                       <span className="text-sm font-medium truncate">Big Mac</span>
                     </label>
                   </TooltipTrigger>
