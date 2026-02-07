@@ -1,6 +1,8 @@
 ![PricingKit Banner](public/banner.webp)
 
-A Next.js webapp for managing in-app product and subscription pricing across **Google Play Store** and **Apple App Store**.
+# PricingKit
+
+Free, open-source regional pricing tool for the App Store and Google Play. Set PPP-adjusted prices across 175+ territories in one click &mdash; your credentials never leave your browser.
 
 ## Features
 
