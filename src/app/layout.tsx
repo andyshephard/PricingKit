@@ -14,6 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://pricing-kit.com'),
   title: "PricingKit - Free, Open-Source Regional Pricing for the App Store & Google Play",
   description: "Free, open-source regional pricing tool for the App Store and Google Play. Set PPP-adjusted prices across 175+ territories in one click — your credentials never leave your browser.",
   openGraph: {
