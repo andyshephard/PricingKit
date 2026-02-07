@@ -535,7 +535,8 @@ export async function updateSubscriptionPrice(
   subscriptionId: string,
   pricePointId: string,
   territoryCode: string,
-  startDate?: string
+  startDate?: string,
+  preserveCurrentPrice: boolean = true
 ): Promise<void> {
   await appleApiRequest(credentials, `/subscriptionPrices`, {
     method: 'POST',
@@ -544,7 +545,7 @@ export async function updateSubscriptionPrice(
         type: 'subscriptionPrices',
         attributes: {
           startDate: startDate ?? null,
-          preserveCurrentPrice: false,
+          preserveCurrentPrice: preserveCurrentPrice,
         },
         relationships: {
           subscription: {

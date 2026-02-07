@@ -27,7 +27,7 @@ export default function GoogleDashboardLayout({
 
   useEffect(() => {
     if (!isChecking && !isGoogleAuthenticated) {
-      router.push('/');
+      router.push('/setup');
     }
   }, [isChecking, isGoogleAuthenticated, router]);
 

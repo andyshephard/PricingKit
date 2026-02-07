@@ -36,7 +36,7 @@ export function AuthErrorDialog() {
   const handleReturnHome = () => {
     clearAuth();
     setOpen(false);
-    router.push('/');
+    router.push('/setup');
   };
 
   return (
@@ -49,12 +49,12 @@ export function AuthErrorDialog() {
           </DialogTitle>
           <DialogDescription>
             Your session has expired or you are no longer authenticated.
-            Please return to the home page to reconnect your Google Play account.
+            Please return to the setup page to reconnect your account.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <Button onClick={handleReturnHome} className="w-full">
-            Return to Home
+            Return to Setup
           </Button>
         </DialogFooter>
       </DialogContent>

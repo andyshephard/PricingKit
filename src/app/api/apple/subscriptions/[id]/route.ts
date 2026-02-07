@@ -95,6 +95,7 @@ export async function GET(
 
 // Schema for price update
 const updatePriceSchema = z.object({
+  preserveCurrentPrice: z.boolean().optional().default(true),
   prices: z.record(
     regionCodeSchema,
     z.object({
@@ -167,7 +168,7 @@ export async function PATCH(
     }
 
     // Update prices for each territory with rate limiting to avoid overwhelming Apple's API
-    const { prices } = result.data;
+    const { prices, preserveCurrentPrice } = result.data;
     const priceEntries = Object.entries(prices);
 
     // Fetch current scheduled prices to check for conflicts
@@ -197,7 +198,8 @@ export async function PATCH(
           subscription.id,
           pricePointId,
           territoryCode,
-          startDate
+          startDate,
+          preserveCurrentPrice
         )
     );
 

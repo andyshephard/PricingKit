@@ -245,16 +245,18 @@ export function useUpdateAppleSubscriptionPrices() {
   const mutateAsync = async ({
     subscriptionId,
     prices,
+    preserveCurrentPrice,
   }: {
     subscriptionId: string;
     prices: Record<string, { pricePointId: string; startDate?: string }>;
+    preserveCurrentPrice?: boolean;
   }) => {
     const result = await streaming.mutateAsync(
       `/api/apple/subscriptions/${encodeURIComponent(subscriptionId)}`,
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prices }),
+        body: JSON.stringify({ prices, preserveCurrentPrice }),
       }
     );
 

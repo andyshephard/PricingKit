@@ -143,6 +143,7 @@ export async function listInAppPurchases(
         const basePrice = await getProductBasePriceBySchedule(credentials, priceScheduleId, baseTerritory);
         if (basePrice) {
           product.prices = { [baseTerritory]: basePrice };
+          product.baseTerritory = baseTerritory;
           // console.log('[Apple] Got price for product', product.id, ':', basePrice.customerPrice, basePrice.currency);
         }
       } catch (error) {
@@ -263,6 +264,23 @@ export async function getInAppPurchase(
     return products[0] ?? null;
   } catch {
     return null;
+  }
+}
+
+// Get the base territory for a product using Apple's dedicated endpoint
+export async function getBaseTerritoryForProduct(
+  credentials: AppleConnectCredentials,
+  inAppPurchaseId: string
+): Promise<string> {
+  try {
+    const response = await appleApiRequest<AppleApiResponse<AppleTerritory>>(
+      credentials,
+      `/inAppPurchasePriceSchedules/${inAppPurchaseId}/baseTerritory`,
+      { queryParams: { 'fields[territories]': 'currency' } }
+    );
+    return response.data?.id || 'USA';
+  } catch {
+    return 'USA';
   }
 }
 

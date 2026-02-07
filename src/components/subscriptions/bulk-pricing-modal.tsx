@@ -341,7 +341,7 @@ export function SubscriptionBulkPricingModal({
         <div className="space-y-6 py-4">
           {/* Base Price Input */}
           <div className="space-y-2">
-            <Label htmlFor="base-price">Base Price (USD)</Label>
+            <Label htmlFor="base-price">Base Price ({basePlan.regionalConfigs?.find(rc => rc.regionCode === 'US')?.price?.currencyCode || 'USD'})</Label>
             <div className="relative">
               <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
@@ -503,6 +503,17 @@ export function SubscriptionBulkPricingModal({
                 <span className="text-sm">No Rounding</span>
               </label>
             </div>
+          </div>
+
+          {/* Preserve Existing Subscriber Prices */}
+          <div className="space-y-3">
+            <label className="flex items-center gap-2 cursor-default">
+              <Checkbox checked disabled />
+              <span className="text-sm font-medium text-muted-foreground">Preserve existing subscriber prices</span>
+            </label>
+            <p className="text-xs text-muted-foreground ml-6">
+              Google Play always preserves prices for existing subscribers. Price updates only apply to new subscribers.
+            </p>
           </div>
 
           {/* Region Selection */}

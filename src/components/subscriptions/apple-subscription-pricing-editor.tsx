@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from 'react';
 import { Plus, Trash2, Globe, Calculator, X, Check, Loader2, CalendarX } from 'lucide-react';
+import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
 import { AppleSubscriptionBulkPricingModal } from './apple-subscription-bulk-pricing-modal';
 import { Button } from '@/components/ui/button';
@@ -160,6 +161,7 @@ export function AppleSubscriptionPricingEditor({
   const [pendingChanges, setPendingChanges] = useState<Map<string, RegionPriceChange>>(new Map());
   const [bulkPricingOpen, setBulkPricingOpen] = useState(false);
   const [clearScheduledConfirmOpen, setClearScheduledConfirmOpen] = useState(false);
+  const [preserveCurrentPrice, setPreserveCurrentPrice] = useState(true);
 
   // For two-step price selection (approved subscriptions need a start date)
   const [selectedPricePoint, setSelectedPricePoint] = useState<SubscriptionPricePoint | null>(null);
@@ -305,6 +307,7 @@ export function AppleSubscriptionPricingEditor({
       await updateMutation.mutateAsync({
         subscriptionId: subscription.id,
         prices,
+        preserveCurrentPrice,
       });
       toast.success('Prices updated successfully');
       setPendingChanges(new Map());
@@ -492,6 +495,17 @@ export function AppleSubscriptionPricingEditor({
                   </Button>
                 </div>
               </div>
+
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <Checkbox
+                  checked={preserveCurrentPrice}
+                  onCheckedChange={(checked) => setPreserveCurrentPrice(checked === true)}
+                />
+                <span>Preserve existing subscriber prices</span>
+                <span className="text-xs text-muted-foreground">
+                  — existing subscribers keep their current price when updating
+                </span>
+              </label>
 
               <div className="rounded-md border">
                 <Table>
@@ -790,6 +804,8 @@ export function AppleSubscriptionPricingEditor({
         subscription={subscription}
         open={bulkPricingOpen}
         onOpenChange={setBulkPricingOpen}
+        preserveCurrentPrice={preserveCurrentPrice}
+        onPreserveCurrentPriceChange={setPreserveCurrentPrice}
       />
 
       {/* Clear Scheduled Prices Confirmation Dialog */}

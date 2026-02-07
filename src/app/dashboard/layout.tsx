@@ -94,7 +94,7 @@ export default function DashboardLayout({
           // No valid auth - clear client state and redirect
           console.log('No valid authentication, redirecting to home');
           clearAuth();
-          router.push('/');
+          router.push('/setup');
         }
       } catch (error) {
         console.error('Auth verification failed:', error);

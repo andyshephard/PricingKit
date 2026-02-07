@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect } from 'react';
-import { Calculator, Globe, DollarSign, TrendingDown, Sliders, RefreshCw, Beef } from 'lucide-react';
+import { Calculator, Globe, TrendingDown, Sliders, RefreshCw, Beef } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -50,6 +50,17 @@ import {
   type DynamicExchangeRates,
 } from '@/lib/google-play/currency';
 import { useUpdateProductPrices } from '@/hooks/use-products';
+
+// Helper to get the currency symbol for a currency code (e.g. "GBP" → "£")
+function getCurrencySymbol(currencyCode: string): string {
+  try {
+    return new Intl.NumberFormat('en', { style: 'currency', currency: currencyCode })
+      .formatToParts(0)
+      .find(part => part.type === 'currency')?.value || currencyCode;
+  } catch {
+    return currencyCode;
+  }
+}
 
 // Helper to convert Apple price to Money format
 function appleToMoney(applePrice: { customerPrice: string; currency: string }): Money {
@@ -362,7 +373,7 @@ export function BulkPricingModal({
             Bulk Edit Regional Prices
           </DialogTitle>
           <DialogDescription>
-            Set a base USD price and automatically calculate regional prices
+            Set a base price and automatically calculate regional prices
             using a pricing strategy.
           </DialogDescription>
         </DialogHeader>
@@ -371,9 +382,11 @@ export function BulkPricingModal({
         <div className="space-y-6 py-4">
           {/* Base Price Input */}
           <div className="space-y-2">
-            <Label htmlFor="base-price">Base Price (USD)</Label>
+            <Label htmlFor="base-price">Base Price ({product.defaultPrice?.currencyCode || 'USD'})</Label>
             <div className="relative">
-              <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+                {getCurrencySymbol(product.defaultPrice?.currencyCode || 'USD')}
+              </span>
               <Input
                 id="base-price"
                 type="number"

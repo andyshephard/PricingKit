@@ -34,6 +34,7 @@ export {
 export {
   listInAppPurchases,
   getInAppPurchase,
+  getBaseTerritoryForProduct,
   getInAppPurchasePrices,
   getAvailablePricePoints,
   updateInAppPurchasePrice,

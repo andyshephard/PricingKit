@@ -30,6 +30,7 @@ export interface RawAppleProduct {
   name: string;
   state: string;
   type: string;
+  baseTerritory?: string;
   prices?: Record<string, AppleProductPrice>;
 }
 

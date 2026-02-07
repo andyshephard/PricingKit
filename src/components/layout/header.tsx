@@ -32,7 +32,7 @@ export function Header({
         fetch('/api/apple/auth', { method: 'DELETE' }),
       ]);
       clearAuth();
-      router.push('/');
+      router.push('/setup');
     } catch (error) {
       console.error('Logout failed:', error);
     }

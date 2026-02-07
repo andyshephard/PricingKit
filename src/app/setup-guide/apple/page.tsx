@@ -376,7 +376,7 @@ export default function AppleSetupGuidePage() {
               </div>
 
               <Button asChild className="w-full">
-                <Link href="/">Go to Connect Page</Link>
+                <Link href="/setup">Go to Connect Page</Link>
               </Button>
             </CardContent>
           </Card>

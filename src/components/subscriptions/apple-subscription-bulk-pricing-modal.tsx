@@ -121,6 +121,8 @@ interface AppleSubscriptionBulkPricingModalProps {
   subscription: AppleSubscriptionData;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  preserveCurrentPrice: boolean;
+  onPreserveCurrentPriceChange: (value: boolean) => void;
 }
 
 interface PreviewPrice {
@@ -141,6 +143,8 @@ export function AppleSubscriptionBulkPricingModal({
   subscription,
   open,
   onOpenChange,
+  preserveCurrentPrice,
+  onPreserveCurrentPriceChange,
 }: AppleSubscriptionBulkPricingModalProps) {
   const [basePrice, setBasePrice] = useState<string>('');
   const [inputMode, setInputMode] = useState<'tier' | 'manual'>('tier');
@@ -425,6 +429,7 @@ export function AppleSubscriptionBulkPricingModal({
       await updateMutation.mutateAsync({
         subscriptionId: subscription.id,
         prices,
+        preserveCurrentPrice,
       });
 
       const successCount = Object.keys(resolved).length;
@@ -470,7 +475,7 @@ export function AppleSubscriptionBulkPricingModal({
             Bulk Edit Regional Prices
           </DialogTitle>
           <DialogDescription>
-            Set a base USD price for <strong>{subscription.productId}</strong> and automatically calculate regional prices mapped to Apple&apos;s price tiers.
+            Set a base price for <strong>{subscription.productId}</strong> and automatically calculate regional prices mapped to Apple&apos;s price tiers.
           </DialogDescription>
         </DialogHeader>
 
@@ -480,7 +485,7 @@ export function AppleSubscriptionBulkPricingModal({
             <div className="flex gap-8">
               {/* Base Price Input */}
               <div className="space-y-2">
-                <Label>Base Price (USD)</Label>
+                <Label>Base Price ({subscription.prices?.['US']?.currency || 'USD'})</Label>
                 <Tabs value={inputMode} onValueChange={(v) => handleInputModeChange(v as 'tier' | 'manual')}>
                   <TabsList className="grid w-full grid-cols-2 max-w-xs">
                     <TabsTrigger value="tier">Select Tier</TabsTrigger>
@@ -693,6 +698,20 @@ export function AppleSubscriptionBulkPricingModal({
                   <span className="text-sm">No Rounding</span>
                 </label>
               </div>
+            </div>
+
+            {/* Preserve Existing Subscriber Prices */}
+            <div className="space-y-3">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <Checkbox
+                  checked={preserveCurrentPrice}
+                  onCheckedChange={(checked) => onPreserveCurrentPriceChange(checked === true)}
+                />
+                <span className="text-sm font-medium">Preserve existing subscriber prices</span>
+              </label>
+              <p className="text-xs text-muted-foreground ml-6">
+                When enabled, existing subscribers keep their current price. Only new subscribers get the updated price.
+              </p>
             </div>
 
             {/* Region Selection */}

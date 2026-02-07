@@ -390,7 +390,7 @@ export default function SetupGuidePage() {
                 </div>
               </div>
               <Button asChild className="w-full">
-                <Link href="/">
+                <Link href="/setup">
                   Go to Connect Page
                 </Link>
               </Button>

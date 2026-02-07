@@ -63,9 +63,10 @@ export default function AppleProductDetailPage({
       // Normalize Apple product for the editor
       if (data.product) {
         const p = data.product as RawAppleProduct;
-        const usaPrice = p.prices?.USA;
-        const defaultPrice = usaPrice
-          ? { currencyCode: usaPrice.currency || 'USD', units: usaPrice.customerPrice }
+        const baseTerritoryCode = p.baseTerritory || 'USA';
+        const basePrice = p.prices?.[baseTerritoryCode];
+        const defaultPrice = basePrice
+          ? { currencyCode: basePrice.currency || 'USD', units: basePrice.customerPrice }
           : null;
 
         data.product = {
@@ -160,7 +161,7 @@ export default function AppleProductDetailPage({
                     </p>
                   </div>
                   <div>
-                    <p className="text-sm text-muted-foreground">Base Price (USD)</p>
+                    <p className="text-sm text-muted-foreground">Base Price ({product.defaultPrice?.currencyCode || 'USD'})</p>
                     <p className="font-medium mt-1">
                       {product.defaultPrice
                         ? formatMoney(product.defaultPrice)

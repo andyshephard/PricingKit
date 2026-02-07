@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { getAppleAuthFromCookies } from '../../auth/route';
 import {
   getInAppPurchase,
+  getBaseTerritoryForProduct,
   getInAppPurchasePrices,
   updateInAppPurchasePrice,
   updateInAppPurchasePrices,
@@ -55,9 +56,13 @@ export async function GET(
       );
     }
 
-    // Fetch prices for this product
-    const prices = await getInAppPurchasePrices(auth.credentials, product.id);
+    // Fetch prices and base territory in parallel
+    const [prices, baseTerritory] = await Promise.all([
+      getInAppPurchasePrices(auth.credentials, product.id),
+      getBaseTerritoryForProduct(auth.credentials, product.id),
+    ]);
     product.prices = prices;
+    product.baseTerritory = baseTerritory;
 
     return NextResponse.json({ product });
   } catch (error) {
@@ -159,6 +164,9 @@ export async function PATCH(
       );
     }
 
+    // Fetch base territory from Apple's dedicated endpoint
+    product.baseTerritory = await getBaseTerritoryForProduct(auth.credentials, product.id);
+
     // Update prices
     const { prices } = result.data;
 
@@ -186,10 +194,11 @@ export async function PATCH(
         );
       }
 
-      // Ensure USA is included as base territory
-      if (!moneyPrices['USA']) {
+      // Ensure base territory is included
+      const baseTerritory = product.baseTerritory || 'USA';
+      if (!moneyPrices[baseTerritory]) {
         return NextResponse.json(
-          { error: 'USA price required when using calculated prices. Apple uses USA as the base territory.' },
+          { error: `${baseTerritory} price required when using calculated prices. Apple uses ${baseTerritory} as the base territory.` },
           { status: 400 }
         );
       }
@@ -219,7 +228,7 @@ export async function PATCH(
         auth.credentials,
         product.id,
         result.resolved,
-        'USA' // Base territory
+        baseTerritory
       );
 
       updatedCount = result.resolved.length;
@@ -248,10 +257,12 @@ export async function PATCH(
     // Fetch updated product
     const updatedProduct = await getInAppPurchase(auth.credentials, productId);
     if (updatedProduct) {
-      updatedProduct.prices = await getInAppPurchasePrices(
-        auth.credentials,
-        updatedProduct.id
-      );
+      const [updatedPrices, updatedBaseTerritory] = await Promise.all([
+        getInAppPurchasePrices(auth.credentials, updatedProduct.id),
+        getBaseTerritoryForProduct(auth.credentials, updatedProduct.id),
+      ]);
+      updatedProduct.prices = updatedPrices;
+      updatedProduct.baseTerritory = updatedBaseTerritory;
     }
 
     return NextResponse.json({

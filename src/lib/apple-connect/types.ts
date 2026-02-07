@@ -385,6 +385,7 @@ export interface NormalizedAppleProduct {
   name: string;
   type: AppleInAppPurchaseType;
   state: AppleInAppPurchaseState;
+  baseTerritory?: string; // Alpha-3 territory code of the base price (e.g., 'GBR', 'USA')
   prices: Record<string, AppleProductPrice>; // Territory code -> price info
   localizations: Record<string, { name: string; description?: string }>;
 }

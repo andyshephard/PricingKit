@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from 'react';
 import { Plus, Trash2, Save, X, Globe, AlertCircle, Calculator } from 'lucide-react';
+import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -183,6 +184,14 @@ function BasePlanPricingSection({
           </Button>
         </div>
       </div>
+
+      <label className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Checkbox checked disabled />
+        <span>Preserve existing subscriber prices</span>
+        <span className="text-xs">
+          — Google Play always preserves prices for existing subscribers
+        </span>
+      </label>
 
       <div className="rounded-md border">
         <Table>

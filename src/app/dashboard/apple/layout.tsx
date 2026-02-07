@@ -27,7 +27,7 @@ export default function AppleDashboardLayout({
 
   useEffect(() => {
     if (!isChecking && !isAppleAuthenticated) {
-      router.push('/');
+      router.push('/setup');
     }
   }, [isChecking, isAppleAuthenticated, router]);
 
