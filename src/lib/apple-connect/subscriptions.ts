@@ -509,21 +509,62 @@ export async function getSubscriptionPricePoints(
   }>
 > {
   try {
-    const response = await appleApiRequest<
-      AppleApiListResponse<AppleSubscriptionPricePoint>
-    >(credentials, `/subscriptions/${subscriptionId}/pricePoints`, {
-      queryParams: {
-        'filter[territory]': territoryCode,
-        limit: '200',
-        'fields[subscriptionPricePoints]': 'customerPrice,proceeds',
-      },
-    });
+    const allPricePoints: Array<{
+      id: string;
+      customerPrice: string;
+      proceeds: string;
+    }> = [];
 
-    return response.data.map((pp) => ({
-      id: pp.id,
-      customerPrice: pp.attributes.customerPrice,
-      proceeds: pp.attributes.proceeds,
-    }));
+    let nextUrl: string | null = `/subscriptions/${subscriptionId}/pricePoints`;
+    const queryParams = {
+      'filter[territory]': territoryCode,
+      limit: '200',
+      'fields[subscriptionPricePoints]': 'customerPrice,proceeds',
+    };
+
+    const MAX_PRICE_POINT_PAGES = 100;
+    let pageCount = 0;
+    const seenUrls = new Set<string>();
+
+    while (nextUrl) {
+      if (++pageCount > MAX_PRICE_POINT_PAGES) {
+        console.warn(
+          `[Apple] getSubscriptionPricePoints - Hit max page limit for ${territoryCode}`
+        );
+        break;
+      }
+      if (seenUrls.has(nextUrl)) {
+        break;
+      }
+      seenUrls.add(nextUrl);
+
+      const currentUrl: string = nextUrl;
+      const endpoint: string = currentUrl.startsWith('http')
+        ? (() => {
+            const parsedUrl = new URL(currentUrl);
+            return parsedUrl.pathname.replace('/v1', '') + parsedUrl.search;
+          })()
+        : currentUrl;
+      const useQueryParams: boolean = !currentUrl.includes('?');
+
+      const response: AppleApiListResponse<AppleSubscriptionPricePoint> = await appleApiRequest<
+        AppleApiListResponse<AppleSubscriptionPricePoint>
+      >(credentials, endpoint, {
+        queryParams: useQueryParams ? queryParams : undefined,
+      });
+
+      for (const pp of response.data) {
+        allPricePoints.push({
+          id: pp.id,
+          customerPrice: pp.attributes.customerPrice,
+          proceeds: pp.attributes.proceeds,
+        });
+      }
+
+      nextUrl = response.links?.next ?? null;
+    }
+
+    return allPricePoints;
   } catch {
     return [];
   }
