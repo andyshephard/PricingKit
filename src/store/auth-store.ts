@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
@@ -161,3 +162,18 @@ export const useAuthStore = create<AuthState>()(
     }
   )
 );
+
+export const useHasHydrated = () => {
+  const [hasHydrated, setHasHydrated] = useState(
+    useAuthStore.persist?.hasHydrated() ?? false
+  );
+
+  useEffect(() => {
+    const unsub = useAuthStore.persist?.onFinishHydration(() =>
+      setHasHydrated(true)
+    );
+    return unsub;
+  }, []);
+
+  return hasHydrated;
+};

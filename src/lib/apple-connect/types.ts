@@ -316,6 +316,17 @@ export interface AppleSubscriptionLocalization {
   };
 }
 
+// App price types (for paid app pricing)
+export interface AppleAppPrice {
+  id: string;
+  type: 'appPrices';
+  attributes: { startDate?: string; endDate?: string };
+  relationships?: {
+    appPricePoint?: { data: { id: string; type: 'appPricePoints' } };
+    territory?: { data: { id: string; type: 'territories' } };
+  };
+}
+
 // Union type for all possible included items
 export type AppleIncludedItem =
   | ApplePricePoint
@@ -327,7 +338,8 @@ export type AppleIncludedItem =
   | AppleSubscription
   | AppleSubscriptionPrice
   | AppleSubscriptionPricePoint
-  | AppleSubscriptionLocalization;
+  | AppleSubscriptionLocalization
+  | AppleAppPrice;
 
 // API Response types
 export interface AppleApiResponse<T> {

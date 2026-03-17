@@ -45,6 +45,14 @@ export {
   type PPPResolutionResult,
 } from './products';
 
+// Re-export app price operations
+export {
+  getAppPriceSchedule,
+  getAppPrices,
+  updateAppPriceSchedule,
+  resolveAppPricesToPricePoints,
+} from './app-price';
+
 // Re-export subscription operations
 export {
   listSubscriptionGroups,

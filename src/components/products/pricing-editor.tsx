@@ -46,6 +46,7 @@ import { BulkPricingModal } from './bulk-pricing-modal';
 
 interface PricingEditorProps {
   product: InAppProduct;
+  onSave?: (prices: Record<string, Money>) => Promise<{ skipped?: string[]; updated?: number }>;
 }
 
 interface PriceChange {
@@ -73,7 +74,7 @@ function appleToMoney(applePrice: { customerPrice: string; currency: string }): 
   };
 }
 
-export function PricingEditor({ product }: PricingEditorProps) {
+export function PricingEditor({ product, onSave }: PricingEditorProps) {
   const platform = useAuthStore((state) => state.platform);
   const [pendingChanges, setPendingChanges] = useState<Map<string, PriceChange>>(
     new Map()
@@ -198,10 +199,14 @@ export function PricingEditor({ product }: PricingEditorProps) {
     });
 
     try {
-      await updateMutation.mutateAsync({
-        sku: product.sku,
-        prices,
-      });
+      if (onSave) {
+        await onSave(prices);
+      } else {
+        await updateMutation.mutateAsync({
+          sku: product.sku,
+          prices,
+        });
+      }
       toast.success('Prices updated successfully');
       setPendingChanges(new Map());
     } catch (error) {
@@ -455,6 +460,7 @@ export function PricingEditor({ product }: PricingEditorProps) {
         product={product}
         open={bulkPricingOpen}
         onOpenChange={setBulkPricingOpen}
+        onSave={onSave}
       />
     </div>
   );

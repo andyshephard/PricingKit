@@ -7,6 +7,7 @@ import {
   CreditCard,
   LayoutDashboard,
   Settings,
+  DollarSign,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -31,12 +32,24 @@ export function Sidebar() {
     }
 
     const basePath = `/dashboard/${platform}`;
-    return [
+    const items = [
       { name: 'Overview', href: basePath, icon: LayoutDashboard, disabled: false },
       { name: 'Products', href: `${basePath}/products`, icon: Package, disabled: false },
       { name: 'Subscriptions', href: `${basePath}/subscriptions`, icon: CreditCard, disabled: false },
       { name: 'Settings', href: '/dashboard/settings', icon: Settings, disabled: false },
     ];
+
+    if (platform === 'apple') {
+      // Insert "App Price" before Settings
+      items.splice(-1, 0, {
+        name: 'App Price',
+        href: `${basePath}/app-price`,
+        icon: DollarSign,
+        disabled: false,
+      });
+    }
+
+    return items;
   };
 
   const navigation = getNavigation(currentPlatform);

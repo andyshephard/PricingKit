@@ -1,12 +1,17 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { Sidebar, Footer } from '@/components/layout';
-import { useAuthStore } from '@/store/auth-store';
+import { useAuthStore, useHasHydrated } from '@/store/auth-store';
 import { isPlatformRoute } from '@/lib/utils/platform-routes';
+
+const AUTH_VERIFIED_KEY = 'dashboard-auth-verified';
+
+let prevBundleId: string | null = null;
+let prevPackageName: string | null = null;
 
 export default function DashboardLayout({
   children,
@@ -16,12 +21,7 @@ export default function DashboardLayout({
   const router = useRouter();
   const pathname = usePathname();
   const queryClient = useQueryClient();
-  const isGoogleAuthenticated = useAuthStore(
-    (state) => state.isGoogleAuthenticated
-  );
-  const isAppleAuthenticated = useAuthStore(
-    (state) => state.isAppleAuthenticated
-  );
+  const hasHydrated = useHasHydrated();
   const clearAuth = useAuthStore((state) => state.clearAuth);
   const setGoogleAuthenticated = useAuthStore(
     (state) => state.setGoogleAuthenticated
@@ -31,19 +31,19 @@ export default function DashboardLayout({
   );
   const [isVerifying, setIsVerifying] = useState(true);
 
-  // Use refs to track auth verification state and previous values
-  // This prevents the useEffect from re-running when store values change
-  const hasVerifiedAuth = useRef(false);
-  const prevBundleId = useRef<string | null>(null);
-  const prevPackageName = useRef<string | null>(null);
-
   useEffect(() => {
-    // Only verify auth once on mount
-    if (hasVerifiedAuth.current) return;
-    hasVerifiedAuth.current = true;
+    if (!hasHydrated) return;
+
+    // Check sessionStorage for prior verification (survives HMR, resets on full reload)
+    if (typeof window !== 'undefined' && sessionStorage.getItem(AUTH_VERIFIED_KEY) === 'true') {
+      setIsVerifying(false);
+      return;
+    }
+
+    let cancelled = false;
 
     // Verify auth with server on mount
-    async function verifyAuth() {
+    (async () => {
       try {
         // Check both platforms in parallel
         const [googleResponse, appleResponse] = await Promise.all([
@@ -56,15 +56,17 @@ export default function DashboardLayout({
           appleResponse.json(),
         ]);
 
+        if (cancelled) return;
+
         let hasValidAuth = false;
 
         // Sync Google auth state
         if (googleData.authenticated) {
           // Invalidate queries if packageName changed (prevents stale data)
-          if (prevPackageName.current && prevPackageName.current !== googleData.packageName) {
+          if (prevPackageName && prevPackageName !== googleData.packageName) {
             queryClient.invalidateQueries();
           }
-          prevPackageName.current = googleData.packageName;
+          prevPackageName = googleData.packageName;
           setGoogleAuthenticated({
             packageName: googleData.packageName,
             projectId: googleData.projectId,
@@ -76,10 +78,10 @@ export default function DashboardLayout({
         // Sync Apple auth state
         if (appleData.authenticated) {
           // Invalidate queries if bundleId changed (prevents stale data)
-          if (prevBundleId.current && prevBundleId.current !== appleData.bundleId) {
+          if (prevBundleId && prevBundleId !== appleData.bundleId) {
             queryClient.invalidateQueries();
           }
-          prevBundleId.current = appleData.bundleId;
+          prevBundleId = appleData.bundleId;
           setAppleAuthenticated({
             bundleId: appleData.bundleId,
             keyId: appleData.keyId,
@@ -89,6 +91,9 @@ export default function DashboardLayout({
         }
 
         if (hasValidAuth) {
+          if (typeof window !== 'undefined') {
+            sessionStorage.setItem(AUTH_VERIFIED_KEY, 'true');
+          }
           setIsVerifying(false);
         } else {
           // No valid auth - clear client state and redirect
@@ -98,30 +103,25 @@ export default function DashboardLayout({
         }
       } catch (error) {
         console.error('Auth verification failed:', error);
-        clearAuth();
-        router.push('/');
+        if (!cancelled) {
+          clearAuth();
+          router.push('/');
+        }
       }
-    }
+    })();
 
-    verifyAuth();
-  }, [
-    clearAuth,
-    setGoogleAuthenticated,
-    setAppleAuthenticated,
-    router,
-    queryClient,
-  ]);
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasHydrated]);
 
-  if (isVerifying) {
+  if (!hasHydrated || isVerifying) {
     return (
       <div className="flex h-screen items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
       </div>
     );
-  }
-
-  if (!isGoogleAuthenticated && !isAppleAuthenticated) {
-    return null;
   }
 
   // Check if we're on a platform-specific route - if so, show sidebar

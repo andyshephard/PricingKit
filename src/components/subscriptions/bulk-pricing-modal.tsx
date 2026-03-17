@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect } from 'react';
-import { Calculator, Globe, DollarSign, TrendingDown, Sliders, RefreshCw, Beef } from 'lucide-react';
+import { Calculator, Globe, DollarSign, TrendingDown, Sliders, RefreshCw, Beef, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -37,8 +37,6 @@ import {
   formatMoney,
   moneyToNumber,
 } from '@/lib/google-play/types';
-import { getSupportedAppleTerritories, getTerritoryByAlpha3 } from '@/lib/apple-connect/territories';
-import { useAuthStore } from '@/store/auth-store';
 import {
   calculateBulkPrices,
   calculatePriceChange,
@@ -49,14 +47,6 @@ import {
   type DynamicExchangeRates,
 } from '@/lib/google-play/currency';
 import { useUpdateBasePlanPrices } from '@/hooks/use-subscriptions';
-
-// Helper to convert Apple price to Money format
-function appleToMoney(applePrice: { customerPrice: string; currency: string }): Money {
-  return {
-    currencyCode: applePrice.currency,
-    units: applePrice.customerPrice,
-  };
-}
 
 interface PPPApiResponse {
   success: boolean;
@@ -100,7 +90,6 @@ export function SubscriptionBulkPricingModal({
   open,
   onOpenChange,
 }: SubscriptionBulkPricingModalProps) {
-  const platform = useAuthStore((state) => state.platform);
   const [basePrice, setBasePrice] = useState<string>('');
   const [strategy, setStrategy] = useState<PricingStrategy>('ppp');
   const [rounding, setRounding] = useState<RoundingMode>('charm');
@@ -119,6 +108,7 @@ export function SubscriptionBulkPricingModal({
   const [exchangeRatesLoading, setExchangeRatesLoading] = useState(false);
 
   const updateMutation = useUpdateBasePlanPrices();
+  const [isApplying, setIsApplying] = useState(false);
 
   const basePriceNum = parseFloat(basePrice) || 0;
 
@@ -136,38 +126,10 @@ export function SubscriptionBulkPricingModal({
     return prices;
   }, [basePlan.regionalConfigs]);
 
-  // Get the appropriate regions list based on platform
-  // For Apple, include both supported territories AND territories with existing pricing
+  // Get Google Play regions sorted by country name
   const allRegions = useMemo(() => {
-    if (platform === 'apple') {
-      const supportedTerritories = getSupportedAppleTerritories();
-      const supportedCodes = new Set(supportedTerritories.map(t => t.alpha3));
-
-      // Start with supported territories, using actual currency from prices when available
-      const regions = supportedTerritories.map((t) => ({
-        code: t.alpha3,
-        name: t.name,
-        currency: normalizedPrices[t.alpha3]?.currencyCode || t.currency,
-      }));
-
-      // Add territories that have existing pricing but aren't in our supported list
-      for (const [code, price] of Object.entries(normalizedPrices)) {
-        if (!supportedCodes.has(code)) {
-          const territory = getTerritoryByAlpha3(code);
-          regions.push({
-            code,
-            name: territory?.name || code,
-            currency: price.currencyCode,
-          });
-        }
-      }
-
-      // Sort by country name for consistent display
-      return regions.sort((a, b) => a.name.localeCompare(b.name));
-    }
-    // Sort Google Play regions by country name too
     return [...GOOGLE_PLAY_REGIONS].sort((a, b) => a.name.localeCompare(b.name));
-  }, [platform, normalizedPrices]);
+  }, []);
 
   // Fetch PPP data and exchange rates when modal opens
   // Only depend on `open` to prevent infinite retry loops on fetch failure
@@ -247,7 +209,7 @@ export function SubscriptionBulkPricingModal({
 
   // Calculate preview prices
   const previewPrices = useMemo(() => {
-    if (basePriceNum <= 0) return [];
+    if (basePriceNum < 0) return [];
     return calculateBulkPrices(
       basePriceNum,
       targetRegions,
@@ -297,6 +259,7 @@ export function SubscriptionBulkPricingModal({
       price: calculated.price,
     }));
 
+    setIsApplying(true);
     try {
       await updateMutation.mutateAsync({
         productId: subscription.productId,
@@ -309,6 +272,8 @@ export function SubscriptionBulkPricingModal({
       toast.error(
         error instanceof Error ? error.message : 'Failed to update prices'
       );
+    } finally {
+      setIsApplying(false);
     }
   };
 
@@ -670,11 +635,16 @@ export function SubscriptionBulkPricingModal({
           </Button>
           <Button
             onClick={handleApply}
-            disabled={previewPrices.length === 0 || updateMutation.isPending}
+            disabled={previewPrices.length === 0 || isApplying}
           >
-            {updateMutation.isPending
-              ? 'Processing (This might take a while)'
-              : `Apply to ${previewPrices.length} Regions`}
+            {isApplying ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Applying prices...
+              </>
+            ) : (
+              `Apply to ${previewPrices.length} Regions`
+            )}
           </Button>
         </DialogFooter>
       </DialogContent>

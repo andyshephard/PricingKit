@@ -11,6 +11,7 @@ const pathNames: Record<string, string> = {
   apple: 'App Store',
   products: 'Products',
   subscriptions: 'Subscriptions',
+  'app-price': 'App Price',
   settings: 'Settings',
 };
 

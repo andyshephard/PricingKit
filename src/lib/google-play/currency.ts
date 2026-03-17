@@ -172,6 +172,20 @@ export function calculateRegionalPrice(
   const currencyCode = getCurrencyForRegion(regionCode, actualCurrencies);
   const exchangeRate = getExchangeRate(currencyCode, dynamicExchangeRates);
 
+  // Free (0) base price: skip all calculations and return 0 for every region
+  if (baseUsdPrice === 0) {
+    return {
+      regionCode,
+      currencyCode,
+      price: parseMoney(0, currencyCode),
+      rawPrice: 0,
+      multiplier: 1.0,
+      multiplierSource: 'direct',
+      exchangeRate,
+      adjustedUsdPrice: 0,
+    };
+  }
+
   // Use dynamic PPP data if available (try both original and alpha-2 codes), otherwise fall back to static
   const dynamicEntry = dynamicPPPData?.[regionCode] ?? dynamicPPPData?.[alpha2Code];
   const staticEntry = getPricingIndexEntry(alpha2Code);

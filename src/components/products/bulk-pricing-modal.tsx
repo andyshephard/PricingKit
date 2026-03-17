@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect } from 'react';
-import { Calculator, Globe, TrendingDown, Sliders, RefreshCw, Hamburger } from 'lucide-react';
+import { Calculator, Globe, TrendingDown, Sliders, RefreshCw, Hamburger, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -103,12 +103,14 @@ interface BulkPricingModalProps {
   product: InAppProduct;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onSave?: (prices: Record<string, Money>) => Promise<{ skipped?: string[]; updated?: number }>;
 }
 
 export function BulkPricingModal({
   product,
   open,
   onOpenChange,
+  onSave,
 }: BulkPricingModalProps) {
   const platform = useAuthStore((state) => state.platform);
   const [basePrice, setBasePrice] = useState<string>('');
@@ -131,6 +133,7 @@ export function BulkPricingModal({
   const [exchangeRatesFetched, setExchangeRatesFetched] = useState(false);
 
   const updateMutation = useUpdateProductPrices();
+  const [isApplying, setIsApplying] = useState(false);
 
   const basePriceNum = parseFloat(basePrice) || 0;
 
@@ -269,7 +272,7 @@ export function BulkPricingModal({
 
   // Calculate preview prices
   const previewPrices = useMemo(() => {
-    if (basePriceNum <= 0) return [];
+    if (basePriceNum < 0) return [];
     return calculateBulkPrices(
       basePriceNum,
       targetRegions,
@@ -319,11 +322,14 @@ export function BulkPricingModal({
       prices[calculated.regionCode] = calculated.price;
     });
 
+    setIsApplying(true);
     try {
-      const result = await updateMutation.mutateAsync({
-        sku: product.sku,
-        prices,
-      });
+      const result = onSave
+        ? await onSave(prices)
+        : await updateMutation.mutateAsync({
+            sku: product.sku,
+            prices,
+          });
 
       // Check for skipped territories (partial update)
       const skipped = result?.skipped as string[] | undefined;
@@ -348,6 +354,8 @@ export function BulkPricingModal({
       toast.error(
         error instanceof Error ? error.message : 'Failed to update prices'
       );
+    } finally {
+      setIsApplying(false);
     }
   };
 
@@ -758,11 +766,16 @@ export function BulkPricingModal({
           </Button>
           <Button
             onClick={handleApply}
-            disabled={previewPrices.length === 0 || updateMutation.isPending}
+            disabled={previewPrices.length === 0 || isApplying}
           >
-            {updateMutation.isPending
-              ? 'Processing (This might take a while)'
-              : `Apply to ${previewPrices.length} Regions`}
+            {isApplying ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Applying prices...
+              </>
+            ) : (
+              `Apply to ${previewPrices.length} Regions`
+            )}
           </Button>
         </DialogFooter>
       </DialogContent>
