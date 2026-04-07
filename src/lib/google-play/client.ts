@@ -19,10 +19,7 @@ export function createGooglePlayClient(credentials: ServiceAccountCredentials): 
   }
 
   const auth = new GoogleAuth({
-    credentials: {
-      client_email: credentials.client_email,
-      private_key: credentials.private_key,
-    },
+    credentials: credentials,
     scopes: ['https://www.googleapis.com/auth/androidpublisher'],
   });
 
