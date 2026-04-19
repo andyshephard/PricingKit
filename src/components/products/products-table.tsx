@@ -210,30 +210,26 @@ export function ProductsTable({
                 <SortIcon field="status" />
               </Button>
             </TableHead>
-            {platform !== 'apple' && (
-              <TableHead>
-                <Button
-                  variant="ghost"
-                  className="h-auto p-0 font-semibold hover:bg-transparent"
-                  onClick={() => handleSort('price')}
-                >
-                  Base Price{products[0]?.defaultPrice?.currencyCode ? ` (${products[0].defaultPrice.currencyCode})` : ''}
-                  <SortIcon field="price" />
-                </Button>
-              </TableHead>
-            )}
-            {platform !== 'apple' && (
-              <TableHead>
-                <Button
-                  variant="ghost"
-                  className="h-auto p-0 font-semibold hover:bg-transparent"
-                  onClick={() => handleSort('regions')}
-                >
-                  Regions
-                  <SortIcon field="regions" />
-                </Button>
-              </TableHead>
-            )}
+            <TableHead>
+              <Button
+                variant="ghost"
+                className="h-auto p-0 font-semibold hover:bg-transparent"
+                onClick={() => handleSort('price')}
+              >
+                Base Price
+                <SortIcon field="price" />
+              </Button>
+            </TableHead>
+            <TableHead>
+              <Button
+                variant="ghost"
+                className="h-auto p-0 font-semibold hover:bg-transparent"
+                onClick={() => handleSort('regions')}
+              >
+                Regions
+                <SortIcon field="regions" />
+              </Button>
+            </TableHead>
             <TableHead className="w-12"></TableHead>
           </TableRow>
         </TableHeader>
@@ -273,23 +269,19 @@ export function ProductsTable({
                     {product.status}
                   </Badge>
                 </TableCell>
-                {platform !== 'apple' && (
-                  <TableCell>
-                    {product.defaultPrice && product.defaultPrice.units !== '0' ? (
-                      formatMoney(product.defaultPrice)
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
-                )}
-                {platform !== 'apple' && (
-                  <TableCell>
-                    <div className="flex items-center gap-1">
-                      <Globe className="h-4 w-4 text-muted-foreground" />
-                      <span>{getRegionCount(product)}</span>
-                    </div>
-                  </TableCell>
-                )}
+                <TableCell>
+                  {product.defaultPrice && product.defaultPrice.units !== '0' ? (
+                    formatMoney(product.defaultPrice)
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
+                </TableCell>
+                <TableCell>
+                  <div className="flex items-center gap-1">
+                    <Globe className="h-4 w-4 text-muted-foreground" />
+                    <span>{getRegionCount(product)}</span>
+                  </div>
+                </TableCell>
                 <TableCell>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>

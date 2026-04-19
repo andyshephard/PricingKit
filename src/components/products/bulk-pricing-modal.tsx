@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect } from 'react';
-import { Calculator, Globe, TrendingDown, Sliders, RefreshCw, Hamburger, Loader2 } from 'lucide-react';
+import { Calculator, Globe, TrendingDown, Sliders, RefreshCw, Hamburger, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -37,8 +37,10 @@ import {
   GOOGLE_PLAY_REGIONS,
   formatMoney,
   moneyToNumber,
+  parseMoney,
 } from '@/lib/google-play/types';
-import { getSupportedAppleTerritories, getTerritoryByAlpha3 } from '@/lib/apple-connect/territories';
+import { getSupportedAppleTerritories, getTerritoryByAlpha3, alpha2ToAlpha3 } from '@/lib/apple-connect/territories';
+import { findClosestTierForCurrency } from '@/lib/apple-connect/price-tier-data';
 import { useAuthStore } from '@/store/auth-store';
 import {
   calculateBulkPrices,
@@ -64,10 +66,8 @@ function getCurrencySymbol(currencyCode: string): string {
 
 // Helper to convert Apple price to Money format
 function appleToMoney(applePrice: { customerPrice: string; currency: string }): Money {
-  return {
-    currencyCode: applePrice.currency,
-    units: applePrice.customerPrice,
-  };
+  // Use parseMoney to correctly split decimal strings (e.g. "2.99") into units/nanos
+  return parseMoney(parseFloat(applePrice.customerPrice || '0'), applePrice.currency);
 }
 
 interface PPPApiResponse {
@@ -113,13 +113,12 @@ export function BulkPricingModal({
   onSave,
 }: BulkPricingModalProps) {
   const platform = useAuthStore((state) => state.platform);
-  const [basePrice, setBasePrice] = useState<string>('');
+  const [basePrice, setBasePrice] = useState<string>(
+    product.defaultPrice ? moneyToNumber(product.defaultPrice).toString() : ''
+  );
   const [strategy, setStrategy] = useState<PricingStrategy>('ppp');
   const [rounding, setRounding] = useState<RoundingMode>('charm');
-  const [applyToAllRegions, setApplyToAllRegions] = useState(true);
-  const [selectedRegions, setSelectedRegions] = useState<Set<string>>(
-    new Set(Object.keys(product.prices || {}))
-  );
+  const [selectedRegions, setSelectedRegions] = useState<Set<string>>(new Set());
 
   // PPP data from World Bank API
   const [pppData, setPppData] = useState<DynamicPPPData | null>(null);
@@ -134,6 +133,16 @@ export function BulkPricingModal({
 
   const updateMutation = useUpdateProductPrices();
   const [isApplying, setIsApplying] = useState(false);
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [hasInitializedSelection, setHasInitializedSelection] = useState(false);
+  const [updateSummary, setUpdateSummary] = useState<{
+    changing: Array<{ name: string; old: string; new: string; regionCode: string }>;
+    staying: Array<{ name: string; price: string; regionCode: string }>;
+  } | null>(null);
+  const [sortConfig, setSortConfig] = useState<{
+    key: string;
+    direction: 'asc' | 'desc' | null;
+  }>({ key: 'name', direction: 'asc' });
 
   const basePriceNum = parseFloat(basePrice) || 0;
 
@@ -250,11 +259,9 @@ export function BulkPricingModal({
 
   // Get regions to apply pricing to
   const targetRegions = useMemo(() => {
-    if (applyToAllRegions) {
-      return allRegions.map((r) => r.code);
-    }
-    return Array.from(selectedRegions);
-  }, [applyToAllRegions, selectedRegions, allRegions]);
+    // We calculate preview for ALL available regions so user can pick from the table
+    return allRegions.map((r) => r.code);
+  }, [allRegions]);
 
   // Extract actual currencies from API (product.prices)
   // This ensures we use the correct currency that the platform expects for each region
@@ -271,9 +278,19 @@ export function BulkPricingModal({
   }, [normalizedPrices]);
 
   // Calculate preview prices
-  const previewPrices = useMemo(() => {
-    if (basePriceNum < 0) return [];
-    return calculateBulkPrices(
+  const { previewPrices, baseCurrency, baseRegion } = useMemo(() => {
+    if (basePriceNum < 0) return { previewPrices: [], baseCurrency: 'USD', baseRegion: 'US' };
+    
+    // Determine the base currency and region from the product
+    const baseRegion = platform === 'apple' 
+      ? (product as any)._appleProduct?.baseTerritory || 'USA'
+      : 'US';
+      
+    const baseCurrency = platform === 'apple' 
+      ? getTerritoryByAlpha3(baseRegion)?.currency || 'USD'
+      : product.defaultPrice?.currencyCode || 'USD';
+
+    const calculatedPrices = calculateBulkPrices(
       basePriceNum,
       targetRegions,
       strategy,
@@ -281,14 +298,150 @@ export function BulkPricingModal({
       undefined, // customMultipliers
       pppData ?? undefined, // dynamicPPPData
       actualCurrencies, // Use actual currencies from Google Play
-      exchangeRates ?? undefined // Dynamic exchange rates from API
+      exchangeRates ?? undefined, // Dynamic exchange rates from API
+      baseCurrency,
+      baseRegion
     );
-  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates]);
+
+    // For Apple, match each calculated price to the closest available tier
+    const finalPrices = platform === 'apple' ? calculatedPrices.map(calculated => {
+      const closestTier = findClosestTierForCurrency(calculated.rawPrice, calculated.currencyCode);
+      if (closestTier) {
+        return {
+          ...calculated,
+          // Override the display price with the actual Apple tier price, correctly parsed into units/nanos
+          price: parseMoney(closestTier.price, calculated.currencyCode),
+          tierPrice: closestTier.price,
+          tierId: closestTier.tier,
+          tierDifference: ((closestTier.price - calculated.rawPrice) / calculated.rawPrice) * 100
+        };
+      }
+      return calculated;
+    }) : calculatedPrices;
+
+    return { previewPrices: finalPrices, baseCurrency, baseRegion };
+  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, platform, product]);
 
   // Get current price for a region
   const getCurrentPrice = (regionCode: string): Money | null => {
     return normalizedPrices[regionCode] || null;
   };
+
+  const sortedPreviewPrices = useMemo(() => {
+    let items = [...previewPrices].map(item => {
+      const region = allRegions.find(r => r.code === item.regionCode);
+      const currentPrice = getCurrentPrice(item.regionCode);
+      const currentPriceNum = currentPrice ? moneyToNumber(currentPrice) : 0;
+      const targetPriceNum = moneyToNumber(item.price);
+      const change = calculatePriceChange(currentPriceNum, targetPriceNum);
+      
+      return {
+        ...item,
+        countryName: region?.name || item.regionCode,
+        currentPriceNum,
+        change,
+        newPriceNum: targetPriceNum,
+      };
+    });
+
+    if (sortConfig.key && sortConfig.direction) {
+      items.sort((a, b) => {
+        let aValue: any;
+        let bValue: any;
+
+        switch (sortConfig.key) {
+          case 'region':
+            aValue = a.regionCode;
+            bValue = b.regionCode;
+            break;
+          case 'name':
+            aValue = a.countryName;
+            bValue = b.countryName;
+            break;
+          case 'currency':
+            aValue = a.currencyCode;
+            bValue = b.currencyCode;
+            break;
+          case 'multiplier':
+            aValue = a.multiplier;
+            bValue = b.multiplier;
+            break;
+          case 'current':
+            aValue = a.currentPriceNum;
+            bValue = b.currentPriceNum;
+            break;
+          case 'new':
+            aValue = a.newPriceNum;
+            bValue = b.newPriceNum;
+            break;
+          case 'change':
+            aValue = a.change;
+            bValue = b.change;
+            break;
+          case 'tier':
+            aValue = (a as any).tierId || '';
+            bValue = (b as any).tierId || '';
+            break;
+          default:
+            return 0;
+        }
+
+        if (aValue < bValue) {
+          return sortConfig.direction === 'asc' ? -1 : 1;
+        }
+        if (aValue > bValue) {
+          return sortConfig.direction === 'asc' ? 1 : -1;
+        }
+        return 0;
+      });
+    }
+
+    return items;
+  }, [previewPrices, sortConfig, allRegions, normalizedPrices]);
+
+  // Auto-select regions where the target price deviates from current price
+  useEffect(() => {
+    // Only run if modal is open, we haven't initialized yet, and data fetching is COMPLETE
+    // This prevents initializing selection with stale/default prices before PPP data loads
+    const isFetchingComplete = pppFetched && exchangeRatesFetched;
+    
+    if (open && !hasInitializedSelection && previewPrices.length > 0 && isFetchingComplete) {
+      // Safety check: ensure previewPrices first item matches a region we expect for this product
+      const firstPreview = previewPrices[0];
+      const belongsToCurrentProduct = allRegions.some(r => r.code === firstPreview.regionCode);
+      
+      if (!belongsToCurrentProduct) return;
+
+      const appleBaseRegion = platform === 'apple' 
+        ? (product as any)._appleProduct?.baseTerritory || 'USA'
+        : null;
+
+      const newSelected = new Set<string>();
+      
+      previewPrices.forEach((calculated) => {
+        const current = getCurrentPrice(calculated.regionCode);
+        const target = calculated.price;
+        const isRequired = calculated.regionCode === appleBaseRegion;
+
+        const currentNum = current ? moneyToNumber(current) : 0;
+        const targetNum = moneyToNumber(target);
+        
+        // Calculate the same change percentage as the "Change" column
+        const change = calculatePriceChange(currentNum, targetNum);
+        
+        // MATCH UI DISPLAY: Only pre-select if rounded change is non-zero
+        // Using abs() >= 0.5 to match toFixed(0) rounding behavior seen in the table
+        const isDifferent = !current || Math.abs(change) >= 0.5;
+
+        if (isDifferent || isRequired) {
+          newSelected.add(calculated.regionCode);
+        }
+      });
+
+      setSelectedRegions(newSelected);
+      setHasInitializedSelection(true);
+    }
+  }, [open, previewPrices, hasInitializedSelection, platform, product, normalizedPrices, allRegions, pppFetched, exchangeRatesFetched]);
 
   // Handle region selection
   const toggleRegion = (regionCode: string) => {
@@ -310,19 +463,93 @@ export function BulkPricingModal({
     }
   };
 
+  // Handle sorting
+  const requestSort = (key: string) => {
+    let direction: 'asc' | 'desc' | null = 'asc';
+    if (sortConfig.key === key && sortConfig.direction === 'asc') {
+      direction = 'desc';
+    } else if (sortConfig.key === key && sortConfig.direction === 'desc') {
+      direction = null;
+    }
+    setSortConfig({ key, direction });
+  };
+
+  const getSortIcon = (key: string) => {
+    if (sortConfig.key !== key || !sortConfig.direction) {
+      return <ArrowUpDown className="ml-2 h-3 w-3" />;
+    }
+    return sortConfig.direction === 'asc' ? (
+      <ChevronUp className="ml-2 h-3 w-3" />
+    ) : (
+      <ChevronDown className="ml-2 h-3 w-3" />
+    );
+  };
+
   // Apply bulk pricing
-  const handleApply = async () => {
+  const handleApplyClick = () => {
+    if (selectedRegions.size === 0) {
+      toast.error('Please select at least one region');
+      return;
+    }
+
     if (previewPrices.length === 0) {
       toast.error('Please enter a valid base price');
       return;
     }
 
-    const prices: Record<string, Money> = {};
-    previewPrices.forEach((calculated) => {
-      prices[calculated.regionCode] = calculated.price;
+    const changing: any[] = [];
+    const staying: any[] = [];
+
+    const appleBaseRegion = platform === 'apple' 
+      ? (product as any)._appleProduct?.baseTerritory || 'USA'
+      : null;
+
+    allRegions.forEach(region => {
+      const currentPrice = getCurrentPrice(region.code);
+      const newPriceItem = previewPrices.find(p => p.regionCode === region.code);
+      const isSelected = selectedRegions.has(region.code);
+      const isRequired = region.code === appleBaseRegion;
+
+      if ((isSelected || isRequired) && newPriceItem) {
+        changing.push({
+          name: region.name,
+          regionCode: region.code,
+          old: currentPrice ? formatMoney(currentPrice) : 'None',
+          new: formatMoney(newPriceItem.price),
+          isRequired
+        });
+      } else {
+        staying.push({
+          name: region.name,
+          regionCode: region.code,
+          price: currentPrice ? formatMoney(currentPrice) : 'None'
+        });
+      }
     });
 
+    setUpdateSummary({ changing, staying });
+    setShowConfirmDialog(true);
+  };
+
+  const executeApply = async () => {
+    const prices: Record<string, Money> = {};
+    const appleBaseRegion = platform === 'apple' 
+      ? (product as any)._appleProduct?.baseTerritory || 'USA'
+      : null;
+
+    previewPrices.forEach((calculated) => {
+      if (selectedRegions.has(calculated.regionCode) || calculated.regionCode === appleBaseRegion) {
+        prices[calculated.regionCode] = calculated.price;
+      }
+    });
+
+    if (Object.keys(prices).length === 0) {
+      toast.error('No prices selected to update');
+      return;
+    }
+
     setIsApplying(true);
+    setShowConfirmDialog(false);
     try {
       const result = onSave
         ? await onSave(prices)
@@ -347,7 +574,7 @@ export function BulkPricingModal({
         );
       }
 
-      const successCount = updated ?? previewPrices.length;
+      const successCount = updated ?? selectedRegions.size;
       toast.success(`Updated prices for ${successCount} regions`);
       onOpenChange(false);
     } catch (error) {
@@ -362,11 +589,20 @@ export function BulkPricingModal({
   // Reset form when modal opens
   const handleOpenChange = (newOpen: boolean) => {
     if (newOpen) {
-      setBasePrice('');
+      // Initialize base price from the product's current default price
+      // Use moneyToNumber to handle both units and nanos (cents)
+      const initialPrice = product.defaultPrice 
+        ? moneyToNumber(product.defaultPrice).toString() 
+        : '';
+      
+      console.log(`[Bulk Edit Modal] Opening. Product SKU: ${product.sku}, Default Price: ${product.defaultPrice?.units} ${product.defaultPrice?.currencyCode}, Initialized basePrice to: ${initialPrice}`);
+      
+      // Force the state update immediately
+      setBasePrice(initialPrice);
       setStrategy('ppp');
       setRounding('charm');
-      setApplyToAllRegions(true);
-      setSelectedRegions(new Set(Object.keys(product.prices || {})));
+      setHasInitializedSelection(false);
+      // Selected regions will be initialized by the useEffect once previewPrices is calculated
       // PPP data will be fetched by the useEffect
     }
     onOpenChange(newOpen);
@@ -390,17 +626,27 @@ export function BulkPricingModal({
         <div className="space-y-6 py-4">
           {/* Base Price Input */}
           <div className="space-y-2">
-            <Label htmlFor="base-price">Base Price ({product.defaultPrice?.currencyCode || 'USD'})</Label>
+            <Label htmlFor="base-price">
+              Base Price ({platform === 'apple' 
+                ? (product as any)._appleProduct?.baseTerritory 
+                  ? `${getTerritoryByAlpha3((product as any)._appleProduct.baseTerritory)?.currency || 'USD'} - ${(product as any)._appleProduct.baseTerritory}`
+                  : 'USD'
+                : product.defaultPrice?.currencyCode || 'USD'})
+            </Label>
             <div className="relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
-                {getCurrencySymbol(product.defaultPrice?.currencyCode || 'USD')}
+                {getCurrencySymbol(platform === 'apple'
+                  ? (product as any)._appleProduct?.baseTerritory 
+                    ? getTerritoryByAlpha3((product as any)._appleProduct.baseTerritory)?.currency || 'USD'
+                    : 'USD'
+                  : product.defaultPrice?.currencyCode || 'USD')}
               </span>
               <Input
                 id="base-price"
                 type="number"
                 step="0.01"
                 min="0"
-                placeholder="4.99"
+                placeholder={product.defaultPrice?.units || "4.99"}
                 value={basePrice}
                 onChange={(e) => setBasePrice(e.target.value)}
                 className="pl-9 w-48"
@@ -524,239 +770,267 @@ export function BulkPricingModal({
 
           {/* Rounding Options */}
           <div className="space-y-3">
-            <Label>Price Rounding</Label>
+            <Label className={platform === 'apple' ? "text-muted-foreground" : ""}>
+              Price Rounding {platform === 'apple' && "(Disabled for Apple - using Price Tiers)"}
+            </Label>
             <div className="flex gap-4">
-              <label className="flex items-center gap-2 cursor-pointer">
+              <label className={`flex items-center gap-2 ${platform === 'apple' ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}>
                 <input
                   type="radio"
                   name="rounding"
                   value="charm"
                   checked={rounding === 'charm'}
-                  onChange={() => setRounding('charm')}
+                  onChange={() => platform !== 'apple' && setRounding('charm')}
+                  disabled={platform === 'apple'}
                 />
                 <span className="text-sm">Nearest .99</span>
               </label>
-              <label className="flex items-center gap-2 cursor-pointer">
+              <label className={`flex items-center gap-2 ${platform === 'apple' ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}>
                 <input
                   type="radio"
                   name="rounding"
                   value="whole"
                   checked={rounding === 'whole'}
-                  onChange={() => setRounding('whole')}
+                  onChange={() => platform !== 'apple' && setRounding('whole')}
+                  disabled={platform === 'apple'}
                 />
                 <span className="text-sm">Whole Numbers</span>
               </label>
-              <label className="flex items-center gap-2 cursor-pointer">
+              <label className={`flex items-center gap-2 ${platform === 'apple' ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}>
                 <input
                   type="radio"
                   name="rounding"
                   value="none"
                   checked={rounding === 'none'}
-                  onChange={() => setRounding('none')}
+                  onChange={() => platform !== 'apple' && setRounding('none')}
+                  disabled={platform === 'apple'}
                 />
                 <span className="text-sm">No Rounding</span>
               </label>
             </div>
           </div>
 
-          {/* Region Selection */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <Label>Apply to Regions</Label>
-              <div className="flex items-center gap-4">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="regionScope"
-                    checked={applyToAllRegions}
-                    onChange={() => setApplyToAllRegions(true)}
-                  />
-                  <span className="text-sm">All Regions</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="regionScope"
-                    checked={!applyToAllRegions}
-                    onChange={() => setApplyToAllRegions(false)}
-                  />
-                  <span className="text-sm">Selected Only</span>
-                </label>
-              </div>
-            </div>
-
-            {!applyToAllRegions && (
-              <div className="border rounded-lg p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm text-muted-foreground">
-                    {selectedRegions.size} of {allRegions.length}{' '}
-                    regions selected
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={toggleAllRegions}
-                  >
-                    {selectedRegions.size === allRegions.length
-                      ? 'Deselect All'
-                      : 'Select All'}
-                  </Button>
-                </div>
-                <ScrollArea className="h-32">
-                  <div className="grid grid-cols-4 gap-2">
-                    {allRegions.map((region) => (
-                      <label
-                        key={region.code}
-                        className="flex items-center gap-2 text-sm cursor-pointer"
-                      >
-                        <Checkbox
-                          checked={selectedRegions.has(region.code)}
-                          onCheckedChange={() => toggleRegion(region.code)}
-                        />
-                        <span className="truncate" title={region.name}>
-                          {region.code}
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                </ScrollArea>
-              </div>
-            )}
-          </div>
-
           {/* Preview Table */}
-          {previewPrices.length > 0 && (
-            <div className="space-y-2">
-              <Label>Preview ({previewPrices.length} regions)</Label>
-              <div className="border rounded-lg">
-                <ScrollArea className="h-64">
-                  <TooltipProvider delayDuration={100}>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-20">Region</TableHead>
-                        <TableHead>Country</TableHead>
-                        <TableHead>Currency</TableHead>
-                        <TableHead className="text-right">Multiplier</TableHead>
-                        <TableHead className="text-right">Exchange Rate</TableHead>
-                        <TableHead className="text-right">Current</TableHead>
-                        <TableHead className="text-right">New</TableHead>
-                        <TableHead className="text-right">Change</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {previewPrices.map((calculated) => {
-                        const region = allRegions.find(
-                          (r) => r.code === calculated.regionCode
-                        );
-                        const currentPrice = getCurrentPrice(
-                          calculated.regionCode
-                        );
-                        const currentPriceNum = currentPrice
-                          ? moneyToNumber(currentPrice)
-                          : 0;
-                        const change = calculatePriceChange(
-                          currentPriceNum,
-                          calculated.rawPrice
-                        );
-
-                        return (
-                          <TableRow key={calculated.regionCode}>
-                            <TableCell>
-                              <Badge variant="outline">
-                                {calculated.regionCode}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="text-sm">
-                              {region?.name || calculated.regionCode}
-                            </TableCell>
-                            <TableCell className="text-sm text-muted-foreground">
-                              {calculated.currencyCode}
-                            </TableCell>
-                            <TableCell className="text-right text-sm">
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <span className={
-                                    calculated.multiplier < 1
-                                      ? 'text-green-600 cursor-help'
-                                      : calculated.multiplier > 1
-                                      ? 'text-orange-600 cursor-help'
-                                      : 'text-muted-foreground cursor-help'
-                                  }>
-                                    {calculated.multiplier.toFixed(2)}×
-                                  </span>
-                                </TooltipTrigger>
-                                <TooltipContent side="top">
-                                  <p className="text-xs">
-                                    {calculated.multiplierSource === 'world-bank' && 'World Bank PPP data'}
-                                    {calculated.multiplierSource === 'big-mac' && 'Big Mac Index'}
-                                    {calculated.multiplierSource === 'static' && 'Static fallback data'}
-                                    {calculated.multiplierSource === 'custom' && 'Custom multiplier'}
-                                    {calculated.multiplierSource === 'direct' && 'Direct conversion (1:1)'}
-                                  </p>
-                                  <p className="text-xs text-muted-foreground">
-                                    ${basePriceNum.toFixed(2)} × {calculated.multiplier.toFixed(2)} = ${(basePriceNum * calculated.multiplier).toFixed(2)} USD
-                                  </p>
-                                </TooltipContent>
-                              </Tooltip>
-                            </TableCell>
-                            <TableCell className="text-right text-sm">
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <span className="text-muted-foreground cursor-help">
-                                    {calculated.exchangeRate.toFixed(2)}
-                                  </span>
-                                </TooltipTrigger>
-                                <TooltipContent side="top" className="max-w-xs">
-                                  <p className="text-xs font-medium mb-1">
-                                    USD → {calculated.currencyCode} Calculation
-                                  </p>
-                                  <div className="text-xs text-muted-foreground space-y-0.5">
-                                    <p>1. Base price: ${basePriceNum.toFixed(2)} USD</p>
-                                    <p>2. PPP adjusted: ${basePriceNum.toFixed(2)} × {calculated.multiplier.toFixed(2)} = ${calculated.adjustedUsdPrice.toFixed(2)} USD</p>
-                                    <p>3. Convert to {calculated.currencyCode}: ${calculated.adjustedUsdPrice.toFixed(2)} × {calculated.exchangeRate.toFixed(2)} = {calculated.currencyCode} {(calculated.adjustedUsdPrice * calculated.exchangeRate).toFixed(2)}</p>
-                                    {calculated.rawPrice !== calculated.adjustedUsdPrice * calculated.exchangeRate && (
-                                      <p>4. After rounding: {calculated.currencyCode} {calculated.rawPrice.toFixed(2)}</p>
-                                    )}
-                                  </div>
-                                </TooltipContent>
-                              </Tooltip>
-                            </TableCell>
-                            <TableCell className="text-right text-sm text-muted-foreground">
-                              {currentPrice
-                                ? formatMoney(currentPrice)
-                                : '-'}
-                            </TableCell>
-                            <TableCell className="text-right font-medium">
-                              {formatMoney(calculated.price)}
-                            </TableCell>
-                            <TableCell className="text-right">
-                              {currentPrice ? (
-                                <span
-                                  className={
-                                    change > 0
-                                      ? 'text-red-600'
-                                      : change < 0
-                                      ? 'text-green-600'
-                                      : 'text-muted-foreground'
-                                  }
-                                >
-                                  {formatPriceChange(change)}
-                                </span>
-                              ) : (
-                                <span className="text-green-600">New</span>
-                              )}
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                  </TooltipProvider>
-                </ScrollArea>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label>Regions & Preview ({selectedRegions.size} selected)</Label>
+              <div className="flex items-center gap-2">
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => setSelectedRegions(new Set())}
+                  disabled={selectedRegions.size === 0}
+                >
+                  Deselect All
+                </Button>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => setSelectedRegions(new Set(allRegions.map(r => r.code)))}
+                  disabled={selectedRegions.size === allRegions.length}
+                >
+                  Select All
+                </Button>
               </div>
             </div>
-          )}
+            <div className="border rounded-lg">
+              <ScrollArea className="h-[400px]">
+                <TooltipProvider delayDuration={100}>
+                <Table>
+                  <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
+                    <TableRow>
+                      <TableHead className="w-12">
+                        <Checkbox 
+                          checked={selectedRegions.size === allRegions.length}
+                          onCheckedChange={toggleAllRegions}
+                          aria-label="Select all"
+                        />
+                      </TableHead>
+                      <TableHead className="w-20 cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('region')}>
+                        <div className="flex items-center">
+                          Region {getSortIcon('region')}
+                        </div>
+                      </TableHead>
+                      <TableHead className="cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('name')}>
+                        <div className="flex items-center">
+                          Country {getSortIcon('name')}
+                        </div>
+                      </TableHead>
+                      <TableHead className="cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('currency')}>
+                        <div className="flex items-center">
+                          Currency {getSortIcon('currency')}
+                        </div>
+                      </TableHead>
+                      <TableHead className="text-right cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('multiplier')}>
+                        <div className="flex items-center justify-end">
+                          Multiplier {getSortIcon('multiplier')}
+                        </div>
+                      </TableHead>
+                      <TableHead className="text-right cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('current')}>
+                        <div className="flex items-center justify-end">
+                          Current {getSortIcon('current')}
+                        </div>
+                      </TableHead>
+                      <TableHead className="text-right cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('new')}>
+                        <div className="flex items-center justify-end">
+                          New Price {getSortIcon('new')}
+                        </div>
+                      </TableHead>
+                      {platform === 'apple' && (
+                        <TableHead className="text-right cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('tier')}>
+                          <div className="flex items-center justify-end">
+                            Tier Match {getSortIcon('tier')}
+                          </div>
+                        </TableHead>
+                      )}
+                      <TableHead className="text-right cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('change')}>
+                        <div className="flex items-center justify-end">
+                          Change {getSortIcon('change')}
+                        </div>
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {sortedPreviewPrices.map((calculated) => {
+                      const region = allRegions.find(
+                        (r) => r.code === calculated.regionCode
+                      );
+                      const currentPrice = getCurrentPrice(
+                        calculated.regionCode
+                      );
+                      const isSelected = selectedRegions.has(calculated.regionCode);
+                      const appleBaseRegion = platform === 'apple' 
+                        ? (product as any)._appleProduct?.baseTerritory || 'USA'
+                        : null;
+                      const isRequired = calculated.regionCode === appleBaseRegion;
+
+                      return (
+                        <TableRow 
+                          key={calculated.regionCode}
+                          className={!isSelected && !isRequired ? 'opacity-50' : ''}
+                        >
+                          <TableCell>
+                            <Checkbox 
+                              checked={isSelected || isRequired}
+                              disabled={isRequired}
+                              onCheckedChange={() => toggleRegion(calculated.regionCode)}
+                              aria-label={`Select ${calculated.regionCode}`}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline">
+                              {calculated.regionCode}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            <div className="flex flex-col">
+                              {calculated.countryName}
+                              {isRequired && (
+                                <span className="text-[10px] text-amber-600 dark:text-amber-500 font-medium">Required Base</span>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {calculated.currencyCode}
+                          </TableCell>
+                          <TableCell className="text-right text-sm">
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className={
+                                  calculated.multiplier < 1
+                                    ? 'text-green-600 cursor-help'
+                                    : calculated.multiplier > 1
+                                    ? 'text-orange-600 cursor-help'
+                                    : 'text-muted-foreground cursor-help'
+                                }>
+                                  {calculated.multiplier.toFixed(2)}×
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent side="top">
+                                <p className="text-xs">
+                                  {calculated.multiplierSource === 'world-bank' && 'World Bank PPP data'}
+                                  {calculated.multiplierSource === 'big-mac' && 'Big Mac Index'}
+                                  {calculated.multiplierSource === 'static' && 'Static fallback data'}
+                                  {calculated.multiplierSource === 'custom' && 'Custom multiplier'}
+                                  {calculated.multiplierSource === 'direct' && 'Direct conversion (1:1)'}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  Relative to {baseRegion}: {calculated.multiplier.toFixed(2)}×
+                                </p>
+                              </TooltipContent>
+                            </Tooltip>
+                          </TableCell>
+                          <TableCell className="text-right text-sm text-muted-foreground">
+                            {currentPrice
+                              ? formatMoney(currentPrice)
+                              : '-'}
+                          </TableCell>
+                          <TableCell className="text-right font-medium">
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="cursor-help">
+                                  {formatMoney(calculated.price)}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" className="max-w-xs">
+                                <p className="text-xs font-medium mb-1">
+                                  {baseCurrency} → {calculated.currencyCode} Calculation
+                                </p>
+                                <div className="text-xs text-muted-foreground space-y-0.5">
+                                  <p>1. Base price: {basePriceNum.toFixed(2)} {baseCurrency} ({baseRegion})</p>
+                                  <p>2. Relative Adjustment: {calculated.multiplier.toFixed(2)}×</p>
+                                  <p>3. Adjusted Price: {(basePriceNum * calculated.multiplier).toFixed(2)} {baseCurrency}</p>
+                                  {baseCurrency !== calculated.currencyCode && (
+                                    <p>4. Exchange Rate ({baseCurrency}→{calculated.currencyCode}): {(calculated.rawPrice / (basePriceNum * calculated.multiplier)).toFixed(4)}</p>
+                                  )}
+                                  <p>{baseCurrency !== calculated.currencyCode ? '5' : '4'}. Target Price: {calculated.rawPrice.toFixed(2)} {calculated.currencyCode}</p>
+                                  {platform === 'apple' && (calculated as any).tierId && (
+                                    <p>{baseCurrency !== calculated.currencyCode ? '6' : '5'}. Apple Tier: Tier {(calculated as any).tierId} ({formatMoney(calculated.price)})</p>
+                                  )}
+                                </div>
+                              </TooltipContent>
+                            </Tooltip>
+                          </TableCell>
+                          {platform === 'apple' && (
+                            <TableCell className="text-right text-xs">
+                              <div className="flex flex-col items-end">
+                                <span className="text-muted-foreground">
+                                  {(calculated as any).tierId ? `Tier ${(calculated as any).tierId}` : 'No tier'}
+                                </span>
+                                {Math.abs((calculated as any).tierDifference || 0) > 0.1 && (
+                                  <span className={(calculated as any).tierDifference > 0 ? "text-orange-600" : "text-blue-600"}>
+                                    {((calculated as any).tierDifference > 0 ? "+" : "") + ((calculated as any).tierDifference || 0).toFixed(1)}% vs ideal
+                                  </span>
+                                )}
+                              </div>
+                            </TableCell>
+                          )}
+                          <TableCell className="text-right">
+                            {currentPrice ? (
+                              <span
+                                className={
+                                  calculated.change > 0
+                                    ? 'text-red-600'
+                                    : calculated.change < 0
+                                    ? 'text-green-600'
+                                    : 'text-muted-foreground'
+                                }
+                              >
+                                {formatPriceChange(calculated.change)}
+                              </span>
+                            ) : (
+                              <span className="text-green-600">New</span>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+                </TooltipProvider>
+              </ScrollArea>
+            </div>
+          </div>
         </div>
         </ScrollArea>
 
@@ -765,7 +1039,7 @@ export function BulkPricingModal({
             Cancel
           </Button>
           <Button
-            onClick={handleApply}
+            onClick={handleApplyClick}
             disabled={previewPrices.length === 0 || isApplying}
           >
             {isApplying ? (
@@ -774,10 +1048,85 @@ export function BulkPricingModal({
                 Applying prices...
               </>
             ) : (
-              `Apply to ${previewPrices.length} Regions`
+              `Apply to ${selectedRegions.size} Regions`
             )}
           </Button>
         </DialogFooter>
+
+        {/* Confirmation Dialog */}
+        <Dialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
+          <DialogContent className="sm:max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
+            <DialogHeader className="flex-shrink-0 text-left">
+              <DialogTitle>Confirm Price Changes</DialogTitle>
+              <DialogDescription asChild>
+                <div className="text-sm text-muted-foreground">
+                  Review the updates before applying them to {selectedRegions.size} regions.
+                  {platform === 'apple' && (
+                    <div className="mt-2 text-amber-600 dark:text-amber-500 font-medium italic">
+                      Note: For Apple Products, any regions NOT selected will revert to automatic pricing.
+                    </div>
+                  )}
+                </div>
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="flex-1 min-h-[300px] py-4 overflow-hidden border-y my-2">
+              <ScrollArea className="h-[50vh] pr-4">
+                <div className="space-y-6">
+                  {/* Section: Changing */}
+                  <div>
+                    <h4 className="font-semibold text-sm mb-2 text-primary flex items-center gap-2 sticky top-0 bg-background py-1 z-10">
+                      <span className="w-2 h-2 rounded-full bg-blue-500" />
+                      Updating ({updateSummary?.changing.length})
+                    </h4>
+                    <div className="grid grid-cols-1 gap-1 pl-4">
+                      {updateSummary?.changing.map(item => (
+                        <div key={item.regionCode} className="text-xs flex justify-between border-b border-muted/30 py-1">
+                          <div className="flex flex-col">
+                            <span className="font-medium">{item.name} ({item.regionCode})</span>
+                            {(item as any).isRequired && (
+                              <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold uppercase">Required Base Region</span>
+                            )}
+                          </div>
+                          <span className="font-mono self-center">
+                            <span className="text-muted-foreground line-through">{item.old}</span>
+                            <span className="mx-2 text-muted-foreground">→</span>
+                            <span className="font-bold text-blue-600 dark:text-blue-400">{item.new}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Section: Staying */}
+                  <div>
+                    <h4 className="font-semibold text-sm mb-2 text-muted-foreground flex items-center gap-2 sticky top-0 bg-background py-1 z-10">
+                      <span className="w-2 h-2 rounded-full bg-gray-300" />
+                      No Change ({updateSummary?.staying.length})
+                    </h4>
+                    <div className="grid grid-cols-1 gap-1 pl-4 opacity-70 text-muted-foreground">
+                      {updateSummary?.staying.map(item => (
+                        <div key={item.regionCode} className="text-xs flex justify-between py-1 border-b border-muted/10">
+                          <span>{item.name} ({item.regionCode})</span>
+                          <span className="font-mono">{item.price}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </ScrollArea>
+            </div>
+
+            <DialogFooter className="flex-shrink-0 gap-2 sm:gap-0">
+              <Button variant="outline" onClick={() => setShowConfirmDialog(false)}>
+                Cancel
+              </Button>
+              <Button onClick={executeApply}>
+                Confirm and Apply
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </DialogContent>
     </Dialog>
   );

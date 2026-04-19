@@ -25,6 +25,21 @@ function hashCredentials(credentials: AppleConnectCredentials): string {
 
 // Generate JWT for App Store Connect API
 export async function generateJWT(credentials: AppleConnectCredentials): Promise<string> {
+  // LOW-LEVEL OVERRIDE: Prioritize environment variables for local development
+  if (
+    process.env.APPLE_PRIVATE_KEY &&
+    process.env.APPLE_KEY_ID &&
+    process.env.APPLE_ISSUER_ID
+  ) {
+    const envPrivateKey = process.env.APPLE_PRIVATE_KEY.replace(/\\n/g, '\n');
+    credentials = {
+      ...credentials,
+      privateKey: envPrivateKey,
+      keyId: process.env.APPLE_KEY_ID,
+      issuerId: process.env.APPLE_ISSUER_ID,
+    };
+  }
+
   const credHash = hashCredentials(credentials);
 
   // Check if we have a valid cached token
@@ -61,11 +76,28 @@ export async function generateJWT(credentials: AppleConnectCredentials): Promise
   const signatureInput = `${encodedHeader}.${encodedPayload}`;
 
   // Parse PEM private key to raw PKCS8 bytes
+  // Remove all whitespace, headers, and footers to get the raw base64
   const pemBody = credentials.privateKey
-    .replace(/-----BEGIN (?:EC )?PRIVATE KEY-----/, '')
-    .replace(/-----END (?:EC )?PRIVATE KEY-----/, '')
-    .replace(/\s/g, '');
-  const keyBuffer = Buffer.from(pemBody, 'base64');
+    .replace(/-----BEGIN (?:EC )?PRIVATE KEY-----/g, '')
+    .replace(/-----END (?:EC )?PRIVATE KEY-----/g, '')
+    .replace(/[\s\n\r]/g, '');
+  
+  // LOGGING FOR DEBUGGING - REMOVE AFTER FIX
+  console.log(`[JWT] PEM body length: ${pemBody.length}`);
+  if (pemBody.length > 20) {
+    console.log(`[JWT] Key starts with: ${pemBody.substring(0, 10)} ends with: ${pemBody.substring(pemBody.length - 10)}`);
+  }
+  
+  let keyBuffer: Buffer;
+  try {
+    keyBuffer = Buffer.from(pemBody, 'base64');
+    if (keyBuffer.length === 0) {
+      throw new Error('Decoded key buffer is empty');
+    }
+  } catch (e) {
+    console.log(`[JWT] Failed to decode base64 PEM body: ${e}`);
+    throw new Error('Invalid private key format: Failed to decode base64');
+  }
 
   const cryptoKey = await crypto.subtle.importKey(
     'pkcs8',
@@ -73,7 +105,10 @@ export async function generateJWT(credentials: AppleConnectCredentials): Promise
     { name: 'ECDSA', namedCurve: 'P-256' },
     false,
     ['sign']
-  );
+  ).catch(e => {
+    console.log(`[JWT] Failed to import key into Web Crypto: ${e}`);
+    throw new Error(`Invalid private key: ${e.message}`);
+  });
 
   const sigBuffer = await crypto.subtle.sign(
     { name: 'ECDSA', hash: 'SHA-256' },
@@ -166,6 +201,20 @@ export async function appleApiRequest<T>(
 ): Promise<T> {
   const { method = 'GET', body, queryParams, apiVersion = 'v1' } = options;
 
+  // Ensure we use environment variables if available
+  if (
+    process.env.APPLE_PRIVATE_KEY &&
+    process.env.APPLE_KEY_ID &&
+    process.env.APPLE_ISSUER_ID
+  ) {
+    credentials = {
+      ...credentials,
+      privateKey: process.env.APPLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      keyId: process.env.APPLE_KEY_ID,
+      issuerId: process.env.APPLE_ISSUER_ID,
+    };
+  }
+
   const token = await generateJWT(credentials);
 
   const baseUrl = `https://api.appstoreconnect.apple.com/${apiVersion}`;
@@ -223,7 +272,8 @@ export async function appleApiRequest<T>(
 
   if (!response.ok) {
     const errorData = (await response.json()) as AppleApiErrorResponse;
-    console.error('[Apple API Error] Response:', JSON.stringify(errorData, null, 2));
+    console.log(`[Apple API Error] Status: ${response.status} Endpoint: ${endpoint}`);
+    console.log(`[Apple API Error] Details: ${JSON.stringify(errorData, null, 2)}`);
     const error = errorData.errors?.[0];
     throw new AppleApiError(
       response.status,
@@ -252,6 +302,43 @@ export class AppleApiError extends Error {
     super(`${title}: ${detail}`);
     this.name = 'AppleApiError';
   }
+}
+
+/**
+ * Resolves Apple credentials, prioritizing environment variables over session cookies.
+ */
+export async function resolveAppleCredentials(cookieValue?: string): Promise<AppleConnectCredentials | null> {
+  if (
+    process.env.APPLE_PRIVATE_KEY &&
+    process.env.APPLE_KEY_ID &&
+    process.env.APPLE_ISSUER_ID &&
+    process.env.APPLE_BUNDLE_ID
+  ) {
+    console.log('[Auth Middleware] Found Apple credentials in environment variables for:', process.env.APPLE_BUNDLE_ID);
+    
+    // Aggressively clean the private key
+    const privateKey = process.env.APPLE_PRIVATE_KEY
+      .replace(/\\n/g, '\n')
+      .replace(/-----BEGIN (?:EC )?PRIVATE KEY-----/g, '')
+      .replace(/-----END (?:EC )?PRIVATE KEY-----/g, '')
+      .replace(/[\s\n\r]/g, '');
+
+    // Reconstruct a clean PEM format that the Web Crypto API expects
+    const cleanPem = `-----BEGIN PRIVATE KEY-----\n${privateKey}\n-----END PRIVATE KEY-----`;
+
+    return {
+      privateKey: cleanPem,
+      keyId: process.env.APPLE_KEY_ID,
+      issuerId: process.env.APPLE_ISSUER_ID,
+      bundleId: process.env.APPLE_BUNDLE_ID,
+    };
+  }
+
+  if (cookieValue) {
+    return getAppleSessionCredentials(cookieValue);
+  }
+
+  return null;
 }
 
 // Cookie-based encrypted session management

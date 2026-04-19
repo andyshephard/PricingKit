@@ -1,19 +1,25 @@
 import { NextResponse } from 'next/server';
 import { getPPPMultipliers } from '@/lib/world-bank/ppp';
-import { PRICING_INDEX, DEFAULT_PRICING_INDEX_ENTRY } from '@/lib/conversion-indexes/ppp';
+import { PRICING_INDEX, DEFAULT_PRICING_INDEX_ENTRY, LOCAL_CURRENCIES } from '@/lib/conversion-indexes/ppp';
 import { BIG_MAC_INDEX, DEFAULT_BIG_MAC_MULTIPLIER } from '@/lib/conversion-indexes/big-mac';
+import { getExchangeRates } from '@/lib/exchange-rates/client';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const forceRefresh = searchParams.get('refresh') === 'true';
 
   try {
-    const pppData = await getPPPMultipliers(forceRefresh);
+    // Fetch both PPP data and Market Exchange Rates in parallel
+    const [pppData, exchangeRates] = await Promise.all([
+      getPPPMultipliers(forceRefresh),
+      getExchangeRates(forceRefresh)
+    ]);
 
     // Merge World Bank data with our static pricing index (for min prices, rounding, etc.)
     const mergedData: Record<string, {
       pppMultiplier: number;
       pppConversionFactor?: number;
+      marketExchangeRate?: number;
       bigMacMultiplier?: number;
       minPrice: number;
       suggestedRounding: number;
@@ -31,19 +37,32 @@ export async function GET(request: Request) {
       };
     }
 
-    // Override with World Bank data where available
+    // Override with World Bank data and calculate REAL PPP multipliers
     for (const [regionCode, multiplier] of Object.entries(pppData.multipliers)) {
       const conversionFactor = pppData.pppConversionFactors[regionCode];
+      const currencyCode = LOCAL_CURRENCIES[regionCode];
+      const marketRate = exchangeRates.rates[currencyCode];
+
+      // Calculate the real PPP multiplier: PPP_Factor / Market_Rate
+      // This tells us how much to adjust the market-converted price
+      let realPPPMultiplier = multiplier; // Fallback to US-relative
+      if (marketRate && conversionFactor) {
+        realPPPMultiplier = conversionFactor / marketRate;
+        // Clamp to reasonable bounds
+        realPPPMultiplier = Math.max(0.1, Math.min(2.0, realPPPMultiplier));
+      }
 
       if (mergedData[regionCode]) {
-        mergedData[regionCode].pppMultiplier = multiplier;
+        mergedData[regionCode].pppMultiplier = realPPPMultiplier;
         mergedData[regionCode].pppConversionFactor = conversionFactor;
+        mergedData[regionCode].marketExchangeRate = marketRate;
         mergedData[regionCode].source = 'world-bank';
       } else {
         // New region from World Bank not in our static data
         mergedData[regionCode] = {
-          pppMultiplier: multiplier,
+          pppMultiplier: realPPPMultiplier,
           pppConversionFactor: conversionFactor,
+          marketExchangeRate: marketRate,
           bigMacMultiplier: BIG_MAC_INDEX[regionCode] ?? DEFAULT_BIG_MAC_MULTIPLIER,
           minPrice: DEFAULT_PRICING_INDEX_ENTRY.minPrice,
           suggestedRounding: DEFAULT_PRICING_INDEX_ENTRY.suggestedRounding,

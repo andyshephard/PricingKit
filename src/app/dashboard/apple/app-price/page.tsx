@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Header } from '@/components/layout';
 import { PricingEditor } from '@/components/products/pricing-editor';
-import { formatMoney, type InAppProduct, type Money } from '@/lib/google-play/types';
+import { formatMoney, parseMoney, type InAppProduct, type Money } from '@/lib/google-play/types';
 import type { AppleProductPrice } from '@/lib/apple-connect/types';
 
 interface AppPriceResponse {
@@ -48,7 +48,7 @@ export default function AppleAppPricePage() {
           const baseTerritoryCode = data.baseTerritory || 'USA';
           const basePrice = data.prices?.[baseTerritoryCode];
           const defaultPrice = basePrice
-            ? { currencyCode: basePrice.currency || 'USD', units: basePrice.customerPrice }
+            ? parseMoney(parseFloat(basePrice.customerPrice), basePrice.currency || 'USD')
             : null;
 
           return {

@@ -219,18 +219,46 @@ const CACHE_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
 export async function fetchPPPData(): Promise<PPPData[]> {
   // PA.NUS.PPP = PPP conversion factor, GDP (LCU per international $)
   // mrnev=1 = most recent non-empty value
-  const url = 'https://api.worldbank.org/v2/country/all/indicator/PA.NUS.PPP?format=json&per_page=300&mrnev=1';
+  // Using a more robust URL format for World Bank API v2
+  // We'll try multiple URL variations to handle API changes or regional restrictions
+  const urls = [
+    'https://api.worldbank.org/v2/country/all/indicator/PA.NUS.PPP?format=json&per_page=300&mrnev=1',
+    'https://api.worldbank.org/v2/en/country/all/indicator/PA.NUS.PPP?format=json&per_page=300&mrnev=1',
+    'http://api.worldbank.org/v2/country/all/indicator/PA.NUS.PPP?format=json&per_page=300&mrnev=1',
+    'https://api.worldbank.org/v2/country/WLD;USA;DEU;FRA;GBR;JPN;CHN;IND;BRA;RUS;TUR;ARG;TUR;MEX/indicator/PA.NUS.PPP?format=json&per_page=300&mrnev=1'
+  ];
 
-  const response = await fetch(url, {
-    next: { revalidate: 86400 }, // Cache for 24 hours in Next.js
-  });
+  let lastError: Error | null = null;
 
-  if (!response.ok) {
-    throw new Error(`World Bank API error: ${response.status}`);
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, {
+        next: { revalidate: 86400 }, // Cache for 24 hours in Next.js
+        signal: AbortSignal.timeout(10000), // 10s timeout
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        try {
+          return processWorldBankResponse(data);
+        } catch (e) {
+          console.warn(`World Bank API: Failed to process response from ${url}:`, e);
+          continue;
+        }
+      } else {
+        const errorText = await response.text();
+        console.warn(`World Bank API error (${response.status}) for ${url}: ${errorText}`);
+      }
+    } catch (e) {
+      console.warn(`World Bank API: Request failed for ${url}:`, e);
+      lastError = e instanceof Error ? e : new Error(String(e));
+    }
   }
 
-  const data = await response.json();
+  throw lastError || new Error('All World Bank API URL variations failed');
+}
 
+function processWorldBankResponse(data: any): PPPData[] {
   // World Bank API returns [metadata, data] array
   if (!Array.isArray(data) || data.length < 2) {
     throw new Error('Invalid World Bank API response format');
@@ -293,11 +321,13 @@ export async function getPPPMultipliers(forceRefresh = false): Promise<PPPMultip
       // For PPP pricing: price_local = price_USD * pppConversionFactor
       pppConversionFactors[data.regionCode] = data.pppConversionFactor;
 
-      // Also calculate legacy multiplier for backward compatibility
-      // multiplier = US_PPP / Country_PPP (relative purchasing power)
+      // Calculate the multiplier relative to the MARKET exchange rate
+      // multiplier = PPP_Factor / Market_Exchange_Rate
+      // If PPP is 8 TRY/$ and Market is 32 TRY/$, multiplier is 0.25 (fair price is 25% of converted price)
+      // We'll calculate this in the API route where we have access to exchange rates
+      
+      // For backward compatibility in this object, we still provide a US-relative multiplier
       const multiplier = usPPP.pppConversionFactor / data.pppConversionFactor;
-
-      // Clamp multiplier to reasonable bounds (0.1 to 2.0)
       multipliers[data.regionCode] = Math.max(0.1, Math.min(2.0, multiplier));
     }
 

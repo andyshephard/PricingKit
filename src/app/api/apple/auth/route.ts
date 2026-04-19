@@ -6,8 +6,10 @@ import {
   getAppleSessionCredentials,
   deleteAppleSession,
   testAppleConnection,
+  resolveAppleCredentials,
 } from '@/lib/apple-connect/client';
 import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
+import { getAppleAuthFromCookies as getAppleAuthFromMiddleware } from '@/middleware/auth';
 
 const SESSION_COOKIE = 'apple_session';
 const BUNDLE_ID_COOKIE = 'apple_bundle_id';
@@ -93,7 +95,34 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET() {
+  console.log('[Auth API] GET request received');
   try {
+    // 1. Check for environment variables via the middleware helper
+    const envAuth = await getAppleAuthFromMiddleware();
+    console.log(`[Auth API] envAuth result: ${envAuth ? 'Found' : 'Not found'}`);
+    
+    if (envAuth) {
+      console.log(`[Auth API] Testing environment credentials for bundleId: ${envAuth.bundleId}`);
+      // Test the environment credentials to ensure they are valid
+      const testResult = await testAppleConnection(envAuth.credentials);
+      if (!testResult.success) {
+        console.log(`[Auth API] Environment credentials failed connection test: ${testResult.error}`);
+        return NextResponse.json({ 
+          authenticated: false, 
+          error: `Environment credentials invalid: ${testResult.error}` 
+        });
+      }
+      console.log(`[Auth API] Connection test successful for: ${envAuth.bundleId}`);
+
+      return NextResponse.json({
+        authenticated: true,
+        bundleId: envAuth.bundleId,
+        keyId: envAuth.credentials.keyId,
+        issuerId: envAuth.credentials.issuerId,
+      });
+    }
+
+    // 2. Fallback to cookie-based session
     const cookieStore = await cookies();
     const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
 
@@ -149,16 +178,12 @@ export async function getAppleAuthFromCookies(): Promise<{
   const cookieStore = await cookies();
   const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
 
-  if (!sessionId) {
-    return null;
-  }
-
-  const credentials = await getAppleSessionCredentials(sessionId);
+  // Use the robust resolver which checks env vars first
+  const credentials = await resolveAppleCredentials(sessionId);
   if (!credentials) {
     return null;
   }
 
   // Use bundleId from credentials as single source of truth
-  // This prevents mismatch between cookie and session data
   return { credentials, bundleId: credentials.bundleId };
 }

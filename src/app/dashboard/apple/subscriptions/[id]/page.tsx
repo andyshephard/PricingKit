@@ -11,7 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Header } from '@/components/layout';
 import { AppleSubscriptionPricingEditor } from '@/components/subscriptions/apple-subscription-pricing-editor';
-import { formatMoney } from '@/lib/google-play/types';
+import { formatMoney, parseMoney } from '@/lib/google-play/types';
 import type { AppleProductPrice } from '@/lib/apple-connect/types';
 
 interface AppleSubscriptionResponse {
@@ -96,13 +96,13 @@ export default function AppleSubscriptionDetailPage({
   };
 
   const getBasePrice = () => {
-    // Get US price as base price
-    const usPrice = subscription?.prices?.US;
-    if (usPrice) {
-      return formatMoney({
-        currencyCode: usPrice.currency || 'USD',
-        units: usPrice.customerPrice,
-      });
+    // Get US price as base price, fallback to first available
+    const usPrice = subscription?.prices?.US || subscription?.prices?.USA;
+    const firstPrice = Object.values(subscription?.prices || {})[0];
+    const basePrice = usPrice || firstPrice;
+    
+    if (basePrice) {
+      return formatMoney(parseMoney(parseFloat(basePrice.customerPrice), basePrice.currency || 'USD'));
     }
     return 'Not set';
   };

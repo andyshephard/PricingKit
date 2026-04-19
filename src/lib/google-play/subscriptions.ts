@@ -165,7 +165,13 @@ export async function updateBasePlanPrices(
       baseUsdPrice,
       missingRegions,
       'direct', // Use simple exchange rate for fill-in regions
-      'charm'
+      'charm',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'USD',
+      'US'
     );
 
     for (const calculated of calculatedPrices) {
@@ -260,7 +266,13 @@ export async function deleteBasePlanRegionPrice(
       baseUsdPrice,
       missingRegions,
       'direct',
-      'charm'
+      'charm',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'USD',
+      'US'
     );
 
     for (const calculated of calculatedPrices) {

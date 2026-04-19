@@ -68,10 +68,8 @@ function getRegionInfo(code: string, platform: 'google' | 'apple' | null) {
 
 // Helper to convert Apple price to Money format
 function appleToMoney(applePrice: { customerPrice: string; currency: string }): Money {
-  return {
-    currencyCode: applePrice.currency,
-    units: applePrice.customerPrice,
-  };
+  // Use parseMoney to correctly split decimal strings (e.g. "2.99") into units/nanos
+  return parseMoney(parseFloat(applePrice.customerPrice || '0'), applePrice.currency);
 }
 
 export function PricingEditor({ product, onSave }: PricingEditorProps) {

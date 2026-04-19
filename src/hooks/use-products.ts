@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { InAppProduct, Money } from '@/lib/google-play/types';
+import { parseMoney } from '@/lib/google-play/types';
 import type { RawAppleProduct, ProductsListResponse, ProductResponse } from '@/types/api';
 import { useAuthStore } from '@/store/auth-store';
 
@@ -24,11 +25,12 @@ export function useProducts() {
       // Normalize Apple products to match Google product structure for table display
       if (platform === 'apple' && data.products) {
         data.products = data.products.map((p: RawAppleProduct) => {
-          // Get the base price (first/only price in the list view - this is the base territory price)
-          const priceEntries = Object.entries(p.prices || {});
-          const basePrice = priceEntries.length > 0 ? priceEntries[0][1] : null;
+          // Get the base price using the detected base territory
+          const baseTerritoryCode = p.baseTerritory || 'USA';
+          const basePrice = p.prices?.[baseTerritoryCode] || Object.values(p.prices || {})[0] || null;
+          
           const defaultPrice = basePrice
-            ? { currencyCode: basePrice.currency || 'USD', units: basePrice.customerPrice }
+            ? parseMoney(parseFloat(basePrice.customerPrice), basePrice.currency || 'USD')
             : null;
 
           return {
@@ -38,6 +40,7 @@ export function useProducts() {
             listings: { 'en-US': { title: p.name } },
             defaultPrice,
             prices: p.prices || {},
+            _appleProduct: p,
           };
         });
       }
@@ -70,11 +73,12 @@ export function useProduct(sku: string) {
       // Normalize Apple product to match Google product structure
       if (platform === 'apple' && data.product) {
         const p = data.product;
-        // Get the base price - for detail view we have all prices, so use USA as default base
-        // (the actual base territory is used when updating prices)
-        const usaPrice = p.prices?.USA;
-        const defaultPrice = usaPrice
-          ? { currencyCode: usaPrice.currency || 'USD', units: usaPrice.customerPrice }
+        // Get the base price using the detected base territory
+        const baseTerritoryCode = p.baseTerritory || 'USA';
+        const basePrice = p.prices?.[baseTerritoryCode];
+        
+        const defaultPrice = basePrice
+          ? parseMoney(parseFloat(basePrice.customerPrice), basePrice.currency || 'USD')
           : null;
 
         data.product = {

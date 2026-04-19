@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect } from 'react';
-import { Calculator, Globe, DollarSign, TrendingDown, Sliders, RefreshCw, Beef, AlertTriangle, Loader2 } from 'lucide-react';
+import { Calculator, Globe, DollarSign, TrendingDown, Sliders, RefreshCw, Beef, AlertTriangle, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -150,10 +150,21 @@ export function AppleSubscriptionBulkPricingModal({
   const [inputMode, setInputMode] = useState<'tier' | 'manual'>('tier');
   const [strategy, setStrategy] = useState<PricingStrategy>('ppp');
   const [rounding, setRounding] = useState<RoundingMode>('charm');
-  const [applyToAllRegions, setApplyToAllRegions] = useState(true);
   const [selectedRegions, setSelectedRegions] = useState<Set<string>>(new Set());
   const [startDate, setStartDate] = useState<string>('');
   const [isSaving, setIsSaving] = useState(false);
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [hasInitializedSelection, setHasInitializedSelection] = useState(false);
+  const [pppFetched, setPppFetched] = useState(false);
+  const [exchangeRatesFetched, setExchangeRatesFetched] = useState(false);
+  const [updateSummary, setUpdateSummary] = useState<{
+    changing: Array<{ name: string; old: string; new: string; regionCode: string }>;
+    staying: Array<{ name: string; price: string; regionCode: string }>;
+  } | null>(null);
+  const [sortConfig, setSortConfig] = useState<{
+    key: string;
+    direction: 'asc' | 'desc' | null;
+  }>({ key: 'name', direction: 'asc' });
 
   // PPP data from World Bank API
   const [pppData, setPppData] = useState<DynamicPPPData | null>(null);
@@ -236,6 +247,7 @@ export function AppleSubscriptionBulkPricingModal({
       toast.error('Failed to fetch PPP data, using static values');
     } finally {
       setPppLoading(false);
+      setPppFetched(true);
     }
   };
 
@@ -259,16 +271,15 @@ export function AppleSubscriptionBulkPricingModal({
       console.error('Failed to fetch exchange rates:', error);
     } finally {
       setExchangeRatesLoading(false);
+      setExchangeRatesFetched(true);
     }
   };
 
   // Get regions to apply pricing to
   const targetRegions = useMemo(() => {
-    if (applyToAllRegions) {
-      return allTerritories.map((t) => t.alpha2);
-    }
-    return Array.from(selectedRegions);
-  }, [applyToAllRegions, selectedRegions, allTerritories]);
+    // We calculate preview for ALL territories so user can pick from the table
+    return allTerritories.map((t) => t.alpha2);
+  }, [allTerritories]);
 
   // Build actual currencies map from territories
   const actualCurrencies = useMemo(() => {
@@ -283,6 +294,17 @@ export function AppleSubscriptionBulkPricingModal({
   const previewPrices = useMemo((): PreviewPrice[] => {
     if (basePriceNum <= 0) return [];
 
+    // Determine the base currency and region from the subscription
+    // For subscriptions, we currently assume US as base if not specified, 
+    // but let's try to find the actual base territory if possible.
+    // Apple subscriptions don't have a single 'baseTerritory' field in our RawAppleSubscription type yet,
+    // so we'll use the one from the prices map that matches our current basePrice.
+    const baseRegion = Object.keys(subscription.prices || {}).find(
+      code => subscription.prices[code].customerPrice === basePrice
+    ) || 'US';
+    
+    const baseCurrency = subscription.prices[baseRegion]?.currency || 'USD';
+
     // Calculate ideal prices using existing bulk pricing function
     const calculatedPrices = calculateBulkPrices(
       basePriceNum,
@@ -292,7 +314,9 @@ export function AppleSubscriptionBulkPricingModal({
       undefined, // customMultipliers
       pppData ?? undefined,
       actualCurrencies,
-      exchangeRates ?? undefined
+      exchangeRates ?? undefined,
+      baseCurrency,
+      baseRegion
     );
 
     // Map to preview format with Apple tier matching
@@ -332,6 +356,113 @@ export function AppleSubscriptionBulkPricingModal({
       };
     });
   }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, subscription.prices]);
+
+  const sortedPreviewPrices = useMemo(() => {
+    let items = [...previewPrices];
+
+    if (sortConfig.key && sortConfig.direction) {
+      items.sort((a, b) => {
+        let aValue: any;
+        let bValue: any;
+
+        switch (sortConfig.key) {
+          case 'region':
+            aValue = a.territoryAlpha3;
+            bValue = b.territoryAlpha3;
+            break;
+          case 'name':
+            aValue = a.countryName;
+            bValue = b.countryName;
+            break;
+          case 'currency':
+            aValue = a.currency;
+            bValue = b.currency;
+            break;
+          case 'current':
+            aValue = a.currentPrice || 0;
+            bValue = b.currentPrice || 0;
+            break;
+          case 'new':
+            aValue = a.tierPrice;
+            bValue = b.tierPrice;
+            break;
+          case 'change':
+            aValue = a.priceChange || 0;
+            bValue = b.priceChange || 0;
+            break;
+          default:
+            return 0;
+        }
+
+        if (aValue < bValue) {
+          return sortConfig.direction === 'asc' ? -1 : 1;
+        }
+        if (aValue > bValue) {
+          return sortConfig.direction === 'asc' ? 1 : -1;
+        }
+        return 0;
+      });
+    }
+
+    return items;
+  }, [previewPrices, sortConfig]);
+
+  // Auto-select regions where the target price deviates from current price
+  useEffect(() => {
+    // Only run if modal is open, we haven't initialized yet, and data fetching is COMPLETE
+    // This prevents initializing selection with stale/default prices before PPP data loads
+    const isFetchingComplete = pppFetched && exchangeRatesFetched;
+
+    if (open && !hasInitializedSelection && previewPrices.length > 0 && isFetchingComplete) {
+      // Safety check: ensure previewPrices first item matches a territory we expect
+      const firstPreview = previewPrices[0];
+      const belongsToCurrentSubscription = allTerritories.some(t => t.alpha2 === firstPreview.territoryCode);
+      
+      if (!belongsToCurrentSubscription) return;
+
+      const newSelected = new Set<string>();
+      
+      previewPrices.forEach((preview) => {
+        // MATCH UI DISPLAY: Only pre-select if rounded change is non-zero
+        // Using abs() >= 0.5 to match toFixed(0) rounding behavior seen in the table
+        const isDifferent = preview.currentPrice === null || 
+          Math.abs(preview.priceChange || 0) >= 0.5;
+
+        if (isDifferent) {
+          newSelected.add(preview.territoryCode);
+        }
+      });
+
+      setSelectedRegions(newSelected);
+      setHasInitializedSelection(true);
+    }
+  }, [open, previewPrices, hasInitializedSelection, allTerritories, pppFetched, exchangeRatesFetched]);
+
+  const validSelectedCount = useMemo(() => {
+    return previewPrices.filter(p => selectedRegions.has(p.territoryCode) && !p.noTierData && p.tier).length;
+  }, [previewPrices, selectedRegions]);
+
+  // Handle sorting
+  const requestSort = (key: string) => {
+    let direction: 'asc' | 'desc' | null = 'asc';
+    if (sortConfig.key === key && sortConfig.direction === 'asc') {
+      direction = 'desc';
+    } else if (sortConfig.key === key && sortConfig.direction === 'desc') {
+      direction = null;
+    }
+    setSortConfig({ key, direction });
+  };
+
+  const getSortIcon = (key: string) => {
+    if (sortConfig.key !== key || !sortConfig.direction) {
+      return <ArrowUpDown className="ml-2 h-3 w-3" />;
+    }
+    return sortConfig.direction === 'asc' ? (
+      <ChevronUp className="ml-2 h-3 w-3" />
+    ) : (
+      <ChevronDown className="ml-2 h-3 w-3" />
+    );
+  };
 
   // Count warnings (large tier differences or missing tier data)
   const warningCount = useMemo(() => {
@@ -373,27 +504,68 @@ export function AppleSubscriptionBulkPricingModal({
   };
 
   // Apply bulk pricing
-  const handleApply = async () => {
+  const handleApplyClick = () => {
+    if (selectedRegions.size === 0) {
+      toast.error('Please select at least one region');
+      return;
+    }
+
     if (previewPrices.length === 0) {
       toast.error('Please enter a valid base price');
       return;
     }
 
+    const changing: any[] = [];
+    const staying: any[] = [];
+
+    allTerritories.forEach(territory => {
+      const previewItem = previewPrices.find(p => p.territoryCode === territory.alpha2);
+      const isSelected = selectedRegions.has(territory.alpha2);
+      const currentPriceData = subscription.prices[territory.alpha2];
+      const currentPriceFormatted = currentPriceData 
+        ? formatPrice(currentPriceData.customerPrice, currentPriceData.currency)
+        : 'None';
+
+      if (isSelected && previewItem && !previewItem.noTierData) {
+        changing.push({
+          name: territory.name,
+          regionCode: territory.alpha2,
+          old: currentPriceFormatted,
+          new: formatPrice(previewItem.tierPrice, previewItem.currency)
+        });
+      } else {
+        staying.push({
+          name: territory.name,
+          regionCode: territory.alpha2,
+          price: currentPriceFormatted
+        });
+      }
+    });
+
+    setUpdateSummary({ changing, staying });
+    setShowConfirmDialog(true);
+  };
+
+  const executeApply = async () => {
+    // Filter to only selected regions
+    const selectedPreviewPrices = previewPrices.filter(p => selectedRegions.has(p.territoryCode));
+
     // Check for regions without tier data
-    const regionsWithoutTiers = previewPrices.filter(p => p.noTierData);
+    const regionsWithoutTiers = selectedPreviewPrices.filter(p => p.noTierData);
     if (regionsWithoutTiers.length > 0) {
       toast.warning(`Skipping ${regionsWithoutTiers.length} regions without Apple tier data`);
     }
 
     // Filter to only regions with valid tier data
-    const validPrices = previewPrices.filter(p => !p.noTierData && p.tier);
+    const validPrices = selectedPreviewPrices.filter(p => !p.noTierData && p.tier);
 
     if (validPrices.length === 0) {
-      toast.error('No valid price tiers found for any region');
+      toast.error('No valid price tiers found for any selected region');
       return;
     }
 
     setIsSaving(true);
+    setShowConfirmDialog(false);
 
     try {
       // Phase 1: Resolve price points server-side in a single request
@@ -451,12 +623,16 @@ export function AppleSubscriptionBulkPricingModal({
   // Reset form when modal opens
   const handleOpenChange = (newOpen: boolean) => {
     if (newOpen) {
-      setBasePrice('');
+      // Initialize base price from existing US price or first available price
+      const usPrice = subscription.prices?.['US'] || subscription.prices?.['USA'];
+      const firstPrice = Object.values(subscription.prices || {})[0];
+      const initialPrice = usPrice?.customerPrice || firstPrice?.customerPrice || '';
+      
+      setBasePrice(initialPrice);
       setInputMode('tier');
       setStrategy('ppp');
       setRounding('charm');
-      setApplyToAllRegions(true);
-      setSelectedRegions(new Set(Object.keys(subscription.prices || {})));
+      setHasInitializedSelection(false);
       if (isApproved) {
         setStartDate(getEarliestEffectiveDate());
       } else {
@@ -485,7 +661,14 @@ export function AppleSubscriptionBulkPricingModal({
             <div className="flex gap-8">
               {/* Base Price Input */}
               <div className="space-y-2">
-                <Label>Base Price ({subscription.prices?.['US']?.currency || 'USD'})</Label>
+                <Label>
+                  Base Price ({(() => {
+                    const usPrice = subscription.prices?.['US'] || subscription.prices?.['USA'];
+                    const firstPrice = Object.values(subscription.prices || {})[0];
+                    const basePrice = usPrice || firstPrice;
+                    return basePrice ? `${basePrice.currency} - ${basePrice.territoryCode}` : 'USD';
+                  })()})
+                </Label>
                 <Tabs value={inputMode} onValueChange={(v) => handleInputModeChange(v as 'tier' | 'manual')}>
                   <TabsList className="grid w-full grid-cols-2 max-w-xs">
                     <TabsTrigger value="tier">Select Tier</TabsTrigger>
@@ -714,103 +897,98 @@ export function AppleSubscriptionBulkPricingModal({
               </p>
             </div>
 
-            {/* Region Selection */}
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <Label>Apply to Regions</Label>
-                <div className="flex items-center gap-4">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="regionScope"
-                      checked={applyToAllRegions}
-                      onChange={() => setApplyToAllRegions(true)}
-                    />
-                    <span className="text-sm">All Regions</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="regionScope"
-                      checked={!applyToAllRegions}
-                      onChange={() => setApplyToAllRegions(false)}
-                    />
-                    <span className="text-sm">Selected Only</span>
-                  </label>
-                </div>
-              </div>
-
-              {!applyToAllRegions && (
-                <div className="border rounded-lg p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm text-muted-foreground">
-                      {selectedRegions.size} of {allTerritories.length} regions selected
-                    </span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={toggleAllRegions}
-                    >
-                      {selectedRegions.size === allTerritories.length
-                        ? 'Deselect All'
-                        : 'Select All'}
-                    </Button>
-                  </div>
-                  <ScrollArea className="h-32">
-                    <div className="grid grid-cols-4 gap-2">
-                      {allTerritories.map((territory) => (
-                        <label
-                          key={territory.alpha2}
-                          className="flex items-center gap-2 text-sm cursor-pointer"
-                        >
-                          <Checkbox
-                            checked={selectedRegions.has(territory.alpha2)}
-                            onCheckedChange={() => toggleRegion(territory.alpha2)}
-                          />
-                          <span className="truncate" title={territory.name}>
-                            {alpha2ToAlpha3(territory.alpha2) || territory.alpha2}
-                          </span>
-                        </label>
-                      ))}
-                    </div>
-                  </ScrollArea>
-                </div>
-              )}
-            </div>
-
             {/* Preview Table */}
             {previewPrices.length > 0 && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <Label>Preview ({previewPrices.length} regions)</Label>
-                  {warningCount > 0 && (
-                    <div className="flex items-center gap-1 text-amber-600 dark:text-amber-500">
-                      <AlertTriangle className="h-4 w-4" />
-                      <span className="text-xs">{warningCount} regions with tier mismatch or missing data</span>
-                    </div>
-                  )}
+                  <div className="flex flex-col">
+                    <Label>Regions & Preview ({selectedRegions.size} selected)</Label>
+                    {warningCount > 0 && (
+                      <div className="flex items-center gap-1 text-amber-600 dark:text-amber-500 mt-1">
+                        <AlertTriangle className="h-3 w-3" />
+                        <span className="text-[10px]">{warningCount} regions with issues</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={() => setSelectedRegions(new Set())}
+                      disabled={selectedRegions.size === 0}
+                    >
+                      Deselect All
+                    </Button>
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={() => setSelectedRegions(new Set(allTerritories.map(t => t.alpha2)))}
+                      disabled={selectedRegions.size === allTerritories.length}
+                    >
+                      Select All
+                    </Button>
+                  </div>
                 </div>
                 <div className="border rounded-lg">
-                  <ScrollArea className="h-64">
+                  <ScrollArea className="h-96">
                     <Table>
-                      <TableHeader>
+                      <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
                         <TableRow>
-                          <TableHead className="w-20">Region</TableHead>
-                          <TableHead>Country</TableHead>
-                          <TableHead>Currency</TableHead>
-                          <TableHead className="text-right">Current</TableHead>
-                          <TableHead className="text-right">New</TableHead>
-                          <TableHead className="text-right">Change</TableHead>
+                          <TableHead className="w-12">
+                            <Checkbox 
+                              checked={selectedRegions.size === allTerritories.length}
+                              onCheckedChange={toggleAllRegions}
+                              aria-label="Select all"
+                            />
+                          </TableHead>
+                          <TableHead className="w-20 cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('region')}>
+                            <div className="flex items-center">
+                              Region {getSortIcon('region')}
+                            </div>
+                          </TableHead>
+                          <TableHead className="cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('name')}>
+                            <div className="flex items-center">
+                              Country {getSortIcon('name')}
+                            </div>
+                          </TableHead>
+                          <TableHead className="cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('currency')}>
+                            <div className="flex items-center">
+                              Currency {getSortIcon('currency')}
+                            </div>
+                          </TableHead>
+                          <TableHead className="text-right cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('current')}>
+                            <div className="flex items-center justify-end">
+                              Current {getSortIcon('current')}
+                            </div>
+                          </TableHead>
+                          <TableHead className="text-right cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('new')}>
+                            <div className="flex items-center justify-end">
+                              New {getSortIcon('new')}
+                            </div>
+                          </TableHead>
+                          <TableHead className="text-right cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('change')}>
+                            <div className="flex items-center justify-end">
+                              Change {getSortIcon('change')}
+                            </div>
+                          </TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {previewPrices.map((preview) => {
+                        {sortedPreviewPrices.map((preview) => {
+                          const isSelected = selectedRegions.has(preview.territoryCode);
                           const rowClassName = preview.noTierData
                             ? 'bg-red-50/50 dark:bg-red-950/20'
-                            : '';
+                            : !isSelected ? 'opacity-50' : '';
 
                           return (
                             <TableRow key={preview.territoryCode} className={rowClassName}>
+                              <TableCell>
+                                <Checkbox 
+                                  checked={isSelected}
+                                  onCheckedChange={() => toggleRegion(preview.territoryCode)}
+                                  aria-label={`Select ${preview.territoryCode}`}
+                                />
+                              </TableCell>
                               <TableCell>
                                 <Badge variant="outline">
                                   {preview.territoryAlpha3}
@@ -868,7 +1046,7 @@ export function AppleSubscriptionBulkPricingModal({
             Cancel
           </Button>
           <Button
-            onClick={handleApply}
+            onClick={handleApplyClick}
             disabled={previewPrices.length === 0 || isSaving || resolveMutation.isPending || updateMutation.isPending}
           >
             {isSaving || resolveMutation.isPending || updateMutation.isPending ? (
@@ -881,10 +1059,80 @@ export function AppleSubscriptionBulkPricingModal({
                     : 'Resolving price points...'}
               </>
             ) : (
-              `Apply to ${previewPrices.filter(p => !p.noTierData).length} Regions`
+              `Apply to ${validSelectedCount} Regions`
             )}
           </Button>
         </DialogFooter>
+
+        {/* Confirmation Dialog */}
+        <Dialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
+          <DialogContent className="sm:max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
+            <DialogHeader className="flex-shrink-0 text-left">
+              <DialogTitle>Confirm Price Changes</DialogTitle>
+              <DialogDescription asChild>
+                <div className="text-sm text-muted-foreground">
+                  Review the updates before applying them to {selectedRegions.size} regions.
+                  {isApproved && startDate && (
+                    <div className="mt-2 text-primary font-medium">
+                      New prices will take effect on {startDate}.
+                    </div>
+                  )}
+                </div>
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="flex-1 min-h-[300px] py-4 overflow-hidden border-y my-2">
+              <ScrollArea className="h-[50vh] pr-4">
+                <div className="space-y-6">
+                  {/* Section: Changing */}
+                  <div>
+                    <h4 className="font-semibold text-sm mb-2 text-primary flex items-center gap-2 sticky top-0 bg-background py-1 z-10">
+                      <span className="w-2 h-2 rounded-full bg-blue-500" />
+                      Updating ({updateSummary?.changing.length})
+                    </h4>
+                    <div className="grid grid-cols-1 gap-1 pl-4">
+                      {updateSummary?.changing.map(item => (
+                        <div key={item.regionCode} className="text-xs flex justify-between border-b border-muted/30 py-1">
+                          <span className="font-medium">{item.name} ({item.regionCode})</span>
+                          <span className="font-mono">
+                            <span className="text-muted-foreground line-through">{item.old}</span>
+                            <span className="mx-2 text-muted-foreground">→</span>
+                            <span className="font-bold text-blue-600 dark:text-blue-400">{item.new}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Section: Staying */}
+                  <div>
+                    <h4 className="font-semibold text-sm mb-2 text-muted-foreground flex items-center gap-2 sticky top-0 bg-background py-1 z-10">
+                      <span className="w-2 h-2 rounded-full bg-gray-300" />
+                      No Change ({updateSummary?.staying.length})
+                    </h4>
+                    <div className="grid grid-cols-1 gap-1 pl-4 opacity-70 text-muted-foreground">
+                      {updateSummary?.staying.map(item => (
+                        <div key={item.regionCode} className="text-xs flex justify-between py-1 border-b border-muted/10">
+                          <span>{item.name} ({item.regionCode})</span>
+                          <span className="font-mono">{item.price}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </ScrollArea>
+            </div>
+
+            <DialogFooter className="flex-shrink-0 gap-2 sm:gap-0">
+              <Button variant="outline" onClick={() => setShowConfirmDialog(false)}>
+                Cancel
+              </Button>
+              <Button onClick={executeApply}>
+                Confirm and Apply
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </DialogContent>
     </Dialog>
   );

@@ -9,6 +9,7 @@ import { BulkUpdateModal } from '@/components/pricing/bulk-update-modal';
 import { Button } from '@/components/ui/button';
 import { useSelectionStore } from '@/store/selection-store';
 import { useAuthStore } from '@/store/auth-store';
+import { parseMoney } from '@/lib/google-play/types';
 import type { RawAppleSubscription, SubscriptionsListResponse } from '@/types/api';
 
 export default function AppleSubscriptionsPage() {
@@ -47,10 +48,7 @@ export default function AppleSubscriptionsPage() {
               autoRenewingBasePlanType: { billingPeriodDuration: s.period },
               regionalConfigs: basePrice && basePriceRegion ? [{
                 regionCode: basePriceRegion,
-                price: {
-                  currencyCode: basePrice.currency || 'USD',
-                  units: basePrice.customerPrice,
-                },
+                price: parseMoney(parseFloat(basePrice.customerPrice), basePrice.currency || 'USD'),
               }] : [],
             }],
             _appleSubscription: { ...s, basePrice },

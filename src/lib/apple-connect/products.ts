@@ -756,19 +756,9 @@ async function resolvePPPPricesWithCache(
       continue;
     }
 
-    // Log for debugging
-    if (territoryCode === 'AUS' || territoryCode === 'USA') {
-      // console.log(`[Apple] ${territoryCode} - Requested: ${currency} ${localAmount.toFixed(2)}, Closest tier: ${closestTier.tier} (${currency} ${closestTier.price})`);
-    }
-
     // Construct the price point ID for this territory using the matched tier
     const pricePointId = encodePricePointId(sourceId, territoryCode, closestTier.tier);
     manualPrices.push({ territoryId: territoryCode, pricePointId });
-  }
-
-  // console.log(`[Apple] resolvePPPPricesToPricePoints - Resolved ${manualPrices.length} price points (1 API call for sourceId)`);
-  if (skippedTerritories.length > 0) {
-    // console.warn(`[Apple] resolvePPPPricesToPricePoints - Skipped ${skippedTerritories.length} territories:`, skippedTerritories);
   }
 
   return {
@@ -795,16 +785,13 @@ async function resolvePPPPricesFromAPI(
     currencyToTerritories.get(currency)!.push(territoryCode);
   }
 
-  // console.log(`[Apple] resolvePPPPricesFromAPI - Found ${currencyToTerritories.size} unique currencies`);
-
   // Step 2: Fetch price points for each unique currency (using first territory as representative)
   const currencyPricePoints = new Map<string, Array<{ id: string; customerPrice: string }>>();
   const currencyTierMaps = new Map<string, Map<string, string>>(); // currency → (price → tier)
 
-  for (const [currency, territoryList] of currencyToTerritories) {
+  // Use Promise.all to fetch currencies in parallel
+  await Promise.all(Array.from(currencyToTerritories.entries()).map(async ([currency, territoryList]) => {
     const representativeTerritory = territoryList[0];
-    // console.log(`[Apple] Fetching price points for ${currency} using territory ${representativeTerritory}`);
-
     const pricePoints = await getInAppPurchasePricePointsForTerritory(
       credentials,
       inAppPurchaseId,
@@ -821,8 +808,7 @@ async function resolvePPPPricesFromAPI(
       }
     }
     currencyTierMaps.set(currency, tierMap);
-    // console.log(`[Apple] Found ${pricePoints.length} price points for ${currency}`);
-  }
+  }));
 
   // Step 3: Extract sourceId from any price point
   const anyPricePoints = currencyPricePoints.values().next().value;
@@ -865,19 +851,9 @@ async function resolvePPPPricesFromAPI(
       continue;
     }
 
-    // Log Australia specifically for debugging
-    if (territoryCode === 'AUS') {
-      // console.log(`[Apple] AUSTRALIA - Requested: ${currency} ${localAmount}, Closest tier: ${currency} ${closest.customerPrice}, Tier: ${tier}`);
-    }
-
     // Construct the price point ID for this territory using the matched tier
     const pricePointId = encodePricePointId(sourceId, territoryCode, tier);
     manualPrices.push({ territoryId: territoryCode, pricePointId });
-  }
-
-  // console.log(`[Apple] resolvePPPPricesFromAPI - Resolved ${manualPrices.length} price points (${currencyToTerritories.size} currencies fetched)`);
-  if (skippedTerritories.length > 0) {
-    // console.warn(`[Apple] resolvePPPPricesFromAPI - Skipped ${skippedTerritories.length} territories:`, skippedTerritories);
   }
 
   return {

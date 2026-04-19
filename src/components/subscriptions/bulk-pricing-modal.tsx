@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect } from 'react';
-import { Calculator, Globe, DollarSign, TrendingDown, Sliders, RefreshCw, Beef, Loader2 } from 'lucide-react';
+import { Calculator, Globe, DollarSign, TrendingDown, Sliders, RefreshCw, Beef, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -93,10 +93,7 @@ export function SubscriptionBulkPricingModal({
   const [basePrice, setBasePrice] = useState<string>('');
   const [strategy, setStrategy] = useState<PricingStrategy>('ppp');
   const [rounding, setRounding] = useState<RoundingMode>('charm');
-  const [applyToAllRegions, setApplyToAllRegions] = useState(true);
-  const [selectedRegions, setSelectedRegions] = useState<Set<string>>(
-    new Set(basePlan.regionalConfigs?.map(rc => rc.regionCode) || [])
-  );
+  const [selectedRegions, setSelectedRegions] = useState<Set<string>>(new Set());
 
   // PPP data from World Bank API
   const [pppData, setPppData] = useState<DynamicPPPData | null>(null);
@@ -109,6 +106,18 @@ export function SubscriptionBulkPricingModal({
 
   const updateMutation = useUpdateBasePlanPrices();
   const [isApplying, setIsApplying] = useState(false);
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [hasInitializedSelection, setHasInitializedSelection] = useState(false);
+  const [pppFetched, setPppFetched] = useState(false);
+  const [exchangeRatesFetched, setExchangeRatesFetched] = useState(false);
+  const [updateSummary, setUpdateSummary] = useState<{
+    changing: Array<{ name: string; old: string; new: string; regionCode: string }>;
+    staying: Array<{ name: string; price: string; regionCode: string }>;
+  } | null>(null);
+  const [sortConfig, setSortConfig] = useState<{
+    key: string;
+    direction: 'asc' | 'desc' | null;
+  }>({ key: 'name', direction: 'asc' });
 
   const basePriceNum = parseFloat(basePrice) || 0;
 
@@ -161,6 +170,7 @@ export function SubscriptionBulkPricingModal({
       toast.error('Failed to fetch PPP data, using static values');
     } finally {
       setPppLoading(false);
+      setPppFetched(true);
     }
   };
 
@@ -185,16 +195,15 @@ export function SubscriptionBulkPricingModal({
       // Don't show error toast - we'll fall back to static rates
     } finally {
       setExchangeRatesLoading(false);
+      setExchangeRatesFetched(true);
     }
   };
 
   // Get regions to apply pricing to
   const targetRegions = useMemo(() => {
-    if (applyToAllRegions) {
-      return allRegions.map((r) => r.code);
-    }
-    return Array.from(selectedRegions);
-  }, [applyToAllRegions, selectedRegions, allRegions]);
+    // We calculate preview for ALL regions so user can pick from the table
+    return allRegions.map((r) => r.code);
+  }, [allRegions]);
 
   // Extract actual currencies from normalized prices
   const actualCurrencies = useMemo(() => {
@@ -210,6 +219,10 @@ export function SubscriptionBulkPricingModal({
   // Calculate preview prices
   const previewPrices = useMemo(() => {
     if (basePriceNum < 0) return [];
+    
+    const baseRegion = 'US';
+    const baseCurrency = basePlan.regionalConfigs?.find(rc => rc.regionCode === 'US')?.price?.currencyCode || 'USD';
+
     return calculateBulkPrices(
       basePriceNum,
       targetRegions,
@@ -218,13 +231,140 @@ export function SubscriptionBulkPricingModal({
       undefined, // customMultipliers
       pppData ?? undefined, // dynamicPPPData
       actualCurrencies, // Use actual currencies from Google Play
-      exchangeRates ?? undefined // Dynamic exchange rates from API
+      exchangeRates ?? undefined, // Dynamic exchange rates from API
+      baseCurrency,
+      baseRegion
     );
-  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates]);
+  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, basePlan.regionalConfigs]);
 
   // Get current price for a region
   const getCurrentPrice = (regionCode: string): Money | null => {
     return normalizedPrices[regionCode] || null;
+  };
+
+  const sortedPreviewPrices = useMemo(() => {
+    let items = [...previewPrices].map(item => {
+      const region = allRegions.find(r => r.code === item.regionCode);
+      const currentPrice = getCurrentPrice(item.regionCode);
+      const currentPriceNum = currentPrice ? moneyToNumber(currentPrice) : 0;
+      const targetPriceNum = moneyToNumber(item.price);
+      const change = calculatePriceChange(currentPriceNum, targetPriceNum);
+      
+      return {
+        ...item,
+        countryName: region?.name || item.regionCode,
+        currentPriceNum,
+        change,
+        newPriceNum: targetPriceNum,
+      };
+    });
+
+    if (sortConfig.key && sortConfig.direction) {
+      items.sort((a, b) => {
+        let aValue: any;
+        let bValue: any;
+
+        switch (sortConfig.key) {
+          case 'region':
+            aValue = a.regionCode;
+            bValue = b.regionCode;
+            break;
+          case 'name':
+            aValue = a.countryName;
+            bValue = b.countryName;
+            break;
+          case 'currency':
+            aValue = a.currencyCode;
+            bValue = b.currencyCode;
+            break;
+          case 'current':
+            aValue = a.currentPriceNum;
+            bValue = b.currentPriceNum;
+            break;
+          case 'new':
+            aValue = a.newPriceNum;
+            bValue = b.newPriceNum;
+            break;
+          case 'change':
+            aValue = a.change;
+            bValue = b.change;
+            break;
+          default:
+            return 0;
+        }
+
+        if (aValue < bValue) {
+          return sortConfig.direction === 'asc' ? -1 : 1;
+        }
+        if (aValue > bValue) {
+          return sortConfig.direction === 'asc' ? 1 : -1;
+        }
+        return 0;
+      });
+    }
+
+    return items;
+  }, [previewPrices, sortConfig, allRegions]);
+
+  // Auto-select regions where the target price deviates from current price
+  useEffect(() => {
+    // Only run if modal is open, we haven't initialized yet, and data fetching is COMPLETE
+    // This prevents initializing selection with stale/default prices before PPP data loads
+    const isFetchingComplete = pppFetched && exchangeRatesFetched;
+
+    if (open && !hasInitializedSelection && previewPrices.length > 0 && isFetchingComplete) {
+      // Safety check: ensure previewPrices first item matches a region we expect
+      const firstPreview = previewPrices[0];
+      const belongsToCurrentSubscription = allRegions.some(r => r.code === firstPreview.regionCode);
+      
+      if (!belongsToCurrentSubscription) return;
+
+      const newSelected = new Set<string>();
+      
+      previewPrices.forEach((calculated) => {
+        const current = getCurrentPrice(calculated.regionCode);
+        const target = calculated.price;
+
+        const currentNum = current ? moneyToNumber(current) : 0;
+        const targetNum = moneyToNumber(target);
+        
+        // Calculate the same change percentage as the "Change" column
+        const change = calculatePriceChange(currentNum, targetNum);
+        
+        // MATCH UI DISPLAY: Only pre-select if rounded change is non-zero
+        // Using abs() >= 0.5 to match toFixed(0) rounding behavior seen in the table
+        const isDifferent = !current || Math.abs(change) >= 0.5;
+
+        if (isDifferent) {
+          newSelected.add(calculated.regionCode);
+        }
+      });
+
+      setSelectedRegions(newSelected);
+      setHasInitializedSelection(true);
+    }
+  }, [open, previewPrices, hasInitializedSelection, normalizedPrices, allRegions, pppFetched, exchangeRatesFetched]);
+
+  // Handle sorting
+  const requestSort = (key: string) => {
+    let direction: 'asc' | 'desc' | null = 'asc';
+    if (sortConfig.key === key && sortConfig.direction === 'asc') {
+      direction = 'desc';
+    } else if (sortConfig.key === key && sortConfig.direction === 'desc') {
+      direction = null;
+    }
+    setSortConfig({ key, direction });
+  };
+
+  const getSortIcon = (key: string) => {
+    if (sortConfig.key !== key || !sortConfig.direction) {
+      return <ArrowUpDown className="ml-2 h-3 w-3" />;
+    }
+    return sortConfig.direction === 'asc' ? (
+      <ChevronUp className="ml-2 h-3 w-3" />
+    ) : (
+      <ChevronDown className="ml-2 h-3 w-3" />
+    );
   };
 
   // Handle region selection
@@ -248,25 +388,68 @@ export function SubscriptionBulkPricingModal({
   };
 
   // Apply bulk pricing
-  const handleApply = async () => {
+  const handleApplyClick = () => {
+    if (selectedRegions.size === 0) {
+      toast.error('Please select at least one region');
+      return;
+    }
+
     if (previewPrices.length === 0) {
       toast.error('Please enter a valid base price');
       return;
     }
 
-    const regionalConfigs = previewPrices.map((calculated) => ({
-      regionCode: calculated.regionCode,
-      price: calculated.price,
-    }));
+    const changing: any[] = [];
+    const staying: any[] = [];
+
+    allRegions.forEach(region => {
+      const previewItem = previewPrices.find(p => p.regionCode === region.code);
+      const isSelected = selectedRegions.has(region.code);
+      const currentPrice = getCurrentPrice(region.code);
+      const currentPriceFormatted = currentPrice ? formatMoney(currentPrice) : 'None';
+
+      if (isSelected && previewItem) {
+        changing.push({
+          name: region.name,
+          regionCode: region.code,
+          old: currentPriceFormatted,
+          new: formatMoney(previewItem.price)
+        });
+      } else {
+        staying.push({
+          name: region.name,
+          regionCode: region.code,
+          price: currentPriceFormatted
+        });
+      }
+    });
+
+    setUpdateSummary({ changing, staying });
+    setShowConfirmDialog(true);
+  };
+
+  const executeApply = async () => {
+    const regionalConfigs = previewPrices
+      .filter((calculated) => selectedRegions.has(calculated.regionCode))
+      .map((calculated) => ({
+        regionCode: calculated.regionCode,
+        price: calculated.price,
+      }));
+
+    if (regionalConfigs.length === 0) {
+      toast.error('No regions selected to update');
+      return;
+    }
 
     setIsApplying(true);
+    setShowConfirmDialog(false);
     try {
       await updateMutation.mutateAsync({
         productId: subscription.productId,
         basePlanId: basePlan.basePlanId,
         regionalConfigs,
       });
-      toast.success(`Updated prices for ${previewPrices.length} regions`);
+      toast.success(`Updated prices for ${regionalConfigs.length} regions`);
       onOpenChange(false);
     } catch (error) {
       toast.error(
@@ -280,11 +463,17 @@ export function SubscriptionBulkPricingModal({
   // Reset form when modal opens
   const handleOpenChange = (newOpen: boolean) => {
     if (newOpen) {
-      setBasePrice('');
+      // Initialize base price from existing US price or first available price
+      const usConfig = basePlan.regionalConfigs?.find(rc => rc.regionCode === 'US');
+      const firstConfig = basePlan.regionalConfigs?.[0];
+      const initialPrice = usConfig?.price 
+        ? moneyToNumber(usConfig.price).toString() 
+        : (firstConfig?.price ? moneyToNumber(firstConfig.price).toString() : '');
+
+      setBasePrice(initialPrice);
       setStrategy('ppp');
       setRounding('charm');
-      setApplyToAllRegions(true);
-      setSelectedRegions(new Set(basePlan.regionalConfigs?.map(rc => rc.regionCode) || []));
+      setHasInitializedSelection(false);
     }
     onOpenChange(newOpen);
   };
@@ -481,113 +670,103 @@ export function SubscriptionBulkPricingModal({
             </p>
           </div>
 
-          {/* Region Selection */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <Label>Apply to Regions</Label>
-              <div className="flex items-center gap-4">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="regionScope"
-                    checked={applyToAllRegions}
-                    onChange={() => setApplyToAllRegions(true)}
-                  />
-                  <span className="text-sm">All Regions</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="regionScope"
-                    checked={!applyToAllRegions}
-                    onChange={() => setApplyToAllRegions(false)}
-                  />
-                  <span className="text-sm">Selected Only</span>
-                </label>
-              </div>
-            </div>
-
-            {!applyToAllRegions && (
-              <div className="border rounded-lg p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm text-muted-foreground">
-                    {selectedRegions.size} of {allRegions.length}{' '}
-                    regions selected
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={toggleAllRegions}
-                  >
-                    {selectedRegions.size === allRegions.length
-                      ? 'Deselect All'
-                      : 'Select All'}
-                  </Button>
-                </div>
-                <ScrollArea className="h-32">
-                  <div className="grid grid-cols-4 gap-2">
-                    {allRegions.map((region) => (
-                      <label
-                        key={region.code}
-                        className="flex items-center gap-2 text-sm cursor-pointer"
-                      >
-                        <Checkbox
-                          checked={selectedRegions.has(region.code)}
-                          onCheckedChange={() => toggleRegion(region.code)}
-                        />
-                        <span className="truncate" title={region.name}>
-                          {region.code}
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                </ScrollArea>
-              </div>
-            )}
-          </div>
-
           {/* Preview Table */}
           {previewPrices.length > 0 && (
             <div className="space-y-2">
-              <Label>Preview ({previewPrices.length} regions)</Label>
+              <div className="flex items-center justify-between">
+                <Label>Regions & Preview ({selectedRegions.size} selected)</Label>
+                <div className="flex items-center gap-2">
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => setSelectedRegions(new Set())}
+                    disabled={selectedRegions.size === 0}
+                  >
+                    Deselect All
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => setSelectedRegions(new Set(allRegions.map(r => r.code)))}
+                    disabled={selectedRegions.size === allRegions.length}
+                  >
+                    Select All
+                  </Button>
+                </div>
+              </div>
               <div className="border rounded-lg">
-                <ScrollArea className="h-64">
+                <ScrollArea className="h-96">
                   <Table>
-                    <TableHeader>
+                    <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
                       <TableRow>
-                        <TableHead className="w-20">Region</TableHead>
-                        <TableHead>Country</TableHead>
-                        <TableHead>Currency</TableHead>
-                        <TableHead className="text-right">Current</TableHead>
-                        <TableHead className="text-right">New</TableHead>
-                        <TableHead className="text-right">Change</TableHead>
+                        <TableHead className="w-12">
+                          <Checkbox 
+                            checked={selectedRegions.size === allRegions.length}
+                            onCheckedChange={toggleAllRegions}
+                            aria-label="Select all"
+                          />
+                        </TableHead>
+                        <TableHead className="w-20 cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('region')}>
+                          <div className="flex items-center">
+                            Region {getSortIcon('region')}
+                          </div>
+                        </TableHead>
+                        <TableHead className="cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('name')}>
+                          <div className="flex items-center">
+                            Country {getSortIcon('name')}
+                          </div>
+                        </TableHead>
+                        <TableHead className="cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('currency')}>
+                          <div className="flex items-center">
+                            Currency {getSortIcon('currency')}
+                          </div>
+                        </TableHead>
+                        <TableHead className="text-right cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('current')}>
+                          <div className="flex items-center justify-end">
+                            Current {getSortIcon('current')}
+                          </div>
+                        </TableHead>
+                        <TableHead className="text-right cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('new')}>
+                          <div className="flex items-center justify-end">
+                            New {getSortIcon('new')}
+                          </div>
+                        </TableHead>
+                        <TableHead className="text-right cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => requestSort('change')}>
+                          <div className="flex items-center justify-end">
+                            Change {getSortIcon('change')}
+                          </div>
+                        </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {previewPrices.map((calculated) => {
+                      {sortedPreviewPrices.map((calculated) => {
                         const region = allRegions.find(
                           (r) => r.code === calculated.regionCode
                         );
                         const currentPrice = getCurrentPrice(
                           calculated.regionCode
                         );
-                        const currentPriceNum = currentPrice
-                          ? moneyToNumber(currentPrice)
-                          : 0;
-                        const change = calculatePriceChange(
-                          currentPriceNum,
-                          calculated.rawPrice
-                        );
+                        const isSelected = selectedRegions.has(calculated.regionCode);
 
                         return (
-                          <TableRow key={calculated.regionCode}>
+                          <TableRow 
+                            key={calculated.regionCode}
+                            className={!isSelected ? 'opacity-50' : ''}
+                          >
+                            <TableCell>
+                              <Checkbox 
+                                checked={isSelected}
+                                onCheckedChange={() => toggleRegion(calculated.regionCode)}
+                                aria-label={`Select ${calculated.regionCode}`}
+                              />
+                            </TableCell>
                             <TableCell>
                               <Badge variant="outline">
                                 {calculated.regionCode}
                               </Badge>
                             </TableCell>
                             <TableCell className="text-sm">
-                              {region?.name || calculated.regionCode}
+                              {calculated.countryName}
                             </TableCell>
                             <TableCell className="text-sm text-muted-foreground">
                               {calculated.currencyCode}
@@ -604,14 +783,14 @@ export function SubscriptionBulkPricingModal({
                               {currentPrice ? (
                                 <span
                                   className={
-                                    change > 0
+                                    calculated.change > 0
                                       ? 'text-red-600'
-                                      : change < 0
+                                      : calculated.change < 0
                                       ? 'text-green-600'
                                       : 'text-muted-foreground'
                                   }
                                 >
-                                  {formatPriceChange(change)}
+                                  {formatPriceChange(calculated.change)}
                                 </span>
                               ) : (
                                 <span className="text-green-600">New</span>
@@ -634,8 +813,8 @@ export function SubscriptionBulkPricingModal({
             Cancel
           </Button>
           <Button
-            onClick={handleApply}
-            disabled={previewPrices.length === 0 || isApplying}
+            onClick={handleApplyClick}
+            disabled={selectedRegions.size === 0 || isApplying}
           >
             {isApplying ? (
               <>
@@ -643,10 +822,75 @@ export function SubscriptionBulkPricingModal({
                 Applying prices...
               </>
             ) : (
-              `Apply to ${previewPrices.length} Regions`
+              `Apply to ${selectedRegions.size} Regions`
             )}
           </Button>
         </DialogFooter>
+
+        {/* Confirmation Dialog */}
+        <Dialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
+          <DialogContent className="sm:max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
+            <DialogHeader className="flex-shrink-0 text-left">
+              <DialogTitle>Confirm Price Changes</DialogTitle>
+              <DialogDescription asChild>
+                <div className="text-sm text-muted-foreground">
+                  Review the updates before applying them to {selectedRegions.size} regions.
+                </div>
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="flex-1 min-h-[300px] py-4 overflow-hidden border-y my-2">
+              <ScrollArea className="h-[50vh] pr-4">
+                <div className="space-y-6">
+                  {/* Section: Changing */}
+                  <div>
+                    <h4 className="font-semibold text-sm mb-2 text-primary flex items-center gap-2 sticky top-0 bg-background py-1 z-10">
+                      <span className="w-2 h-2 rounded-full bg-blue-500" />
+                      Updating ({updateSummary?.changing.length})
+                    </h4>
+                    <div className="grid grid-cols-1 gap-1 pl-4">
+                      {updateSummary?.changing.map(item => (
+                        <div key={item.regionCode} className="text-xs flex justify-between border-b border-muted/30 py-1">
+                          <span className="font-medium">{item.name} ({item.regionCode})</span>
+                          <span className="font-mono">
+                            <span className="text-muted-foreground line-through">{item.old}</span>
+                            <span className="mx-2 text-muted-foreground">→</span>
+                            <span className="font-bold text-blue-600 dark:text-blue-400">{item.new}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Section: Staying */}
+                  <div>
+                    <h4 className="font-semibold text-sm mb-2 text-muted-foreground flex items-center gap-2 sticky top-0 bg-background py-1 z-10">
+                      <span className="w-2 h-2 rounded-full bg-gray-300" />
+                      No Change ({updateSummary?.staying.length})
+                    </h4>
+                    <div className="grid grid-cols-1 gap-1 pl-4 opacity-70 text-muted-foreground">
+                      {updateSummary?.staying.map(item => (
+                        <div key={item.regionCode} className="text-xs flex justify-between py-1 border-b border-muted/10">
+                          <span>{item.name} ({item.regionCode})</span>
+                          <span className="font-mono">{item.price}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </ScrollArea>
+            </div>
+
+            <DialogFooter className="flex-shrink-0 gap-2 sm:gap-0">
+              <Button variant="outline" onClick={() => setShowConfirmDialog(false)}>
+                Cancel
+              </Button>
+              <Button onClick={executeApply}>
+                Confirm and Apply
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </DialogContent>
     </Dialog>
   );

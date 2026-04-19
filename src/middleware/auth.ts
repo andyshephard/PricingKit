@@ -8,7 +8,7 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { getSessionCredentials } from '@/lib/google-play/client';
-import { getAppleSessionCredentials } from '@/lib/apple-connect/client';
+import { getAppleSessionCredentials, resolveAppleCredentials } from '@/lib/apple-connect/client';
 import type { ServiceAccountCredentials } from '@/lib/google-play/types';
 import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
 
@@ -83,18 +83,16 @@ export async function getAppleAuthFromCookies(): Promise<AppleAuthResult | null>
     const sessionId = cookieStore.get(APPLE_SESSION_COOKIE)?.value;
     const bundleId = cookieStore.get(APPLE_BUNDLE_ID_COOKIE)?.value;
 
-    if (!sessionId || !bundleId) {
-      return null;
-    }
-
-    const credentials = await getAppleSessionCredentials(sessionId);
+    // Use the robust resolver which checks env vars first
+    const credentials = await resolveAppleCredentials(sessionId);
+    
     if (!credentials) {
       return null;
     }
 
-    return { credentials, bundleId };
+    return { credentials, bundleId: credentials.bundleId };
   } catch (error) {
-    console.error('Error getting Apple auth from cookies:', error);
+    console.error('Error getting Apple auth:', error);
     return null;
   }
 }

@@ -156,24 +156,36 @@ export interface DynamicPPPData {
 
 // Calculate regional price based on strategy
 export function calculateRegionalPrice(
-  baseUsdPrice: number,
+  basePrice: number,
   regionCode: string,
   strategy: PricingStrategy,
   rounding: RoundingMode = 'charm',
   customMultiplier?: number,
   dynamicPPPData?: DynamicPPPData,
   actualCurrencies?: Record<string, string>, // Currencies from API
-  dynamicExchangeRates?: DynamicExchangeRates // Exchange rates from API
+  dynamicExchangeRates?: DynamicExchangeRates, // Exchange rates from API
+  baseCurrency: string = 'USD', // The currency of the basePrice
+  baseRegion: string = 'US' // The region the basePrice is defined for
 ): CalculatedPrice {
   // Convert to alpha-2 for lookups (handles both alpha-2 and alpha-3 inputs)
   const alpha2Code = toAlpha2(regionCode);
+  const alpha2BaseRegion = toAlpha2(baseRegion);
 
   // Use actual currency from API if available, otherwise fall back to static data
   const currencyCode = getCurrencyForRegion(regionCode, actualCurrencies);
   const exchangeRate = getExchangeRate(currencyCode, dynamicExchangeRates);
 
+  // Normalize basePrice to USD if it's in a different currency
+  let baseUsdPrice = basePrice;
+  if (baseCurrency !== 'USD') {
+    const baseExchangeRate = getExchangeRate(baseCurrency, dynamicExchangeRates);
+    if (baseExchangeRate && baseExchangeRate !== 0) {
+      baseUsdPrice = basePrice / baseExchangeRate;
+    }
+  }
+
   // Free (0) base price: skip all calculations and return 0 for every region
-  if (baseUsdPrice === 0) {
+  if (basePrice === 0) {
     return {
       regionCode,
       currencyCode,
@@ -193,12 +205,18 @@ export function calculateRegionalPrice(
   const pppMultiplier = dynamicEntry?.pppMultiplier ?? staticEntry.pppMultiplier;
   const minPrice = dynamicEntry?.minPrice ?? staticEntry.minPrice;
 
+  // Get base region PPP data for relative normalization
+  const baseDynamicEntry = dynamicPPPData?.[baseRegion] ?? dynamicPPPData?.[alpha2BaseRegion];
+  const baseStaticEntry = getPricingIndexEntry(alpha2BaseRegion);
+  const basePppMultiplier = baseDynamicEntry?.pppMultiplier ?? baseStaticEntry.pppMultiplier;
+
   let calculatedPrice: number;
   let effectiveMultiplier: number = 1.0;
   let multiplierSource: CalculatedPrice['multiplierSource'] = 'direct';
 
   // Get Big Mac multiplier (from dynamic data or static, using alpha-2 for lookup)
   const bigMacMultiplier = dynamicEntry?.bigMacMultiplier ?? getBigMacMultiplier(alpha2Code);
+  const baseBigMacMultiplier = baseDynamicEntry?.bigMacMultiplier ?? getBigMacMultiplier(alpha2BaseRegion);
 
   switch (strategy) {
     case 'direct':
@@ -220,69 +238,69 @@ export function calculateRegionalPrice(
       //   1. Calculate PPP price in local currency: baseUsdPrice × pppFactor = price in UAH
       //   2. Convert to billing currency: price in UAH / localExchangeRate = price in USD
       //   Formula: price = baseUsdPrice × pppFactor / localExchangeRate × billingExchangeRate
-      //
-      // Example for Ukraine (billed in USD, local currency UAH):
-      //   - PPP factor: 9.34 UAH per int'l $
-      //   - UAH exchange rate: 37.5 UAH per USD
-      //   - $49.99 × 9.34 / 37.5 = $12.45 USD
-
+      
       // Get the World Bank's expected local currency for this region
       const localCurrency = getLocalCurrencyForRegion(alpha2Code);
       const localExchangeRate = getExchangeRate(localCurrency, dynamicExchangeRates);
 
       if (pppConversionFactor !== undefined) {
+        // If we have dynamic PPP data, we use the real multiplier (PPP_Factor / Market_Rate)
+        // BUT we must normalize it relative to the base region's multiplier
+        const baseLocalCurrency = getLocalCurrencyForRegion(alpha2BaseRegion);
+        const baseLocalExchangeRate = getExchangeRate(baseLocalCurrency, dynamicExchangeRates);
+        const basePppConversionFactor = baseDynamicEntry?.pppConversionFactor;
+
+        let baseRealMultiplier = basePppMultiplier;
+        if (baseLocalExchangeRate && basePppConversionFactor) {
+          baseRealMultiplier = basePppConversionFactor / baseLocalExchangeRate;
+        }
+
         if (currencyCode === localCurrency) {
-          // Billing currency matches local currency - use PPP factor directly
-          calculatedPrice = baseUsdPrice * pppConversionFactor;
-          // The effective multiplier in terms of USD equivalent
-          effectiveMultiplier = pppConversionFactor / exchangeRate;
+          // Billing currency matches local currency
+          const rawRealMultiplier = pppConversionFactor / exchangeRate;
+          effectiveMultiplier = rawRealMultiplier / baseRealMultiplier;
+          calculatedPrice = baseUsdPrice * effectiveMultiplier * exchangeRate;
           multiplierSource = dynamicEntry?.source ?? 'world-bank';
         } else {
           // Billing currency differs from local currency
-          // Convert PPP price to billing currency
-          //
-          // Safety check: if the local currency isn't found in any exchange rate data,
-          // the lookup failed. Fall back to static multiplier.
-          // Note: we check for existence rather than rate === 1.0, because USD-pegged
-          // currencies (BSD, PAB, etc.) legitimately have a rate of 1.0.
           const hasExchangeRate = (dynamicExchangeRates?.rates[localCurrency] !== undefined) ||
             (FALLBACK_EXCHANGE_RATES[localCurrency] !== undefined);
+          
           if (localCurrency !== 'USD' && !hasExchangeRate) {
-            console.warn(`Missing exchange rate for ${localCurrency} (${alpha2Code}), using static multiplier`);
-            calculatedPrice = baseUsdPrice * pppMultiplier * exchangeRate;
-            effectiveMultiplier = pppMultiplier;
+            effectiveMultiplier = pppMultiplier / basePppMultiplier;
+            calculatedPrice = baseUsdPrice * effectiveMultiplier * exchangeRate;
             multiplierSource = 'static';
           } else {
             const pppPriceInLocal = baseUsdPrice * pppConversionFactor;
             const pppPriceInUsd = pppPriceInLocal / localExchangeRate;
+            const rawRealMultiplier = pppPriceInUsd / baseUsdPrice;
+            
+            effectiveMultiplier = rawRealMultiplier / baseRealMultiplier;
 
             // For hyperinflation countries where PPP produces HIGHER prices than base,
             // use a low default multiplier to make apps affordable.
-            // High PPP/market ratio indicates economic distress, not prosperity.
-            if (pppPriceInUsd > baseUsdPrice) {
-              const affordabilityMultiplier = 0.25; // ~$12.50 for $49.99 base
-              calculatedPrice = baseUsdPrice * affordabilityMultiplier * exchangeRate;
+            if (effectiveMultiplier > 1.0 && rawRealMultiplier > 1.0) {
+              const affordabilityMultiplier = 0.25;
               effectiveMultiplier = affordabilityMultiplier;
-              multiplierSource = 'static'; // Using hardcoded affordability fallback
+              calculatedPrice = baseUsdPrice * effectiveMultiplier * exchangeRate;
+              multiplierSource = 'static';
             } else {
-              calculatedPrice = pppPriceInUsd * exchangeRate;
-              effectiveMultiplier = pppPriceInUsd / baseUsdPrice;
+              calculatedPrice = baseUsdPrice * effectiveMultiplier * exchangeRate;
               multiplierSource = dynamicEntry?.source ?? 'world-bank';
             }
           }
         }
       } else {
-        // No PPP conversion factor available - use static multiplier
-        calculatedPrice = baseUsdPrice * pppMultiplier * exchangeRate;
-        effectiveMultiplier = pppMultiplier;
+        // No PPP conversion factor available - use static multiplier normalized to base region
+        effectiveMultiplier = pppMultiplier / basePppMultiplier;
+        calculatedPrice = baseUsdPrice * effectiveMultiplier * exchangeRate;
         multiplierSource = 'static';
       }
       break;
     case 'bigmac':
-      // Big Mac Index strategy: use multiplier based on Big Mac price comparison
-      // Lower multiplier = lower prices in that region (relative to US)
-      calculatedPrice = baseUsdPrice * bigMacMultiplier * exchangeRate;
-      effectiveMultiplier = bigMacMultiplier;
+      // Big Mac Index strategy: use multiplier normalized to base region
+      effectiveMultiplier = bigMacMultiplier / baseBigMacMultiplier;
+      calculatedPrice = baseUsdPrice * effectiveMultiplier * exchangeRate;
       multiplierSource = 'big-mac';
       break;
     case 'custom':
@@ -331,26 +349,30 @@ export function calculateRegionalPrice(
 
 // Calculate prices for multiple regions
 export function calculateBulkPrices(
-  baseUsdPrice: number,
+  basePrice: number,
   regionCodes: string[],
   strategy: PricingStrategy,
   rounding: RoundingMode = 'charm',
   customMultipliers?: Record<string, number>,
   dynamicPPPData?: DynamicPPPData,
   actualCurrencies?: Record<string, string>, // Currencies from Google Play API
-  dynamicExchangeRates?: DynamicExchangeRates // Exchange rates from API
+  dynamicExchangeRates?: DynamicExchangeRates, // Exchange rates from API
+  baseCurrency: string = 'USD', // The currency of the basePrice
+  baseRegion: string = 'US' // The region the basePrice is defined for
 ): CalculatedPrice[] {
   return regionCodes.map((regionCode) => {
     const customMultiplier = customMultipliers?.[regionCode];
     return calculateRegionalPrice(
-      baseUsdPrice,
+      basePrice,
       regionCode,
       strategy,
       rounding,
       customMultiplier,
       dynamicPPPData,
       actualCurrencies,
-      dynamicExchangeRates
+      dynamicExchangeRates,
+      baseCurrency,
+      baseRegion
     );
   });
 }

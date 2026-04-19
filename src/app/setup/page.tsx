@@ -24,8 +24,23 @@ export default function SetupPage() {
   const [activeTab, setActiveTab] = useState<PlatformTab>('apple');
 
   useEffect(() => {
+    // Check server for existing session (including env vars)
+    const checkAuth = async () => {
+      try {
+        const response = await fetch('/api/apple/auth');
+        const data = await response.json();
+        if (data.authenticated) {
+          router.push('/dashboard');
+        }
+      } catch (e) {
+        console.error('Failed to check auth:', e);
+      }
+    };
+
     if (isGoogleAuthenticated || isAppleAuthenticated) {
       router.push('/dashboard');
+    } else {
+      checkAuth();
     }
   }, [isGoogleAuthenticated, isAppleAuthenticated, router]);
 

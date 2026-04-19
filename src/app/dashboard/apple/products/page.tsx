@@ -8,6 +8,7 @@ import { ProductsTable } from '@/components/products/products-table';
 import { BulkUpdateModal } from '@/components/pricing/bulk-update-modal';
 import { Button } from '@/components/ui/button';
 import { useSelectionStore } from '@/store/selection-store';
+import { parseMoney } from '@/lib/google-play/types';
 import type { RawAppleProduct, ProductsListResponse } from '@/types/api';
 
 export default function AppleProductsPage() {
@@ -30,10 +31,11 @@ export default function AppleProductsPage() {
       // Normalize Apple products for the table
       if (data.products) {
         data.products = data.products.map((p: RawAppleProduct) => {
-          const priceEntries = Object.entries(p.prices || {});
-          const basePrice = priceEntries.length > 0 ? priceEntries[0][1] : null;
+          const baseTerritoryCode = p.baseTerritory || 'USA';
+          const basePrice = p.prices?.[baseTerritoryCode] || Object.values(p.prices || {})[0] || null;
+          
           const defaultPrice = basePrice
-            ? { currencyCode: basePrice.currency || 'USD', units: basePrice.customerPrice }
+            ? parseMoney(parseFloat(basePrice.customerPrice), basePrice.currency || 'USD')
             : null;
 
           return {
@@ -43,6 +45,7 @@ export default function AppleProductsPage() {
             listings: { 'en-US': { title: p.name } },
             defaultPrice,
             prices: p.prices || {},
+            _appleProduct: p,
           };
         });
       }
