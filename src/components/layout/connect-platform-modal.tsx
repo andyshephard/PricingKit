@@ -447,6 +447,17 @@ export function ConnectPlatformModal({
               'Connect'
             )}
           </Button>
+
+          <p className="text-center text-sm text-muted-foreground">
+            You can check the{' '}
+            <Link
+              href={platform === 'google' ? '/setup-guide/google' : '/setup-guide/apple'}
+              className="underline font-medium text-foreground"
+            >
+              user guide
+            </Link>{' '}
+            for more information.
+          </p>
         </form>
       </DialogContent>
     </Dialog>
