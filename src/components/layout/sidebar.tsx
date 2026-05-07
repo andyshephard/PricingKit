@@ -12,6 +12,7 @@ import {
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { PlatformSelector } from './platform-selector';
+import { AppSwitcher } from './app-switcher';
 import { getPlatformFromPath, type Platform } from '@/lib/utils/platform-routes';
 
 export function Sidebar() {
@@ -63,8 +64,9 @@ export function Sidebar() {
       </div>
 
       {/* Platform Selector */}
-      <div className="px-3 py-3 border-b">
+      <div className="px-3 py-3 border-b space-y-2">
         <PlatformSelector currentPlatform={currentPlatform} />
+        <AppSwitcher />
       </div>
 
       <ScrollArea className="flex-1 px-3 py-4">
