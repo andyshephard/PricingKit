@@ -87,10 +87,15 @@ export async function getAppleAuthFromCookies(): Promise<AppleAuthResult | null>
       return null;
     }
 
-    const credentials = await getAppleSessionCredentials(sessionId);
-    if (!credentials) {
+    const sessionCredentials = await getAppleSessionCredentials(sessionId);
+    if (!sessionCredentials) {
       return null;
     }
+
+    const credentials: AppleConnectCredentials = {
+      ...sessionCredentials,
+      bundleId,
+    };
 
     return { credentials, bundleId };
   } catch (error) {
