@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Check, ChevronsUpDown, Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import {
   Popover,
@@ -25,6 +26,7 @@ export function AppSwitcher() {
 
   const setActive = useSetActiveApp();
   const appleApps = useAppleApps();
+  const router = useRouter();
 
   const [open, setOpen] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -42,6 +44,7 @@ export function AppSwitcher() {
     try {
       await setActive.mutateAsync({ platform: 'apple', bundleId });
       setOpen(false);
+      router.push('/dashboard/apple');
     } catch (err) {
       console.error(err);
     }
@@ -51,6 +54,7 @@ export function AppSwitcher() {
     try {
       await setActive.mutateAsync({ platform: 'google', packageName });
       setOpen(false);
+      router.push('/dashboard/google');
     } catch (err) {
       console.error(err);
     }

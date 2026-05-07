@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
 import {
   Dialog,
@@ -26,6 +27,7 @@ export function AddGoogleAppModal({ open, onOpenChange }: AddGoogleAppModalProps
   const projectId = useAuthStore((s) => s.projectId);
   const addGoogleAppToHistory = useAuthStore((s) => s.addGoogleAppToHistory);
   const setActive = useSetActiveApp();
+  const router = useRouter();
 
   const [packageName, setPackageName] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -48,6 +50,7 @@ export function AddGoogleAppModal({ open, onOpenChange }: AddGoogleAppModalProps
       addGoogleAppToHistory({ packageName: trimmed, projectId, clientEmail });
       setPackageName('');
       onOpenChange(false);
+      router.push('/dashboard/google');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add app.');
     }
