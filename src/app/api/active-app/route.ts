@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import {
-  createGooglePlayClient,
+  googlePlayFetch,
   getSessionCredentials,
 } from '@/lib/google-play/client';
 
@@ -39,12 +39,12 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const client = createGooglePlayClient(credentials);
   try {
-    await client.monetization.subscriptions.list({
-      packageName,
-      pageSize: 1,
-    });
+    await googlePlayFetch(
+      credentials,
+      `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/subscriptions`,
+      { query: { pageSize: 1 } }
+    );
   } catch (apiError: unknown) {
     const error = apiError as { code?: number; message?: string };
     if (error.code === 401) {

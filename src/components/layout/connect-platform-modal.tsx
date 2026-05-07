@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Upload, FileJson, Key, AlertCircle, Loader2 } from 'lucide-react';
 import {
   Dialog,
@@ -42,6 +43,7 @@ export function ConnectPlatformModal({
     (state) => state.setAppleAuthenticated
   );
   const setPlatform = useAuthStore((state) => state.setPlatform);
+  const router = useRouter();
 
   // Google-specific state
   const [packageName, setPackageName] = useState('');
