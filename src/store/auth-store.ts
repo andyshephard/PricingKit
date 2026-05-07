@@ -16,6 +16,13 @@ interface AppleAuthData {
   issuerId: string;
 }
 
+export interface GoogleAppHistoryEntry {
+  packageName: string;
+  projectId: string;
+  clientEmail: string;
+  addedAt: number; // unix ms
+}
+
 interface AuthState {
   // Current active platform
   platform: Platform;
@@ -33,6 +40,9 @@ interface AuthState {
   issuerId: string | null;
   appleBaseCountry: string;
 
+  // Google app history (multi-app switcher)
+  googleAppHistory: GoogleAppHistoryEntry[];
+
   // Legacy compatibility - returns true if any platform is authenticated
   isAuthenticated: boolean;
 
@@ -44,6 +54,12 @@ interface AuthState {
   clearAppleAuth: () => void;
   clearAuth: () => void;
   setAppleBaseCountry: (country: string) => void;
+
+  addGoogleAppToHistory: (entry: Omit<GoogleAppHistoryEntry, 'addedAt'>) => void;
+  removeGoogleAppFromHistory: (packageName: string, clientEmail: string) => void;
+
+  setActivePackageName: (packageName: string) => void;
+  setActiveBundleId: (bundleId: string) => void;
 
   // Legacy compatibility
   setAuthenticated: (packageName: string, projectId: string, clientEmail: string) => void;
@@ -68,20 +84,39 @@ export const useAuthStore = create<AuthState>()(
       issuerId: null,
       appleBaseCountry: 'US',
 
+      googleAppHistory: [],
+
       // Legacy compatibility - computed in each action
       isAuthenticated: false,
 
       // Set Google authentication
       setGoogleAuthenticated: ({ packageName, projectId, clientEmail }) =>
-        set((state) => ({
-          isGoogleAuthenticated: true,
-          isAuthenticated: true,
-          packageName,
-          projectId,
-          clientEmail,
-          // Auto-switch to Google if no platform selected
-          platform: state.platform ?? 'google',
-        })),
+        set((state) => {
+          const filtered = state.googleAppHistory.filter(
+            (entry) =>
+              !(
+                entry.packageName === packageName &&
+                entry.clientEmail === clientEmail
+              )
+          );
+          return {
+            isGoogleAuthenticated: true,
+            isAuthenticated: true,
+            packageName,
+            projectId,
+            clientEmail,
+            platform: state.platform ?? 'google',
+            googleAppHistory: [
+              ...filtered,
+              {
+                packageName,
+                projectId,
+                clientEmail,
+                addedAt: Date.now(),
+              },
+            ],
+          };
+        }),
 
       // Set Apple authentication
       setAppleAuthenticated: ({ bundleId, keyId, issuerId }) =>
@@ -156,6 +191,45 @@ export const useAuthStore = create<AuthState>()(
 
       // Set Apple base country for price display
       setAppleBaseCountry: (country) => set({ appleBaseCountry: country }),
+
+      addGoogleAppToHistory: ({ packageName, projectId, clientEmail }) =>
+        set((state) => {
+          const filtered = state.googleAppHistory.filter(
+            (entry) =>
+              !(
+                entry.packageName === packageName &&
+                entry.clientEmail === clientEmail
+              )
+          );
+          return {
+            googleAppHistory: [
+              ...filtered,
+              {
+                packageName,
+                projectId,
+                clientEmail,
+                addedAt: Date.now(),
+              },
+            ],
+          };
+        }),
+
+      removeGoogleAppFromHistory: (packageName, clientEmail) =>
+        set((state) => ({
+          googleAppHistory: state.googleAppHistory.filter(
+            (entry) =>
+              !(
+                entry.packageName === packageName &&
+                entry.clientEmail === clientEmail
+              )
+          ),
+        })),
+
+      setActivePackageName: (packageName) =>
+        set({ packageName }),
+
+      setActiveBundleId: (bundleId) =>
+        set({ bundleId }),
     }),
     {
       name: 'auth-storage',
