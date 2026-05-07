@@ -5,10 +5,19 @@ import {
   createSession,
   getSessionCredentials,
   deleteSession,
-  createGooglePlayClient,
+  googlePlayFetch,
 } from '@/lib/google-play/client';
 import type { ServiceAccountCredentials } from '@/lib/google-play/types';
 import { GOOGLE_PRICING_WRITE_DENIED_ERROR } from '@/lib/google-play/errors';
+
+interface ProbeListResp<T> {
+  oneTimeProducts?: T[];
+  subscriptions?: T[];
+}
+interface ProbeProduct {
+  productId?: string;
+  listings?: unknown;
+}
 
 const SESSION_COOKIE = 'gplay_session';
 const PACKAGE_NAME_COOKIE = 'gplay_package_name';
@@ -42,14 +51,15 @@ export async function POST(request: NextRequest) {
     }
 
     // Test the connection by trying to list subscriptions (uses the newer monetization API)
-    const client = createGooglePlayClient(credentials as ServiceAccountCredentials);
+    const creds = credentials as ServiceAccountCredentials;
 
     try {
       // Use the monetization API which is the current supported API
-      await client.monetization.subscriptions.list({
-        packageName,
-        pageSize: 1,
-      });
+      await googlePlayFetch<ProbeListResp<ProbeProduct>>(
+        creds,
+        `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/subscriptions`,
+        { query: { pageSize: 1 } }
+      );
     } catch (apiError: unknown) {
       const error = apiError as { code?: number; message?: string; errors?: Array<{ reason?: string; message?: string }> };
       console.error('Google API error:', JSON.stringify(error, null, 2));
@@ -100,45 +110,55 @@ export async function POST(request: NextRequest) {
     //   - any other error → inconclusive; proceed (the route-level 403 handlers catch the
     //     real edit later with a clear message).
     try {
+      const appsBase = `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}`;
+
       // Try a one-time product first.
-      const otpListResp = await client.monetization.onetimeproducts.list({
-        packageName,
-        pageSize: 1,
-      });
-      const probeProduct = otpListResp.data.oneTimeProducts?.[0];
+      const otpList = await googlePlayFetch<ProbeListResp<ProbeProduct>>(
+        creds,
+        `${appsBase}/oneTimeProducts`,
+        { query: { pageSize: 1 } }
+      );
+      const probeProduct = otpList.oneTimeProducts?.[0];
 
       if (probeProduct?.productId) {
-        const fullResp = await client.monetization.onetimeproducts.get({
-          packageName,
-          productId: probeProduct.productId,
-        });
-        await client.monetization.onetimeproducts.patch({
-          packageName,
-          productId: probeProduct.productId,
-          'regionsVersion.version': '2025/03',
-          updateMask: 'listings',
-          requestBody: { listings: fullResp.data.listings ?? [] },
-        });
+        const full = await googlePlayFetch<ProbeProduct>(
+          creds,
+          `${appsBase}/oneTimeProducts/${encodeURIComponent(probeProduct.productId)}`
+        );
+        // PATCH path is lowercase per Google's discovery doc (only this one method is).
+        // updateMask=purchaseOptions tests the actual pricing-edit permission.
+        await googlePlayFetch<unknown>(
+          creds,
+          `${appsBase}/onetimeproducts/${encodeURIComponent(probeProduct.productId)}`,
+          {
+            method: 'PATCH',
+            query: { 'regionsVersion.version': '2025/03', updateMask: 'purchaseOptions' },
+            body: full,
+          }
+        );
       } else {
-        // No one-time products — fall back to subscriptions.
-        const subListResp = await client.monetization.subscriptions.list({
-          packageName,
-          pageSize: 1,
-        });
-        const probeSub = subListResp.data.subscriptions?.[0];
+        const subList = await googlePlayFetch<ProbeListResp<ProbeProduct>>(
+          creds,
+          `${appsBase}/subscriptions`,
+          { query: { pageSize: 1 } }
+        );
+        const probeSub = subList.subscriptions?.[0];
 
         if (probeSub?.productId) {
-          const fullSubResp = await client.monetization.subscriptions.get({
-            packageName,
-            productId: probeSub.productId,
-          });
-          await client.monetization.subscriptions.patch({
-            packageName,
-            productId: probeSub.productId,
-            'regionsVersion.version': '2025/03',
-            updateMask: 'listings',
-            requestBody: { listings: fullSubResp.data.listings ?? [] },
-          });
+          const fullSub = await googlePlayFetch<ProbeProduct>(
+            creds,
+            `${appsBase}/subscriptions/${encodeURIComponent(probeSub.productId)}`
+          );
+          // updateMask=basePlans tests the pricing-edit permission for subscriptions.
+          await googlePlayFetch<unknown>(
+            creds,
+            `${appsBase}/subscriptions/${encodeURIComponent(probeSub.productId)}`,
+            {
+              method: 'PATCH',
+              query: { 'regionsVersion.version': '2025/03', updateMask: 'basePlans' },
+              body: fullSub,
+            }
+          );
         }
         // No products or subscriptions on this app — cannot probe write perm.
         // The route-level 403 handlers will surface the issue at first edit.
@@ -155,7 +175,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Create session and store session ID in cookie
-    const sessionId = await createSession(credentials as ServiceAccountCredentials);
+    const sessionId = await createSession(creds);
 
     const cookieStore = await cookies();
 
@@ -177,8 +197,8 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      projectId: (credentials as ServiceAccountCredentials).project_id,
-      clientEmail: (credentials as ServiceAccountCredentials).client_email,
+      projectId: creds.project_id,
+      clientEmail: creds.client_email,
     });
   } catch (error) {
     console.error('Auth error:', error);

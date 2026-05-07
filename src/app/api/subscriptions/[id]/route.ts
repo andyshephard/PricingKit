@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getAuthFromCookies } from '../../auth/route';
-import { createGooglePlayClient } from '@/lib/google-play/client';
 import {
   getSubscription,
   updateBasePlanPrices,
@@ -64,8 +63,7 @@ export async function GET(
       throw error;
     }
 
-    const client = createGooglePlayClient(auth.credentials);
-    const subscription = await getSubscription(client, auth.packageName, productId);
+    const subscription = await getSubscription(auth.credentials, auth.packageName, productId);
 
     if (!subscription) {
       return NextResponse.json(
@@ -141,9 +139,8 @@ export async function PATCH(
       );
     }
 
-    const client = createGooglePlayClient(auth.credentials);
     const updatedBasePlan = await updateBasePlanPrices(
-      client,
+      auth.credentials,
       auth.packageName,
       productId,
       result.data.basePlanId,
@@ -220,9 +217,8 @@ export async function DELETE(
       );
     }
 
-    const client = createGooglePlayClient(auth.credentials);
     const updatedBasePlan = await deleteBasePlanRegionPrice(
-      client,
+      auth.credentials,
       auth.packageName,
       productId,
       result.data.basePlanId,

@@ -1,6 +1,5 @@
-import type { AndroidPublisher } from './client';
-import type { InAppProduct, Money } from './types';
-import type { androidpublisher_v3 } from '@googleapis/androidpublisher';
+import { googlePlayFetch } from './client';
+import type { ServiceAccountCredentials, InAppProduct, Money } from './types';
 
 // Type for regional pricing config
 interface RegionalPricingConfig {
@@ -20,22 +19,36 @@ interface PurchaseOption {
   regionalPricingAndAvailabilityConfigs?: RegionalPricingConfig[];
 }
 
+interface OneTimeProductListing {
+  title?: string;
+  description?: string;
+  languageCode?: string;
+}
+
+interface OneTimeProduct {
+  productId?: string;
+  packageName?: string;
+  listings?: Record<string, OneTimeProductListing> | OneTimeProductListing[];
+  purchaseOptions?: PurchaseOption[];
+  regionsVersion?: { version?: string };
+}
+
+interface OneTimeProductListResponse {
+  oneTimeProducts?: OneTimeProduct[];
+  nextPageToken?: string;
+}
+
 // Convert Google's OneTimeProduct to our InAppProduct type
-function convertOneTimeProduct(
-  product: androidpublisher_v3.Schema$OneTimeProduct
-): InAppProduct {
+function convertOneTimeProduct(product: OneTimeProduct): InAppProduct {
   const prices: Record<string, Money> = {};
   let defaultPrice: Money | undefined;
   let status: InAppProduct['status'] = 'active';
 
-  // Access purchaseOptions to get pricing
-  const productAny = product as Record<string, unknown>;
-  const purchaseOptions = productAny.purchaseOptions as PurchaseOption[] | undefined;
+  const purchaseOptions = product.purchaseOptions;
 
   if (purchaseOptions && purchaseOptions.length > 0) {
     const firstOption = purchaseOptions[0];
 
-    // Get status from purchase option state
     if (firstOption.state) {
       const stateStr = firstOption.state.toLowerCase();
       if (stateStr === 'active' || stateStr === 'inactive' || stateStr === 'statusUnspecified') {
@@ -43,7 +56,6 @@ function convertOneTimeProduct(
       }
     }
 
-    // Extract regional pricing
     const regionalConfigs = firstOption.regionalPricingAndAvailabilityConfigs;
     if (regionalConfigs && Array.isArray(regionalConfigs)) {
       for (const config of regionalConfigs) {
@@ -54,7 +66,6 @@ function convertOneTimeProduct(
             nanos: config.price.nanos,
           };
 
-          // Use US price as default if available
           if (config.regionCode === 'US' && !defaultPrice) {
             defaultPrice = {
               currencyCode: config.price.currencyCode || 'USD',
@@ -67,23 +78,36 @@ function convertOneTimeProduct(
     }
   }
 
-  // If no US price, use the first price as default
   if (!defaultPrice && Object.keys(prices).length > 0) {
     const firstRegion = Object.keys(prices)[0];
     defaultPrice = prices[firstRegion];
   }
 
-  const listings = product.listings ? Object.entries(product.listings).reduce((acc, [lang, listing]) => {
-    acc[lang] = {
-      title: listing.title || '',
-      description: listing.description || '',
-    };
-    return acc;
-  }, {} as Record<string, { title: string; description: string }>) : {};
+  // listings can come back as a map (legacy) or array (new API). Normalise to a map.
+  const rawListings = product.listings;
+  const listings: Record<string, { title: string; description: string }> = {};
+  if (rawListings) {
+    if (Array.isArray(rawListings)) {
+      for (const entry of rawListings) {
+        const lang = entry.languageCode || 'en-US';
+        listings[lang] = {
+          title: entry.title || '',
+          description: entry.description || '',
+        };
+      }
+    } else {
+      for (const [lang, listing] of Object.entries(rawListings)) {
+        listings[lang] = {
+          title: listing.title || '',
+          description: listing.description || '',
+        };
+      }
+    }
+  }
 
   return {
     sku: product.productId || '',
-    packageName: '', // Will be filled in by the caller
+    packageName: '',
     status,
     purchaseType: 'managedUser',
     defaultPrice: defaultPrice || { currencyCode: 'USD', units: '0' },
@@ -94,45 +118,50 @@ function convertOneTimeProduct(
 }
 
 export async function listInAppProducts(
-  client: AndroidPublisher,
+  credentials: ServiceAccountCredentials,
   packageName: string
 ): Promise<InAppProduct[]> {
   const products: InAppProduct[] = [];
   let pageToken: string | undefined;
 
   do {
-    const response = await client.monetization.onetimeproducts.list({
-      packageName,
-      pageToken,
-      pageSize: 100,
-    });
+    const response = await googlePlayFetch<OneTimeProductListResponse>(
+      credentials,
+      `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/oneTimeProducts`,
+      {
+        query: {
+          pageSize: 100,
+          pageToken,
+        },
+      }
+    );
 
-    if (response.data.oneTimeProducts) {
-      for (const product of response.data.oneTimeProducts) {
+    if (response.oneTimeProducts) {
+      for (const product of response.oneTimeProducts) {
         const converted = convertOneTimeProduct(product);
         converted.packageName = packageName;
         products.push(converted);
       }
     }
 
-    pageToken = response.data.nextPageToken ?? undefined;
+    pageToken = response.nextPageToken ?? undefined;
   } while (pageToken);
 
   return products;
 }
 
 export async function getInAppProduct(
-  client: AndroidPublisher,
+  credentials: ServiceAccountCredentials,
   packageName: string,
   productId: string
 ): Promise<InAppProduct | null> {
   try {
-    const response = await client.monetization.onetimeproducts.get({
-      packageName,
-      productId,
-    });
+    const response = await googlePlayFetch<OneTimeProduct>(
+      credentials,
+      `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/oneTimeProducts/${encodeURIComponent(productId)}`
+    );
 
-    const converted = convertOneTimeProduct(response.data);
+    const converted = convertOneTimeProduct(response);
     converted.packageName = packageName;
     return converted;
   } catch (error: unknown) {
@@ -143,55 +172,45 @@ export async function getInAppProduct(
   }
 }
 
+export async function getInAppProductRaw(
+  credentials: ServiceAccountCredentials,
+  packageName: string,
+  productId: string
+): Promise<OneTimeProduct> {
+  return googlePlayFetch<OneTimeProduct>(
+    credentials,
+    `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/oneTimeProducts/${encodeURIComponent(productId)}`
+  );
+}
+
 export async function updateInAppProductPrices(
-  client: AndroidPublisher,
+  credentials: ServiceAccountCredentials,
   packageName: string,
   productId: string,
   prices: Record<string, Money>,
   _defaultPrice?: Money
 ): Promise<InAppProduct> {
-  // For the new API, pricing is managed through purchase options
-  // This is a simplified implementation - full implementation would need to handle
-  // the purchase options and offers structure
+  // Fetch current product to preserve untouched fields and existing availability.
+  const currentProduct = await getInAppProductRaw(credentials, packageName, productId);
 
-  // First get the current product
-  const currentProduct = await client.monetization.onetimeproducts.get({
-    packageName,
-    productId,
-  });
-
-  if (!currentProduct.data) {
-    throw new Error(`Product ${productId} not found`);
-  }
-
-  // Get existing regional configs to preserve availability settings
-  const productData = currentProduct.data as Record<string, unknown>;
-  const purchaseOptions = (productData.purchaseOptions as Array<Record<string, unknown>>) || [];
-
+  const purchaseOptions = currentProduct.purchaseOptions || [];
   if (purchaseOptions.length === 0) {
     throw new Error('Product has no purchase options configured');
   }
 
-  const existingConfigs = (purchaseOptions[0].regionalPricingAndAvailabilityConfigs as Array<{
-    regionCode?: string;
-    availability?: string;
-    price?: { currencyCode?: string; units?: string; nanos?: number };
-  }>) || [];
+  const existingConfigs = purchaseOptions[0].regionalPricingAndAvailabilityConfigs || [];
 
-  // Create a map of existing configs for quick lookup
-  const existingConfigMap = new Map<string, typeof existingConfigs[0]>();
+  const existingConfigMap = new Map<string, RegionalPricingConfig>();
   for (const config of existingConfigs) {
     if (config.regionCode) {
       existingConfigMap.set(config.regionCode, config);
     }
   }
 
-  // Build updated regional pricing configs, preserving existing availability
-  const updatedConfigs = Object.entries(prices).map(([regionCode, money]) => {
+  const updatedConfigs: RegionalPricingConfig[] = Object.entries(prices).map(([regionCode, money]) => {
     const existing = existingConfigMap.get(regionCode);
     return {
       regionCode,
-      // Preserve existing availability or default to available for new regions
       availability: existing?.availability || 'AVAILABLE',
       price: {
         currencyCode: money.currencyCode,
@@ -201,51 +220,55 @@ export async function updateInAppProductPrices(
     };
   });
 
-  // Also include regions that weren't updated (to preserve their current state)
   for (const [regionCode, config] of existingConfigMap) {
     if (!prices[regionCode]) {
       updatedConfigs.push({
         regionCode,
         availability: config.availability || 'AVAILABLE',
-        price: config.price ? {
-          currencyCode: config.price.currencyCode || 'USD',
-          units: config.price.units || '0',
-          nanos: config.price.nanos,
-        } : { currencyCode: 'USD', units: '0', nanos: undefined },
+        price: config.price
+          ? {
+              currencyCode: config.price.currencyCode || 'USD',
+              units: config.price.units || '0',
+              nanos: config.price.nanos,
+            }
+          : { currencyCode: 'USD', units: '0', nanos: undefined },
       });
     }
   }
 
-  // Update the purchase options with new pricing
   purchaseOptions[0].regionalPricingAndAvailabilityConfigs = updatedConfigs;
 
-  // Get the current regionsVersion from the product - required for updates
-  // The regionsVersion is typically in the format { version: "2022/02" }
-  const regionsVersionObj = productData.regionsVersion as { version: string } | undefined;
-  const regionsVersionString = regionsVersionObj?.version || '2022/02';
+  const regionsVersionString = currentProduct.regionsVersion?.version || '2022/02';
 
-  const response = await client.monetization.onetimeproducts.patch({
-    packageName,
-    productId,
-    'regionsVersion.version': regionsVersionString,
-    updateMask: 'purchaseOptions',
-    requestBody: currentProduct.data,
-  });
+  // Google's discovery doc lists the PATCH path as lowercase `onetimeproducts`,
+  // even though every other one-time-product method is camelCase. Don't "fix" this.
+  const response = await googlePlayFetch<OneTimeProduct>(
+    credentials,
+    `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/onetimeproducts/${encodeURIComponent(productId)}`,
+    {
+      method: 'PATCH',
+      query: {
+        'regionsVersion.version': regionsVersionString,
+        updateMask: 'purchaseOptions',
+      },
+      body: currentProduct,
+    }
+  );
 
-  const converted = convertOneTimeProduct(response.data);
+  const converted = convertOneTimeProduct(response);
   converted.packageName = packageName;
   return converted;
 }
 
 export async function deleteRegionPrice(
-  client: AndroidPublisher,
+  credentials: ServiceAccountCredentials,
   packageName: string,
   productId: string,
   _regionCode: string
 ): Promise<InAppProduct> {
-  // This would need to be implemented based on the new API structure
-  // For now, get the product and return it
-  const product = await getInAppProduct(client, packageName, productId);
+  // Stub — region delete via the new API would need a full no-op patch with the region removed.
+  // For now, return the current product unchanged.
+  const product = await getInAppProduct(credentials, packageName, productId);
   if (!product) {
     throw new Error(`Product ${productId} not found`);
   }
@@ -279,13 +302,11 @@ export function calculateNewPrice(
       newAmount = currentAmount;
   }
 
-  // Ensure non-negative
   newAmount = Math.max(0, newAmount);
 
   let units = Math.floor(newAmount);
   let nanos = Math.round((newAmount - units) * 1_000_000_000);
 
-  // Clamp nanos to valid range, carrying overflow into units
   if (nanos > 999_999_999) {
     units += Math.floor(nanos / 1_000_000_000);
     nanos = nanos % 1_000_000_000;

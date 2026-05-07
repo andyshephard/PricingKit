@@ -136,9 +136,8 @@ export async function requireAppleAuth(): Promise<
  * @example
  * ```ts
  * export const GET = withGoogleAuth(async (request, context, { credentials, packageName }) => {
- *   const client = createGooglePlayClient(credentials);
- *   // ... use client
- *   return NextResponse.json({ data });
+ *   const products = await listInAppProducts(credentials, packageName);
+ *   return NextResponse.json({ products });
  * });
  * ```
  */

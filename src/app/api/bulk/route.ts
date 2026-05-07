@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getAuthFromCookies } from '../auth/route';
-import { createGooglePlayClient } from '@/lib/google-play/client';
 import {
   getInAppProduct,
   updateInAppProductPrices,
@@ -63,7 +62,6 @@ export async function POST(request: NextRequest) {
     }
 
     const { items, operation, targetRegions, stopOnFailure } = result.data;
-    const client = createGooglePlayClient(auth.credentials);
 
     const results: Array<{
       id: string;
@@ -95,7 +93,7 @@ export async function POST(request: NextRequest) {
       try {
         if (item.type === 'product') {
           const product = await getInAppProduct(
-            client,
+            auth.credentials,
             auth.packageName,
             item.id
           );
@@ -141,7 +139,7 @@ export async function POST(request: NextRequest) {
 
           if (Object.keys(newPrices).length > 0) {
             await updateInAppProductPrices(
-              client,
+              auth.credentials,
               auth.packageName,
               item.id,
               newPrices
@@ -156,7 +154,7 @@ export async function POST(request: NextRequest) {
           });
         } else if (item.type === 'subscription' && item.basePlanId) {
           const subscription = await getSubscription(
-            client,
+            auth.credentials,
             auth.packageName,
             item.id
           );
@@ -225,7 +223,7 @@ export async function POST(request: NextRequest) {
 
           if (newConfigs.length > 0) {
             await updateBasePlanPrices(
-              client,
+              auth.credentials,
               auth.packageName,
               item.id,
               item.basePlanId,

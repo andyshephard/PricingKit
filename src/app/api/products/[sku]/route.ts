@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getAuthFromCookies } from '../../auth/route';
-import { createGooglePlayClient } from '@/lib/google-play/client';
 import { getInAppProduct, updateInAppProductPrices, deleteRegionPrice } from '@/lib/google-play/products';
 import { GOOGLE_PRICING_WRITE_DENIED_ERROR } from '@/lib/google-play/errors';
 import {
@@ -52,8 +51,7 @@ export async function GET(
       throw error;
     }
 
-    const client = createGooglePlayClient(auth.credentials);
-    const product = await getInAppProduct(client, auth.packageName, sku);
+    const product = await getInAppProduct(auth.credentials, auth.packageName, sku);
 
     if (!product) {
       return NextResponse.json(
@@ -129,9 +127,8 @@ export async function PATCH(
       );
     }
 
-    const client = createGooglePlayClient(auth.credentials);
     const updatedProduct = await updateInAppProductPrices(
-      client,
+      auth.credentials,
       auth.packageName,
       sku,
       result.data.prices,
@@ -208,9 +205,8 @@ export async function DELETE(
       );
     }
 
-    const client = createGooglePlayClient(auth.credentials);
     const updatedProduct = await deleteRegionPrice(
-      client,
+      auth.credentials,
       auth.packageName,
       sku,
       result.data.regionCode

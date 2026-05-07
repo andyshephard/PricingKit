@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import { getAuthFromCookies } from '../auth/route';
-import { createGooglePlayClient } from '@/lib/google-play/client';
 import { listSubscriptions } from '@/lib/google-play/subscriptions';
 
 export async function GET() {
@@ -14,8 +13,7 @@ export async function GET() {
       );
     }
 
-    const client = createGooglePlayClient(auth.credentials);
-    const subscriptions = await listSubscriptions(client, auth.packageName);
+    const subscriptions = await listSubscriptions(auth.credentials, auth.packageName);
 
     return NextResponse.json({ subscriptions });
   } catch (error: unknown) {

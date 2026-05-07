@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import { getAuthFromCookies } from '../auth/route';
-import { createGooglePlayClient } from '@/lib/google-play/client';
 import { listInAppProducts } from '@/lib/google-play/products';
 
 export async function GET() {
@@ -14,8 +13,7 @@ export async function GET() {
       );
     }
 
-    const client = createGooglePlayClient(auth.credentials);
-    const products = await listInAppProducts(client, auth.packageName);
+    const products = await listInAppProducts(auth.credentials, auth.packageName);
 
     return NextResponse.json({ products });
   } catch (error: unknown) {
