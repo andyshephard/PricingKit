@@ -147,6 +147,13 @@ export interface DynamicPPPData {
   [regionCode: string]: {
     pppMultiplier: number;
     pppConversionFactor?: number;
+    /**
+     * Snapshot of the local-currency market exchange rate captured by /api/ppp
+     * at the same moment as `pppConversionFactor`. Used as the divisor when
+     * computing the real PPP multiplier so the numerator (PPP factor) and
+     * denominator come from a single API snapshot. Falls back to live OER rates.
+     */
+    marketExchangeRate?: number;
     bigMacMultiplier?: number;
     minPrice: number;
     suggestedRounding: number;
@@ -239,15 +246,19 @@ export function calculateRegionalPrice(
       //   2. Convert to billing currency: price in UAH / localExchangeRate = price in USD
       //   Formula: price = baseUsdPrice × pppFactor / localExchangeRate × billingExchangeRate
       
-      // Get the World Bank's expected local currency for this region
+      // Get the World Bank's expected local currency for this region. Prefer the
+      // snapshot rate from /api/ppp (paired with the PPP factor) so the multiplier's
+      // numerator and denominator come from one API call; fall back to live OER.
       const localCurrency = getLocalCurrencyForRegion(alpha2Code);
-      const localExchangeRate = getExchangeRate(localCurrency, dynamicExchangeRates);
+      const localExchangeRate = dynamicEntry?.marketExchangeRate
+        ?? getExchangeRate(localCurrency, dynamicExchangeRates);
 
       if (pppConversionFactor !== undefined) {
         // If we have dynamic PPP data, we use the real multiplier (PPP_Factor / Market_Rate)
         // BUT we must normalize it relative to the base region's multiplier
         const baseLocalCurrency = getLocalCurrencyForRegion(alpha2BaseRegion);
-        const baseLocalExchangeRate = getExchangeRate(baseLocalCurrency, dynamicExchangeRates);
+        const baseLocalExchangeRate = baseDynamicEntry?.marketExchangeRate
+          ?? getExchangeRate(baseLocalCurrency, dynamicExchangeRates);
         const basePppConversionFactor = baseDynamicEntry?.pppConversionFactor;
 
         let baseRealMultiplier = basePppMultiplier;
@@ -256,8 +267,10 @@ export function calculateRegionalPrice(
         }
 
         if (currencyCode === localCurrency) {
-          // Billing currency matches local currency
-          const rawRealMultiplier = pppConversionFactor / exchangeRate;
+          // Billing currency matches local currency. Use the snapshot rate for the
+          // multiplier denominator; keep the live OER rate for the final output
+          // conversion so the displayed price tracks today's market.
+          const rawRealMultiplier = pppConversionFactor / localExchangeRate;
           effectiveMultiplier = rawRealMultiplier / baseRealMultiplier;
           calculatedPrice = baseUsdPrice * effectiveMultiplier * exchangeRate;
           multiplierSource = dynamicEntry?.source ?? 'world-bank';
