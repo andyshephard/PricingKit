@@ -18,7 +18,7 @@ let cachedToken: CachedToken | null = null;
 
 // Hash credentials for cache validation
 function hashCredentials(credentials: AppleConnectCredentials): string {
-  return `${credentials.keyId}-${credentials.issuerId}-${credentials.bundleId}`;
+  return `${credentials.keyId}-${credentials.issuerId}`;
 }
 
 // Generate JWT for App Store Connect API
