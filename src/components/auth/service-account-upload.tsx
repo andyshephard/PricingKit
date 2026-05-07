@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { Upload, FileJson, AlertCircle, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,6 +14,8 @@ interface UploadState {
   isDragging: boolean;
   file: File | null;
   error: string | null;
+  errorHelpHref: string | null;
+  errorHelpText: string | null;
   isLoading: boolean;
 }
 
@@ -25,6 +28,8 @@ export function ServiceAccountUpload() {
     isDragging: false,
     file: null,
     error: null,
+    errorHelpHref: null,
+    errorHelpText: null,
     isLoading: false,
   });
 
@@ -89,7 +94,13 @@ export function ServiceAccountUpload() {
       return;
     }
 
-    setState((prev) => ({ ...prev, isLoading: true, error: null }));
+    setState((prev) => ({
+      ...prev,
+      isLoading: true,
+      error: null,
+      errorHelpHref: null,
+      errorHelpText: null,
+    }));
 
     try {
       const text = await state.file.text();
@@ -121,6 +132,8 @@ export function ServiceAccountUpload() {
         setState((prev) => ({
           ...prev,
           error: data.error || 'Authentication failed',
+          errorHelpHref: data.helpHref ?? null,
+          errorHelpText: data.helpText ?? null,
           isLoading: false,
         }));
         return;
@@ -210,9 +223,19 @@ export function ServiceAccountUpload() {
           </div>
 
           {state.error && (
-            <div className="flex items-center gap-2 text-sm text-destructive">
-              <AlertCircle className="h-4 w-4" />
-              <span>{state.error}</span>
+            <div className="flex items-start gap-2 text-sm text-destructive">
+              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+              <span>
+                {state.error}
+                {state.errorHelpHref && state.errorHelpText && (
+                  <>
+                    {' '}
+                    <Link href={state.errorHelpHref} className="underline font-medium">
+                      {state.errorHelpText}
+                    </Link>
+                  </>
+                )}
+              </span>
             </div>
           )}
 

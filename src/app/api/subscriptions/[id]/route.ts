@@ -7,6 +7,7 @@ import {
   updateBasePlanPrices,
   deleteBasePlanRegionPrice,
 } from '@/lib/google-play/subscriptions';
+import { GOOGLE_PRICING_WRITE_DENIED_ERROR } from '@/lib/google-play/errors';
 import {
   validateAndDecodeSku,
   ValidationError,
@@ -154,6 +155,9 @@ export async function PATCH(
     console.error('Subscription update error:', error);
     const err = error as { code?: number; message?: string };
 
+    if (err.code === 403) {
+      return NextResponse.json(GOOGLE_PRICING_WRITE_DENIED_ERROR, { status: 403 });
+    }
     if (err.code === 404) {
       return NextResponse.json(
         { error: 'Subscription or base plan not found' },
@@ -235,6 +239,9 @@ export async function DELETE(
         { error: 'Authentication expired. Please reconnect.' },
         { status: 401 }
       );
+    }
+    if (err.code === 403) {
+      return NextResponse.json(GOOGLE_PRICING_WRITE_DENIED_ERROR, { status: 403 });
     }
     if (err.code === 404) {
       return NextResponse.json(

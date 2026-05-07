@@ -8,6 +8,7 @@ import {
   createGooglePlayClient,
 } from '@/lib/google-play/client';
 import type { ServiceAccountCredentials } from '@/lib/google-play/types';
+import { GOOGLE_PRICING_WRITE_DENIED_ERROR } from '@/lib/google-play/errors';
 
 const SESSION_COOKIE = 'gplay_session';
 const PACKAGE_NAME_COOKIE = 'gplay_package_name';
@@ -90,6 +91,67 @@ export async function POST(request: NextRequest) {
         );
       }
       throw apiError;
+    }
+
+    // Verify write permission for pricing edits. Probe = no-op PATCH on first existing
+    // product or subscription, sending the same listings back (true no-op data-wise).
+    // Google validates resource existence before IAM perm, so we must use a real resource.
+    //   - 403 → service account lacks pricing write perm; block login.
+    //   - any other error → inconclusive; proceed (the route-level 403 handlers catch the
+    //     real edit later with a clear message).
+    try {
+      // Try a one-time product first.
+      const otpListResp = await client.monetization.onetimeproducts.list({
+        packageName,
+        pageSize: 1,
+      });
+      const probeProduct = otpListResp.data.oneTimeProducts?.[0];
+
+      if (probeProduct?.productId) {
+        const fullResp = await client.monetization.onetimeproducts.get({
+          packageName,
+          productId: probeProduct.productId,
+        });
+        await client.monetization.onetimeproducts.patch({
+          packageName,
+          productId: probeProduct.productId,
+          'regionsVersion.version': '2025/03',
+          updateMask: 'listings',
+          requestBody: { listings: fullResp.data.listings ?? [] },
+        });
+      } else {
+        // No one-time products — fall back to subscriptions.
+        const subListResp = await client.monetization.subscriptions.list({
+          packageName,
+          pageSize: 1,
+        });
+        const probeSub = subListResp.data.subscriptions?.[0];
+
+        if (probeSub?.productId) {
+          const fullSubResp = await client.monetization.subscriptions.get({
+            packageName,
+            productId: probeSub.productId,
+          });
+          await client.monetization.subscriptions.patch({
+            packageName,
+            productId: probeSub.productId,
+            'regionsVersion.version': '2025/03',
+            updateMask: 'listings',
+            requestBody: { listings: fullSubResp.data.listings ?? [] },
+          });
+        }
+        // No products or subscriptions on this app — cannot probe write perm.
+        // The route-level 403 handlers will surface the issue at first edit.
+      }
+    } catch (apiError: unknown) {
+      const error = apiError as { code?: number; message?: string; errors?: Array<{ reason?: string; message?: string }> };
+
+      if (error.code === 403) {
+        console.error('Google write-permission probe denied:', JSON.stringify(error, null, 2));
+        return NextResponse.json(GOOGLE_PRICING_WRITE_DENIED_ERROR, { status: 403 });
+      }
+      // Inconclusive — read probe already confirmed auth + app exist.
+      console.warn('Write-permission probe inconclusive:', error.code, error.message);
     }
 
     // Create session and store session ID in cookie

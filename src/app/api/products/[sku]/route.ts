@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { getAuthFromCookies } from '../../auth/route';
 import { createGooglePlayClient } from '@/lib/google-play/client';
 import { getInAppProduct, updateInAppProductPrices, deleteRegionPrice } from '@/lib/google-play/products';
+import { GOOGLE_PRICING_WRITE_DENIED_ERROR } from '@/lib/google-play/errors';
 import {
   validateAndDecodeSku,
   ValidationError,
@@ -142,6 +143,9 @@ export async function PATCH(
     console.error('Product update error:', error);
     const err = error as { code?: number; message?: string };
 
+    if (err.code === 403) {
+      return NextResponse.json(GOOGLE_PRICING_WRITE_DENIED_ERROR, { status: 403 });
+    }
     if (err.code === 404) {
       return NextResponse.json(
         { error: 'Product not found' },
@@ -222,6 +226,9 @@ export async function DELETE(
         { error: 'Authentication expired. Please reconnect.' },
         { status: 401 }
       );
+    }
+    if (err.code === 403) {
+      return NextResponse.json(GOOGLE_PRICING_WRITE_DENIED_ERROR, { status: 403 });
     }
     if (err.code === 404) {
       return NextResponse.json(

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { Upload, FileJson, Key, AlertCircle, Loader2 } from 'lucide-react';
 import {
   Dialog,
@@ -25,6 +25,8 @@ interface UploadState {
   isDragging: boolean;
   file: File | null;
   error: string | null;
+  errorHelpHref: string | null;
+  errorHelpText: string | null;
   isLoading: boolean;
 }
 
@@ -33,7 +35,6 @@ export function ConnectPlatformModal({
   onOpenChange,
   platform,
 }: ConnectPlatformModalProps) {
-  const router = useRouter();
   const setGoogleAuthenticated = useAuthStore(
     (state) => state.setGoogleAuthenticated
   );
@@ -54,6 +55,8 @@ export function ConnectPlatformModal({
     isDragging: false,
     file: null,
     error: null,
+    errorHelpHref: null,
+    errorHelpText: null,
     isLoading: false,
   });
 
@@ -66,6 +69,8 @@ export function ConnectPlatformModal({
       isDragging: false,
       file: null,
       error: null,
+      errorHelpHref: null,
+      errorHelpText: null,
       isLoading: false,
     });
   };
@@ -126,28 +131,22 @@ export function ConnectPlatformModal({
     return true;
   };
 
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      setState((prev) => ({ ...prev, isDragging: false }));
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setState((prev) => ({ ...prev, isDragging: false }));
 
-      const file = e.dataTransfer.files[0];
-      if (file && validateFile(file)) {
-        setState((prev) => ({ ...prev, file, error: null }));
-      }
-    },
-    [platform]
-  );
+    const file = e.dataTransfer.files[0];
+    if (file && validateFile(file)) {
+      setState((prev) => ({ ...prev, file, error: null }));
+    }
+  };
 
-  const handleFileSelect = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (file && validateFile(file)) {
-        setState((prev) => ({ ...prev, file, error: null }));
-      }
-    },
-    [platform]
-  );
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && validateFile(file)) {
+      setState((prev) => ({ ...prev, file, error: null }));
+    }
+  };
 
   const handleGoogleSubmit = async () => {
     if (!state.file || !packageName.trim()) {
@@ -158,7 +157,13 @@ export function ConnectPlatformModal({
       return;
     }
 
-    setState((prev) => ({ ...prev, isLoading: true, error: null }));
+    setState((prev) => ({
+      ...prev,
+      isLoading: true,
+      error: null,
+      errorHelpHref: null,
+      errorHelpText: null,
+    }));
 
     try {
       const text = await state.file.text();
@@ -190,6 +195,8 @@ export function ConnectPlatformModal({
         setState((prev) => ({
           ...prev,
           error: data.error || 'Authentication failed',
+          errorHelpHref: data.helpHref ?? null,
+          errorHelpText: data.helpText ?? null,
           isLoading: false,
         }));
         return;
@@ -226,7 +233,13 @@ export function ConnectPlatformModal({
       return;
     }
 
-    setState((prev) => ({ ...prev, isLoading: true, error: null }));
+    setState((prev) => ({
+      ...prev,
+      isLoading: true,
+      error: null,
+      errorHelpHref: null,
+      errorHelpText: null,
+    }));
 
     try {
       const privateKey = await state.file.text();
@@ -248,6 +261,8 @@ export function ConnectPlatformModal({
         setState((prev) => ({
           ...prev,
           error: data.error || 'Authentication failed',
+          errorHelpHref: data.helpHref ?? null,
+          errorHelpText: data.helpText ?? null,
           isLoading: false,
         }));
         return;
@@ -402,9 +417,19 @@ export function ConnectPlatformModal({
           </div>
 
           {state.error && (
-            <div className="flex items-center gap-2 text-sm text-destructive">
-              <AlertCircle className="h-4 w-4" />
-              <span>{state.error}</span>
+            <div className="flex items-start gap-2 text-sm text-destructive">
+              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+              <span>
+                {state.error}
+                {state.errorHelpHref && state.errorHelpText && (
+                  <>
+                    {' '}
+                    <Link href={state.errorHelpHref} className="underline font-medium">
+                      {state.errorHelpText}
+                    </Link>
+                  </>
+                )}
+              </span>
             </div>
           )}
 
