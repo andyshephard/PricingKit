@@ -251,7 +251,7 @@ export async function fetchPPPData(): Promise<PPPData[]> {
   throw lastError || new Error('All World Bank API URL variations failed');
 }
 
-function processWorldBankResponse(data: any): PPPData[] {
+function processWorldBankResponse(data: unknown): PPPData[] {
   // World Bank API returns [metadata, data] array
   if (!Array.isArray(data) || data.length < 2) {
     throw new Error('Invalid World Bank API response format');

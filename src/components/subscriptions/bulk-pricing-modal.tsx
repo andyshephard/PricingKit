@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { Calculator, Globe, DollarSign, TrendingDown, Sliders, RefreshCw, Hamburger, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -238,12 +238,12 @@ export function SubscriptionBulkPricingModal({
   }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, basePlan.regionalConfigs]);
 
   // Get current price for a region
-  const getCurrentPrice = (regionCode: string): Money | null => {
+  const getCurrentPrice = useCallback((regionCode: string): Money | null => {
     return normalizedPrices[regionCode] || null;
-  };
+  }, [normalizedPrices]);
 
   const sortedPreviewPrices = useMemo(() => {
-    let items = [...previewPrices].map(item => {
+    const items = [...previewPrices].map(item => {
       const region = allRegions.find(r => r.code === item.regionCode);
       const currentPrice = getCurrentPrice(item.regionCode);
       const currentPriceNum = currentPrice ? moneyToNumber(currentPrice) : 0;
@@ -261,8 +261,8 @@ export function SubscriptionBulkPricingModal({
 
     if (sortConfig.key && sortConfig.direction) {
       items.sort((a, b) => {
-        let aValue: any;
-        let bValue: any;
+        let aValue: string | number;
+        let bValue: string | number;
 
         switch (sortConfig.key) {
           case 'region':
@@ -308,7 +308,7 @@ export function SubscriptionBulkPricingModal({
     }
 
     return items;
-  }, [previewPrices, sortConfig, allRegions]);
+  }, [previewPrices, sortConfig, allRegions, getCurrentPrice]);
 
   // Auto-select regions where the target price deviates from current price
   useEffect(() => {
@@ -347,7 +347,7 @@ export function SubscriptionBulkPricingModal({
       setSelectedRegions(newSelected);
       setHasInitializedSelection(true);
     }
-  }, [open, previewPrices, hasInitializedSelection, normalizedPrices, allRegions, pppFetched, exchangeRatesFetched]);
+  }, [open, previewPrices, hasInitializedSelection, allRegions, pppFetched, exchangeRatesFetched, getCurrentPrice]);
 
   // Handle sorting
   const requestSort = (key: string) => {
@@ -403,8 +403,17 @@ export function SubscriptionBulkPricingModal({
       return;
     }
 
-    const changing: any[] = [];
-    const staying: any[] = [];
+    const changing: Array<{
+      name: string;
+      regionCode: string;
+      old: string;
+      new: string;
+    }> = [];
+    const staying: Array<{
+      name: string;
+      regionCode: string;
+      price: string;
+    }> = [];
 
     allRegions.forEach(region => {
       const previewItem = previewPrices.find(p => p.regionCode === region.code);
@@ -750,9 +759,6 @@ export function SubscriptionBulkPricingModal({
                     </TableHeader>
                     <TableBody>
                       {sortedPreviewPrices.map((calculated) => {
-                        const region = allRegions.find(
-                          (r) => r.code === calculated.regionCode
-                        );
                         const currentPrice = getCurrentPrice(
                           calculated.regionCode
                         );

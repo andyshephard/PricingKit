@@ -359,15 +359,15 @@ export function AppleSubscriptionBulkPricingModal({
         multiplierSource: calculated.multiplierSource,
       };
     });
-  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, subscription.prices]);
+  }, [basePriceNum, basePrice, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, subscription.prices]);
 
   const sortedPreviewPrices = useMemo(() => {
-    let items = [...previewPrices];
+    const items = [...previewPrices];
 
     if (sortConfig.key && sortConfig.direction) {
       items.sort((a, b) => {
-        let aValue: any;
-        let bValue: any;
+        let aValue: string | number;
+        let bValue: string | number;
 
         switch (sortConfig.key) {
           case 'region':
@@ -523,8 +523,17 @@ export function AppleSubscriptionBulkPricingModal({
       return;
     }
 
-    const changing: any[] = [];
-    const staying: any[] = [];
+    const changing: Array<{
+      name: string;
+      regionCode: string;
+      old: string;
+      new: string;
+    }> = [];
+    const staying: Array<{
+      name: string;
+      regionCode: string;
+      price: string;
+    }> = [];
 
     allTerritories.forEach(territory => {
       const previewItem = previewPrices.find(p => p.territoryCode === territory.alpha2);

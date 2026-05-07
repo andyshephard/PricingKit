@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { Calculator, Globe, TrendingDown, Sliders, RefreshCw, Hamburger, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -39,7 +39,7 @@ import {
   moneyToNumber,
   parseMoney,
 } from '@/lib/google-play/types';
-import { getSupportedAppleTerritories, getTerritoryByAlpha3, alpha2ToAlpha3 } from '@/lib/apple-connect/territories';
+import { getSupportedAppleTerritories, getTerritoryByAlpha3 } from '@/lib/apple-connect/territories';
 import { findClosestTierForCurrency } from '@/lib/apple-connect/price-tier-data';
 import { useAuthStore } from '@/store/auth-store';
 import {
@@ -99,6 +99,14 @@ interface ExchangeRatesApiResponse {
   };
 }
 
+type ProductWithApple = { _appleProduct?: { baseTerritory?: string } };
+
+interface CalculatedPriceWithTier {
+  tierId?: string;
+  tierPrice?: number;
+  tierDifference?: number;
+}
+
 interface BulkPricingModalProps {
   product: InAppProduct;
   open: boolean;
@@ -136,7 +144,7 @@ export function BulkPricingModal({
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [hasInitializedSelection, setHasInitializedSelection] = useState(false);
   const [updateSummary, setUpdateSummary] = useState<{
-    changing: Array<{ name: string; old: string; new: string; regionCode: string }>;
+    changing: Array<{ name: string; old: string; new: string; regionCode: string; isRequired: boolean }>;
     staying: Array<{ name: string; price: string; regionCode: string }>;
   } | null>(null);
   const [sortConfig, setSortConfig] = useState<{
@@ -282,8 +290,8 @@ export function BulkPricingModal({
     if (basePriceNum < 0) return { previewPrices: [], baseCurrency: 'USD', baseRegion: 'US' };
     
     // Determine the base currency and region from the product
-    const baseRegion = platform === 'apple' 
-      ? (product as any)._appleProduct?.baseTerritory || 'USA'
+    const baseRegion = platform === 'apple'
+      ? (product as ProductWithApple)._appleProduct?.baseTerritory || 'USA'
       : 'US';
       
     const baseCurrency = platform === 'apple' 
@@ -323,12 +331,12 @@ export function BulkPricingModal({
   }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, platform, product]);
 
   // Get current price for a region
-  const getCurrentPrice = (regionCode: string): Money | null => {
+  const getCurrentPrice = useCallback((regionCode: string): Money | null => {
     return normalizedPrices[regionCode] || null;
-  };
+  }, [normalizedPrices]);
 
   const sortedPreviewPrices = useMemo(() => {
-    let items = [...previewPrices].map(item => {
+    const items = [...previewPrices].map(item => {
       const region = allRegions.find(r => r.code === item.regionCode);
       const currentPrice = getCurrentPrice(item.regionCode);
       const currentPriceNum = currentPrice ? moneyToNumber(currentPrice) : 0;
@@ -346,8 +354,8 @@ export function BulkPricingModal({
 
     if (sortConfig.key && sortConfig.direction) {
       items.sort((a, b) => {
-        let aValue: any;
-        let bValue: any;
+        let aValue: string | number;
+        let bValue: string | number;
 
         switch (sortConfig.key) {
           case 'region':
@@ -379,8 +387,8 @@ export function BulkPricingModal({
             bValue = b.change;
             break;
           case 'tier':
-            aValue = (a as any).tierId || '';
-            bValue = (b as any).tierId || '';
+            aValue = (a as { tierId?: string }).tierId || '';
+            bValue = (b as { tierId?: string }).tierId || '';
             break;
           default:
             return 0;
@@ -397,7 +405,7 @@ export function BulkPricingModal({
     }
 
     return items;
-  }, [previewPrices, sortConfig, allRegions, normalizedPrices]);
+  }, [previewPrices, sortConfig, allRegions, getCurrentPrice]);
 
   // Auto-select regions where the target price deviates from current price
   useEffect(() => {
@@ -412,8 +420,8 @@ export function BulkPricingModal({
       
       if (!belongsToCurrentProduct) return;
 
-      const appleBaseRegion = platform === 'apple' 
-        ? (product as any)._appleProduct?.baseTerritory || 'USA'
+      const appleBaseRegion = platform === 'apple'
+        ? (product as ProductWithApple)._appleProduct?.baseTerritory || 'USA'
         : null;
 
       const newSelected = new Set<string>();
@@ -441,7 +449,7 @@ export function BulkPricingModal({
       setSelectedRegions(newSelected);
       setHasInitializedSelection(true);
     }
-  }, [open, previewPrices, hasInitializedSelection, platform, product, normalizedPrices, allRegions, pppFetched, exchangeRatesFetched]);
+  }, [open, previewPrices, hasInitializedSelection, platform, product, allRegions, pppFetched, exchangeRatesFetched, getCurrentPrice]);
 
   // Handle region selection
   const toggleRegion = (regionCode: string) => {
@@ -497,11 +505,21 @@ export function BulkPricingModal({
       return;
     }
 
-    const changing: any[] = [];
-    const staying: any[] = [];
+    const changing: Array<{
+      name: string;
+      regionCode: string;
+      old: string;
+      new: string;
+      isRequired: boolean;
+    }> = [];
+    const staying: Array<{
+      name: string;
+      regionCode: string;
+      price: string;
+    }> = [];
 
-    const appleBaseRegion = platform === 'apple' 
-      ? (product as any)._appleProduct?.baseTerritory || 'USA'
+    const appleBaseRegion = platform === 'apple'
+      ? (product as ProductWithApple)._appleProduct?.baseTerritory || 'USA'
       : null;
 
     allRegions.forEach(region => {
@@ -533,8 +551,8 @@ export function BulkPricingModal({
 
   const executeApply = async () => {
     const prices: Record<string, Money> = {};
-    const appleBaseRegion = platform === 'apple' 
-      ? (product as any)._appleProduct?.baseTerritory || 'USA'
+    const appleBaseRegion = platform === 'apple'
+      ? (product as ProductWithApple)._appleProduct?.baseTerritory || 'USA'
       : null;
 
     previewPrices.forEach((calculated) => {
@@ -627,17 +645,17 @@ export function BulkPricingModal({
           {/* Base Price Input */}
           <div className="space-y-2">
             <Label htmlFor="base-price">
-              Base Price ({platform === 'apple' 
-                ? (product as any)._appleProduct?.baseTerritory 
-                  ? `${getTerritoryByAlpha3((product as any)._appleProduct.baseTerritory)?.currency || 'USD'} - ${(product as any)._appleProduct.baseTerritory}`
+              Base Price ({platform === 'apple'
+                ? (product as ProductWithApple)._appleProduct?.baseTerritory
+                  ? `${getTerritoryByAlpha3((product as ProductWithApple)._appleProduct?.baseTerritory ?? '')?.currency || 'USD'} - ${(product as ProductWithApple)._appleProduct?.baseTerritory}`
                   : 'USD'
                 : product.defaultPrice?.currencyCode || 'USD'})
             </Label>
             <div className="relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
                 {getCurrencySymbol(platform === 'apple'
-                  ? (product as any)._appleProduct?.baseTerritory 
-                    ? getTerritoryByAlpha3((product as any)._appleProduct.baseTerritory)?.currency || 'USD'
+                  ? (product as ProductWithApple)._appleProduct?.baseTerritory
+                    ? getTerritoryByAlpha3((product as ProductWithApple)._appleProduct?.baseTerritory ?? '')?.currency || 'USD'
                     : 'USD'
                   : product.defaultPrice?.currencyCode || 'USD')}
               </span>
@@ -892,15 +910,12 @@ export function BulkPricingModal({
                   </TableHeader>
                   <TableBody>
                     {sortedPreviewPrices.map((calculated) => {
-                      const region = allRegions.find(
-                        (r) => r.code === calculated.regionCode
-                      );
                       const currentPrice = getCurrentPrice(
                         calculated.regionCode
                       );
                       const isSelected = selectedRegions.has(calculated.regionCode);
                       const appleBaseRegion = platform === 'apple' 
-                        ? (product as any)._appleProduct?.baseTerritory || 'USA'
+                        ? (product as ProductWithApple)._appleProduct?.baseTerritory || 'USA'
                         : null;
                       const isRequired = calculated.regionCode === appleBaseRegion;
 
@@ -984,8 +999,8 @@ export function BulkPricingModal({
                                     <p>4. Exchange Rate ({baseCurrency}→{calculated.currencyCode}): {(calculated.rawPrice / (basePriceNum * calculated.multiplier)).toFixed(4)}</p>
                                   )}
                                   <p>{baseCurrency !== calculated.currencyCode ? '5' : '4'}. Target Price: {calculated.rawPrice.toFixed(2)} {calculated.currencyCode}</p>
-                                  {platform === 'apple' && (calculated as any).tierId && (
-                                    <p>{baseCurrency !== calculated.currencyCode ? '6' : '5'}. Apple Tier: Tier {(calculated as any).tierId} ({formatMoney(calculated.price)})</p>
+                                  {platform === 'apple' && (calculated as CalculatedPriceWithTier).tierId && (
+                                    <p>{baseCurrency !== calculated.currencyCode ? '6' : '5'}. Apple Tier: Tier {(calculated as CalculatedPriceWithTier).tierId} ({formatMoney(calculated.price)})</p>
                                   )}
                                 </div>
                               </TooltipContent>
@@ -995,11 +1010,11 @@ export function BulkPricingModal({
                             <TableCell className="text-right text-xs">
                               <div className="flex flex-col items-end">
                                 <span className="text-muted-foreground">
-                                  {(calculated as any).tierId ? `Tier ${(calculated as any).tierId}` : 'No tier'}
+                                  {(calculated as CalculatedPriceWithTier).tierId ? `Tier ${(calculated as CalculatedPriceWithTier).tierId}` : 'No tier'}
                                 </span>
-                                {Math.abs((calculated as any).tierDifference || 0) > 0.1 && (
-                                  <span className={(calculated as any).tierDifference > 0 ? "text-orange-600" : "text-blue-600"}>
-                                    {((calculated as any).tierDifference > 0 ? "+" : "") + ((calculated as any).tierDifference || 0).toFixed(1)}% vs ideal
+                                {Math.abs((calculated as CalculatedPriceWithTier).tierDifference ?? 0) > 0.1 && (
+                                  <span className={((calculated as CalculatedPriceWithTier).tierDifference ?? 0) > 0 ? "text-orange-600" : "text-blue-600"}>
+                                    {(((calculated as CalculatedPriceWithTier).tierDifference ?? 0) > 0 ? "+" : "") + ((calculated as CalculatedPriceWithTier).tierDifference ?? 0).toFixed(1)}% vs ideal
                                   </span>
                                 )}
                               </div>
@@ -1084,7 +1099,7 @@ export function BulkPricingModal({
                         <div key={item.regionCode} className="text-xs flex justify-between border-b border-muted/30 py-1">
                           <div className="flex flex-col">
                             <span className="font-medium">{item.name} ({item.regionCode})</span>
-                            {(item as any).isRequired && (
+                            {item.isRequired && (
                               <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold uppercase">Required Base Region</span>
                             )}
                           </div>
