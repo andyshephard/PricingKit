@@ -4,10 +4,20 @@ import {
   googlePlayFetch,
   getSessionCredentials,
 } from '@/lib/google-play/client';
+import { GOOGLE_PRICING_WRITE_DENIED_ERROR } from '@/lib/google-play/errors';
 
 const GOOGLE_SESSION_COOKIE = 'gplay_session';
 const GOOGLE_PACKAGE_NAME_COOKIE = 'gplay_package_name';
 const COOKIE_MAX_AGE = 24 * 60 * 60;
+
+interface ProbeListResp<T> {
+  oneTimeProducts?: T[];
+  subscriptions?: T[];
+}
+interface ProbeProduct {
+  productId?: string;
+  listings?: unknown;
+}
 
 export async function POST(request: NextRequest) {
   const cookieStore = await cookies();
@@ -75,6 +85,69 @@ export async function POST(request: NextRequest) {
       { error: 'Failed to verify Google Play app access.' },
       { status: 500 }
     );
+  }
+
+  // Verify write permission so a switch-to doesn't silently downgrade UX:
+  // service account might have read access but lack pricing-edit perms.
+  // Mirror the auth route's probe — no-op PATCH on first existing product or
+  // subscription. 403 → block; any other error → inconclusive, proceed.
+  try {
+    const appsBase = `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}`;
+
+    const otpList = await googlePlayFetch<ProbeListResp<ProbeProduct>>(
+      credentials,
+      `${appsBase}/oneTimeProducts`,
+      { query: { pageSize: 1 } }
+    );
+    const probeProduct = otpList.oneTimeProducts?.[0];
+
+    if (probeProduct?.productId) {
+      const full = await googlePlayFetch<ProbeProduct>(
+        credentials,
+        `${appsBase}/oneTimeProducts/${encodeURIComponent(probeProduct.productId)}`
+      );
+      // PATCH path is lowercase per Google's discovery doc.
+      await googlePlayFetch<unknown>(
+        credentials,
+        `${appsBase}/onetimeproducts/${encodeURIComponent(probeProduct.productId)}`,
+        {
+          method: 'PATCH',
+          query: { 'regionsVersion.version': '2025/03', updateMask: 'purchaseOptions' },
+          body: full,
+        }
+      );
+    } else {
+      const subList = await googlePlayFetch<ProbeListResp<ProbeProduct>>(
+        credentials,
+        `${appsBase}/subscriptions`,
+        { query: { pageSize: 1 } }
+      );
+      const probeSub = subList.subscriptions?.[0];
+      if (probeSub?.productId) {
+        const fullSub = await googlePlayFetch<ProbeProduct>(
+          credentials,
+          `${appsBase}/subscriptions/${encodeURIComponent(probeSub.productId)}`
+        );
+        await googlePlayFetch<unknown>(
+          credentials,
+          `${appsBase}/subscriptions/${encodeURIComponent(probeSub.productId)}`,
+          {
+            method: 'PATCH',
+            query: { 'regionsVersion.version': '2025/03', updateMask: 'basePlans' },
+            body: fullSub,
+          }
+        );
+      }
+      // No products/subs on this app — cannot probe write. Route-level 403 handlers
+      // surface the issue on first real edit.
+    }
+  } catch (apiError: unknown) {
+    const error = apiError as { code?: number; message?: string };
+    if (error.code === 403) {
+      console.error('POST /api/active-app write probe denied:', error);
+      return NextResponse.json(GOOGLE_PRICING_WRITE_DENIED_ERROR, { status: 403 });
+    }
+    console.warn('Write-permission probe inconclusive:', error.code, error.message);
   }
 
   cookieStore.set(GOOGLE_PACKAGE_NAME_COOKIE, packageName, {
