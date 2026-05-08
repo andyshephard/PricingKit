@@ -99,9 +99,10 @@ export function useProduct(sku: string) {
   });
 }
 
-export function useUpdateProductPrices() {
+export function useUpdateProductPrices(platformOverride?: 'google' | 'apple') {
   const queryClient = useQueryClient();
-  const platform = useAuthStore((state) => state.platform);
+  const storePlatform = useAuthStore((state) => state.platform);
+  const platform = platformOverride ?? storePlatform;
 
   return useMutation({
     mutationFn: async ({
@@ -144,9 +145,10 @@ export function useUpdateProductPrices() {
   });
 }
 
-export function useDeleteRegionPrice() {
+export function useDeleteRegionPrice(platformOverride?: 'google' | 'apple') {
   const queryClient = useQueryClient();
-  const platform = useAuthStore((state) => state.platform);
+  const storePlatform = useAuthStore((state) => state.platform);
+  const platform = platformOverride ?? storePlatform;
 
   return useMutation({
     mutationFn: async ({ sku, regionCode }: { sku: string; regionCode: string }) => {

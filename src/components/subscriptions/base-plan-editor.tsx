@@ -357,7 +357,8 @@ export function BasePlanEditor({ subscription }: BasePlanEditorProps) {
     new Map()
   );
 
-  const updateMutation = useUpdateBasePlanPrices();
+  // BasePlanEditor is Google-only (Apple uses apple-subscription-pricing-editor).
+  const updateMutation = useUpdateBasePlanPrices('google');
 
   const handlePriceChange = (
     basePlanId: string,

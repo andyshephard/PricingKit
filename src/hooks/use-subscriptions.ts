@@ -110,9 +110,10 @@ export function useSubscription(productId: string) {
   });
 }
 
-export function useUpdateBasePlanPrices() {
+export function useUpdateBasePlanPrices(platformOverride?: 'google' | 'apple') {
   const queryClient = useQueryClient();
-  const platform = useAuthStore((state) => state.platform);
+  const storePlatform = useAuthStore((state) => state.platform);
+  const platform = platformOverride ?? storePlatform;
 
   return useMutation({
     mutationFn: async ({

@@ -42,7 +42,6 @@ import {
 import { getSupportedAppleTerritories, getTerritoryByAlpha3, alpha2ToAlpha3 } from '@/lib/apple-connect/territories';
 import { findClosestTierForCurrency, getPriceTiersForCurrency } from '@/lib/apple-connect/price-tier-data';
 import { getCurrencySymbol as sharedGetCurrencySymbol } from '@/lib/utils/currency';
-import { useAuthStore } from '@/store/auth-store';
 import { useAppleAppPrice } from '@/hooks/use-apple-app-price';
 import {
   Select,
@@ -121,7 +120,13 @@ export function BulkPricingModal({
   onOpenChange,
   onSave,
 }: BulkPricingModalProps) {
-  const platform = useAuthStore((state) => state.platform);
+  // Derive platform from the product itself, not from the auth store, so the
+  // Google product modal never picks up Apple-only UI just because the auth
+  // store still says 'apple' from a prior session.
+  const isAppleProduct =
+    '_appleProduct' in product &&
+    (product as ProductWithApple)._appleProduct !== undefined;
+  const platform: 'apple' | 'google' = isAppleProduct ? 'apple' : 'google';
   const { data: appPrice } = useAppleAppPrice();
 
   // Initial base region: app-level (Apple) → per-product → 'USA' / 'US'.
@@ -203,7 +208,9 @@ export function BulkPricingModal({
   }, [baseRegion, priceForBaseRegion]);
 
   const [strategy, setStrategy] = useState<PricingStrategy>('ppp');
-  const [rounding, setRounding] = useState<RoundingMode>('charm');
+  const [rounding, setRounding] = useState<RoundingMode>(
+    platform === 'apple' ? 'nearest-tier' : 'nearest-99'
+  );
   const [selectedRegions, setSelectedRegions] = useState<Set<string>>(new Set());
 
   // PPP data from World Bank API
@@ -217,7 +224,7 @@ export function BulkPricingModal({
   const [exchangeRatesLoading, setExchangeRatesLoading] = useState(false);
   const [exchangeRatesFetched, setExchangeRatesFetched] = useState(false);
 
-  const updateMutation = useUpdateProductPrices();
+  const updateMutation = useUpdateProductPrices(platform);
   const [isApplying, setIsApplying] = useState(false);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [hasInitializedSelection, setHasInitializedSelection] = useState(false);
@@ -377,7 +384,8 @@ export function BulkPricingModal({
       actualCurrencies, // Use actual currencies from Google Play
       exchangeRates ?? undefined, // Dynamic exchange rates from API
       baseCurrency,
-      baseRegion
+      baseRegion,
+      platform === 'apple' ? getPriceTiersForCurrency : undefined
     );
 
     // For Apple, match each calculated price to the closest available tier
@@ -681,7 +689,7 @@ export function BulkPricingModal({
       // Force the state update immediately
       setBasePrice(initialPrice);
       setStrategy('ppp');
-      setRounding('charm');
+      setRounding(platform === 'apple' ? 'nearest-tier' : 'nearest-99');
       setHasInitializedSelection(false);
       // Selected regions will be initialized by the useEffect once previewPrices is calculated
       // PPP data will be fetched by the useEffect
@@ -930,44 +938,57 @@ export function BulkPricingModal({
 
           {/* Rounding Options */}
           <div className="space-y-3">
-            <Label className={platform === 'apple' ? "text-muted-foreground" : ""}>
-              Price Rounding {platform === 'apple' && "(Disabled for Apple - using Price Tiers)"}
-            </Label>
-            <div className="flex gap-4">
-              <label className={`flex items-center gap-2 ${platform === 'apple' ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}>
+            <Label>Price Rounding</Label>
+            <div className="flex gap-4 flex-wrap">
+              {platform === 'apple' && (
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="rounding"
+                    value="nearest-tier"
+                    checked={rounding === 'nearest-tier'}
+                    onChange={() => setRounding('nearest-tier')}
+                  />
+                  <span className="text-sm">Nearest tier</span>
+                </label>
+              )}
+              <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="radio"
                   name="rounding"
-                  value="charm"
-                  checked={rounding === 'charm'}
-                  onChange={() => platform !== 'apple' && setRounding('charm')}
-                  disabled={platform === 'apple'}
+                  value="nearest-99"
+                  checked={rounding === 'nearest-99'}
+                  onChange={() => setRounding('nearest-99')}
                 />
                 <span className="text-sm">Nearest .99</span>
               </label>
-              <label className={`flex items-center gap-2 ${platform === 'apple' ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}>
+              <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="radio"
                   name="rounding"
-                  value="whole"
-                  checked={rounding === 'whole'}
-                  onChange={() => platform !== 'apple' && setRounding('whole')}
-                  disabled={platform === 'apple'}
+                  value="round-up"
+                  checked={rounding === 'round-up'}
+                  onChange={() => setRounding('round-up')}
                 />
-                <span className="text-sm">Whole Numbers</span>
+                <span className="text-sm">Round up</span>
               </label>
-              <label className={`flex items-center gap-2 ${platform === 'apple' ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}>
+              <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="radio"
                   name="rounding"
                   value="none"
                   checked={rounding === 'none'}
-                  onChange={() => platform !== 'apple' && setRounding('none')}
-                  disabled={platform === 'apple'}
+                  onChange={() => setRounding('none')}
                 />
                 <span className="text-sm">No Rounding</span>
               </label>
             </div>
+            <p className="text-xs text-muted-foreground">
+              {rounding === 'nearest-tier' && 'Snaps to the closest Apple tier price.'}
+              {rounding === 'nearest-99' && 'Closest .99 ending by absolute distance.'}
+              {rounding === 'round-up' && 'Always rounds up to the next .99 ending.'}
+              {rounding === 'none' && 'Use the calculated value as-is.'}
+            </p>
           </div>
 
           {/* Preview Table */}

@@ -101,7 +101,7 @@ export function SubscriptionBulkPricingModal({
   const [basePrice, setBasePrice] = useState<string>('');
   const [baseRegion, setBaseRegion] = useState<string>('US');
   const [strategy, setStrategy] = useState<PricingStrategy>('ppp');
-  const [rounding, setRounding] = useState<RoundingMode>('charm');
+  const [rounding, setRounding] = useState<RoundingMode>('nearest-99');
   const [selectedRegions, setSelectedRegions] = useState<Set<string>>(new Set());
 
   // PPP data from World Bank API
@@ -113,7 +113,7 @@ export function SubscriptionBulkPricingModal({
   const [exchangeRates, setExchangeRates] = useState<DynamicExchangeRates | null>(null);
   const [exchangeRatesLoading, setExchangeRatesLoading] = useState(false);
 
-  const updateMutation = useUpdateBasePlanPrices();
+  const updateMutation = useUpdateBasePlanPrices('google');
   const [isApplying, setIsApplying] = useState(false);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [hasInitializedSelection, setHasInitializedSelection] = useState(false);
@@ -505,7 +505,7 @@ export function SubscriptionBulkPricingModal({
 
       setBasePrice(initialPrice);
       setStrategy('ppp');
-      setRounding('charm');
+      setRounding('nearest-99');
       setHasInitializedSelection(false);
     }
     onOpenChange(newOpen);
@@ -682,14 +682,14 @@ export function SubscriptionBulkPricingModal({
           {/* Rounding Options */}
           <div className="space-y-3">
             <Label>Price Rounding</Label>
-            <div className="flex gap-4">
+            <div className="flex gap-4 flex-wrap">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="radio"
                   name="rounding"
-                  value="charm"
-                  checked={rounding === 'charm'}
-                  onChange={() => setRounding('charm')}
+                  value="nearest-99"
+                  checked={rounding === 'nearest-99'}
+                  onChange={() => setRounding('nearest-99')}
                 />
                 <span className="text-sm">Nearest .99</span>
               </label>
@@ -697,11 +697,11 @@ export function SubscriptionBulkPricingModal({
                 <input
                   type="radio"
                   name="rounding"
-                  value="whole"
-                  checked={rounding === 'whole'}
-                  onChange={() => setRounding('whole')}
+                  value="round-up"
+                  checked={rounding === 'round-up'}
+                  onChange={() => setRounding('round-up')}
                 />
-                <span className="text-sm">Whole Numbers</span>
+                <span className="text-sm">Round up</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -714,6 +714,11 @@ export function SubscriptionBulkPricingModal({
                 <span className="text-sm">No Rounding</span>
               </label>
             </div>
+            <p className="text-xs text-muted-foreground">
+              {rounding === 'nearest-99' && 'Closest .99 ending by absolute distance.'}
+              {rounding === 'round-up' && 'Always rounds up to the next .99 ending.'}
+              {rounding === 'none' && 'Use the calculated value as-is.'}
+            </p>
           </div>
 
           {/* Preserve Existing Subscriber Prices */}

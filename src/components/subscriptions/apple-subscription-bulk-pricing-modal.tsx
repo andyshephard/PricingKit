@@ -159,9 +159,7 @@ export function AppleSubscriptionBulkPricingModal({
   const [userTouchedRegion, setUserTouchedRegion] = useState(false);
   const [inputMode, setInputMode] = useState<'tier' | 'manual'>('tier');
   const [strategy, setStrategy] = useState<PricingStrategy>('ppp');
-  // Apple subs always use Apple price tiers; rounding is irrelevant but
-  // calculateBulkPrices requires the argument. Pin to 'charm' permanently.
-  const rounding: RoundingMode = 'charm';
+  const [rounding, setRounding] = useState<RoundingMode>('nearest-tier');
   const [selectedRegions, setSelectedRegions] = useState<Set<string>>(new Set());
   const [startDate, setStartDate] = useState<string>('');
   const [isSaving, setIsSaving] = useState(false);
@@ -344,7 +342,8 @@ export function AppleSubscriptionBulkPricingModal({
       actualCurrencies,
       exchangeRates ?? undefined,
       baseCurrency,
-      baseRegion
+      baseRegion,
+      getPriceTiersForCurrency // tier-aware rounding for Apple
     );
 
     // Map to preview format with Apple tier matching
@@ -674,6 +673,7 @@ export function AppleSubscriptionBulkPricingModal({
       setBasePrice(initialPrice);
       setInputMode('tier');
       setStrategy('ppp');
+      setRounding('nearest-tier');
       setUserTouchedRegion(false);
       setHasInitializedSelection(false);
       if (isApproved) {
@@ -917,8 +917,51 @@ export function AppleSubscriptionBulkPricingModal({
               </TooltipProvider>
             </div>
 
-            {/* Apple subscriptions snap calculated prices to the closest Apple
-                price tier; rounding controls aren't meaningful here. */}
+            {/* Rounding mode */}
+            <div className="space-y-3">
+              <Label>Rounding</Label>
+              <div className="grid grid-cols-3 gap-2">
+                <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+                  <input
+                    type="radio"
+                    name="rounding"
+                    value="nearest-tier"
+                    checked={rounding === 'nearest-tier'}
+                    onChange={() => setRounding('nearest-tier')}
+                    className="sr-only"
+                  />
+                  <span className="text-sm font-medium truncate">Nearest tier</span>
+                </label>
+                <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+                  <input
+                    type="radio"
+                    name="rounding"
+                    value="nearest-99"
+                    checked={rounding === 'nearest-99'}
+                    onChange={() => setRounding('nearest-99')}
+                    className="sr-only"
+                  />
+                  <span className="text-sm font-medium truncate">Nearest .99</span>
+                </label>
+                <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+                  <input
+                    type="radio"
+                    name="rounding"
+                    value="round-up"
+                    checked={rounding === 'round-up'}
+                    onChange={() => setRounding('round-up')}
+                    className="sr-only"
+                  />
+                  <span className="text-sm font-medium truncate">Round up</span>
+                </label>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {rounding === 'nearest-tier' && 'Snaps to the closest Apple tier price.'}
+                {rounding === 'nearest-99' && 'Closest .99 ending by absolute distance.'}
+                {rounding === 'round-up' && 'Always rounds up to the next .99 ending.'}
+              </p>
+            </div>
+
 
             {/* Preserve Existing Subscriber Prices */}
             <div className="space-y-3">

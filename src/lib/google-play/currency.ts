@@ -7,7 +7,15 @@ import { FALLBACK_EXCHANGE_RATES } from '../conversion-indexes/exchange-rates';
 import { alpha3ToAlpha2 } from '../apple-connect/territories';
 
 export type PricingStrategy = 'direct' | 'ppp' | 'bigmac' | 'custom';
-export type RoundingMode = 'charm' | 'whole' | 'none';
+export type RoundingMode = 'nearest-tier' | 'nearest-99' | 'round-up' | 'none';
+
+export interface RoundingTier {
+  price: number;
+}
+
+export type GetTiersForCurrency = (
+  currency: string
+) => readonly RoundingTier[] | undefined;
 
 // Dynamic exchange rates from API (passed to calculation functions)
 export interface DynamicExchangeRates {
@@ -65,10 +73,35 @@ function getLocalCurrencyForRegion(regionCode: string): string {
   return LOCAL_CURRENCIES[regionCode] || 'USD';
 }
 
-// Apply rounding based on mode
-function applyRounding(price: number, mode: RoundingMode, currencyCode: string): number {
+// Apply rounding based on mode. `tiers` (optional) is the list of allowed
+// price points for the target currency (used by 'nearest-tier' mode when
+// the platform exposes a tier ladder, e.g. Apple App Store Connect).
+function applyRounding(
+  price: number,
+  mode: RoundingMode,
+  currencyCode: string,
+  tiers?: readonly RoundingTier[]
+): number {
   if (mode === 'none') {
     return Math.round(price * 100) / 100;
+  }
+
+  // Snap to closest provided tier (e.g. Apple). Falls through to nearest-99
+  // when no tier list is supplied (e.g. Google).
+  if (mode === 'nearest-tier') {
+    if (tiers && tiers.length > 0) {
+      let closest = tiers[0];
+      let minDiff = Math.abs(closest.price - price);
+      for (let i = 1; i < tiers.length; i++) {
+        const diff = Math.abs(tiers[i].price - price);
+        if (diff < minDiff) {
+          minDiff = diff;
+          closest = tiers[i];
+        }
+      }
+      return closest.price;
+    }
+    // Fall through: behave as nearest-99 when no tier list available.
   }
 
   // For currencies with no decimal places (JPY, KRW, etc.)
@@ -83,48 +116,47 @@ function applyRounding(price: number, mode: RoundingMode, currencyCode: string):
   const cfaFrancs = ['XOF', 'XAF'];
   const isCfaFranc = cfaFrancs.includes(currencyCode);
 
-  if (mode === 'whole') {
+  // Round up to next .99 ending (or platform-equivalent for no-decimal currencies).
+  if (mode === 'round-up') {
     if (isCfaFranc) {
-      // CFA Francs: always round to nearest 100
-      return Math.round(price / 100) * 100;
+      return Math.ceil(price / 100) * 100;
     }
     if (isNoDecimal) {
-      // Round to nearest 10 or 100 depending on magnitude
       if (price >= 1000) {
-        return Math.round(price / 100) * 100;
+        const next90 = Math.ceil((price + 10) / 100) * 100 - 10;
+        return next90 < 90 ? 90 : next90;
       } else if (price >= 100) {
-        return Math.round(price / 10) * 10;
+        const next9 = Math.ceil((price + 1) / 10) * 10 - 1;
+        return next9 < 9 ? 9 : next9;
       }
-      return Math.round(price);
+      return Math.ceil(price);
+    }
+    const cents = Math.round(price * 100);
+    if (cents % 100 === 99) return cents / 100; // already .99
+    const nextWhole = Math.ceil(price);
+    const result = nextWhole - 0.01;
+    return result < 0.99 ? 0.99 : result;
+  }
+
+  // 'nearest-99' (and the fallthrough from 'nearest-tier' with no tiers).
+  if (isCfaFranc) {
+    // CFA Francs: round to nearest 100 (.99 not applicable)
+    return Math.round(price / 100) * 100;
+  }
+  if (isNoDecimal) {
+    if (price >= 1000) {
+      const closest90 = Math.round((price + 10) / 100) * 100 - 10;
+      return closest90 < 90 ? 90 : closest90;
+    } else if (price >= 100) {
+      const closest9 = Math.round((price + 1) / 10) * 10 - 1;
+      return closest9 < 9 ? 9 : closest9;
     }
     return Math.round(price);
   }
 
-  // Charm pricing (.99 endings)
-  if (mode === 'charm') {
-    if (isCfaFranc) {
-      // CFA Francs: round to nearest 100 (charm pricing not applicable)
-      return Math.round(price / 100) * 100;
-    }
-    if (isNoDecimal) {
-      // For no-decimal currencies, use closest X9 or X90 endings
-      if (price >= 1000) {
-        const closest90 = Math.round((price + 10) / 100) * 100 - 10;
-        return closest90 < 90 ? 90 : closest90;
-      } else if (price >= 100) {
-        const closest9 = Math.round((price + 1) / 10) * 10 - 1;
-        return closest9 < 9 ? 9 : closest9;
-      }
-      return Math.round(price);
-    }
-
-    // Standard charm pricing for decimal currencies - closest .99
-    const nearestWhole = Math.round(price + 0.01);
-    const closest99 = nearestWhole - 0.01;
-    return closest99 < 0.99 ? 0.99 : closest99;
-  }
-
-  return price;
+  const nearestWhole = Math.round(price + 0.01);
+  const closest99 = nearestWhole - 0.01;
+  return closest99 < 0.99 ? 0.99 : closest99;
 }
 
 export interface CalculatedPrice {
@@ -166,13 +198,14 @@ export function calculateRegionalPrice(
   basePrice: number,
   regionCode: string,
   strategy: PricingStrategy,
-  rounding: RoundingMode = 'charm',
+  rounding: RoundingMode = 'nearest-tier',
   customMultiplier?: number,
   dynamicPPPData?: DynamicPPPData,
   actualCurrencies?: Record<string, string>, // Currencies from API
   dynamicExchangeRates?: DynamicExchangeRates, // Exchange rates from API
   baseCurrency: string = 'USD', // The currency of the basePrice
-  baseRegion: string = 'US' // The region the basePrice is defined for
+  baseRegion: string = 'US', // The region the basePrice is defined for
+  getTiersForCurrency?: GetTiersForCurrency // Optional tier ladder per currency (Apple)
 ): CalculatedPrice {
   // Convert to alpha-2 for lookups (handles both alpha-2 and alpha-3 inputs)
   const alpha2Code = toAlpha2(regionCode);
@@ -328,8 +361,14 @@ export function calculateRegionalPrice(
       multiplierSource = 'direct';
   }
 
-  // Apply rounding
-  calculatedPrice = applyRounding(calculatedPrice, rounding, currencyCode);
+  // Apply rounding (with optional tier ladder for nearest-tier mode)
+  const tiersForCurrency = getTiersForCurrency?.(currencyCode);
+  calculatedPrice = applyRounding(
+    calculatedPrice,
+    rounding,
+    currencyCode,
+    tiersForCurrency
+  );
 
   // Enforce minimum price (minPrice is in local currency, convert if billing currency differs)
   // Get the local currency to check if minPrice needs conversion
@@ -365,13 +404,14 @@ export function calculateBulkPrices(
   basePrice: number,
   regionCodes: string[],
   strategy: PricingStrategy,
-  rounding: RoundingMode = 'charm',
+  rounding: RoundingMode = 'nearest-tier',
   customMultipliers?: Record<string, number>,
   dynamicPPPData?: DynamicPPPData,
   actualCurrencies?: Record<string, string>, // Currencies from Google Play API
   dynamicExchangeRates?: DynamicExchangeRates, // Exchange rates from API
   baseCurrency: string = 'USD', // The currency of the basePrice
-  baseRegion: string = 'US' // The region the basePrice is defined for
+  baseRegion: string = 'US', // The region the basePrice is defined for
+  getTiersForCurrency?: GetTiersForCurrency // Optional tier ladder per currency (Apple)
 ): CalculatedPrice[] {
   return regionCodes.map((regionCode) => {
     const customMultiplier = customMultipliers?.[regionCode];
@@ -385,7 +425,8 @@ export function calculateBulkPrices(
       actualCurrencies,
       dynamicExchangeRates,
       baseCurrency,
-      baseRegion
+      baseRegion,
+      getTiersForCurrency
     );
   });
 }

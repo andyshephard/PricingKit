@@ -40,7 +40,6 @@ import {
   moneyToNumber,
 } from '@/lib/google-play/types';
 import { getSupportedAppleTerritories, getTerritoryByAlpha3 } from '@/lib/apple-connect/territories';
-import { useAuthStore } from '@/store/auth-store';
 import { useUpdateProductPrices, useDeleteRegionPrice } from '@/hooks/use-products';
 import { BulkPricingModal } from './bulk-pricing-modal';
 
@@ -73,7 +72,13 @@ function appleToMoney(applePrice: { customerPrice: string; currency: string }): 
 }
 
 export function PricingEditor({ product, onSave }: PricingEditorProps) {
-  const platform = useAuthStore((state) => state.platform);
+  // Derive platform from the product itself so prior auth-store state can't
+  // route a Google edit to /api/apple/* (or vice versa).
+  const isAppleProduct =
+    '_appleProduct' in product &&
+    (product as unknown as { _appleProduct?: unknown })._appleProduct !==
+      undefined;
+  const platform: 'apple' | 'google' = isAppleProduct ? 'apple' : 'google';
   const [pendingChanges, setPendingChanges] = useState<Map<string, PriceChange>>(
     new Map()
   );
@@ -81,8 +86,8 @@ export function PricingEditor({ product, onSave }: PricingEditorProps) {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [bulkPricingOpen, setBulkPricingOpen] = useState(false);
 
-  const updateMutation = useUpdateProductPrices();
-  const deleteMutation = useDeleteRegionPrice();
+  const updateMutation = useUpdateProductPrices(platform);
+  const deleteMutation = useDeleteRegionPrice(platform);
 
   // Normalize prices to Money format (handles both Google and Apple)
   const normalizedPrices = useMemo(() => {

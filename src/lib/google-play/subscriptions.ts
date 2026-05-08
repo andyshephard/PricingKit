@@ -150,7 +150,7 @@ export async function updateBasePlanPrices(
       baseUsdPrice,
       missingRegions,
       'direct', // Use simple exchange rate for fill-in regions
-      'charm',
+      'nearest-99',
       undefined,
       undefined,
       undefined,
@@ -243,7 +243,7 @@ export async function deleteBasePlanRegionPrice(
       baseUsdPrice,
       missingRegions,
       'direct',
-      'charm',
+      'nearest-99',
       undefined,
       undefined,
       undefined,

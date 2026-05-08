@@ -215,7 +215,7 @@ describe('calculateRegionalPrice — free price', () => {
       0,
       'DE',
       'ppp',
-      'charm',
+      'nearest-99',
       undefined,
       TEST_PPP_DATA,
       undefined,
@@ -228,36 +228,122 @@ describe('calculateRegionalPrice — free price', () => {
 });
 
 describe('calculateRegionalPrice — rounding modes', () => {
-  it('charm: 12.34 → snaps to .99 ending', () => {
-    // direct strategy with custom rate to land at 12.34 exactly
+  it('nearest-99: 12.34 → 11.99 (closest .99 ending)', () => {
     const result = calculateRegionalPrice(
       12.34,
       'US',
       'direct',
-      'charm',
+      'nearest-99',
       undefined,
       TEST_PPP_DATA,
       undefined,
       TEST_EXCHANGE_RATES
     );
-    // For decimal currencies: round(12.34 + 0.01) = 12, then 12 - 0.01 = 11.99
-    // (current implementation: `Math.round(price + 0.01)` then subtract 0.01)
-    // 12.34 + 0.01 = 12.35 → rounds to 12 → 12 - 0.01 = 11.99
     expect(result.rawPrice).toBe(11.99);
   });
 
-  it('whole: 12.34 → rounds to 12', () => {
+  it('nearest-99: 0.50 → 0.99 (floor-clamped)', () => {
     const result = calculateRegionalPrice(
-      12.34,
+      0.50,
       'US',
       'direct',
-      'whole',
+      'nearest-99',
       undefined,
       TEST_PPP_DATA,
       undefined,
       TEST_EXCHANGE_RATES
     );
-    expect(result.rawPrice).toBe(12);
+    expect(result.rawPrice).toBe(0.99);
+  });
+
+  it('round-up: 12.34 → 12.99 (next .99)', () => {
+    const result = calculateRegionalPrice(
+      12.34,
+      'US',
+      'direct',
+      'round-up',
+      undefined,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES
+    );
+    expect(result.rawPrice).toBe(12.99);
+  });
+
+  it('round-up: 0.50 → 0.99 (next .99)', () => {
+    const result = calculateRegionalPrice(
+      0.50,
+      'US',
+      'direct',
+      'round-up',
+      undefined,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES
+    );
+    expect(result.rawPrice).toBe(0.99);
+  });
+
+  it('round-up: 2.99 → 2.99 (already .99, no-op)', () => {
+    const result = calculateRegionalPrice(
+      2.99,
+      'US',
+      'direct',
+      'round-up',
+      undefined,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES
+    );
+    expect(result.rawPrice).toBe(2.99);
+  });
+
+  it('round-up: 1.46 → 1.99 (regression: was bugged in charm mode)', () => {
+    // PPP-style: base 2.99 USD × 0.49 ≈ 1.46. Apple AL bug context.
+    const result = calculateRegionalPrice(
+      2.99,
+      'US',
+      'custom',
+      'round-up',
+      0.49,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES
+    );
+    // 2.99 × 0.49 = 1.4651 → round-up → 1.99
+    expect(result.rawPrice).toBe(1.99);
+  });
+
+  it('nearest-tier: 1.46 → 1.49 when tier list provided', () => {
+    const result = calculateRegionalPrice(
+      2.99,
+      'US',
+      'custom',
+      'nearest-tier',
+      0.49,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES,
+      'USD',
+      'US',
+      () => [{ price: 0.99 }, { price: 1.49 }, { price: 1.99 }]
+    );
+    expect(result.rawPrice).toBe(1.49);
+  });
+
+  it('nearest-tier without tiers falls back to nearest-99', () => {
+    const result = calculateRegionalPrice(
+      2.99,
+      'US',
+      'custom',
+      'nearest-tier',
+      0.49,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES
+    );
+    // No callback → falls back to nearest-99 (1.46 → 0.99)
+    expect(result.rawPrice).toBe(0.99);
   });
 
   it('none: 12.34 → unchanged (after .01 epsilon round)', () => {
@@ -272,20 +358,6 @@ describe('calculateRegionalPrice — rounding modes', () => {
       TEST_EXCHANGE_RATES
     );
     expect(result.rawPrice).toBeCloseTo(12.34, 2);
-  });
-
-  it('charm: 0.50 floor-clamped to 0.99', () => {
-    const result = calculateRegionalPrice(
-      0.50,
-      'US',
-      'direct',
-      'charm',
-      undefined,
-      TEST_PPP_DATA,
-      undefined,
-      TEST_EXCHANGE_RATES
-    );
-    expect(result.rawPrice).toBe(0.99);
   });
 });
 
