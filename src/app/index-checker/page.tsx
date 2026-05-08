@@ -41,6 +41,17 @@ import { getCurrencySymbol } from '@/lib/utils/currency';
 interface PPPApiResponse {
   success: boolean;
   data: DynamicPPPData;
+  metadata?: {
+    exchangeRatesSource?: 'live' | 'fallback';
+    exchangeRatesSnapshotDate?: string;
+    warning?: string;
+  };
+}
+
+interface PPPMetadata {
+  exchangeRatesSource?: 'live' | 'fallback';
+  exchangeRatesSnapshotDate?: string;
+  warning?: string;
 }
 
 interface ExchangeRatesApiResponse {
@@ -60,6 +71,7 @@ export default function IndexCheckerPage() {
   const [baseRegion, setBaseRegion] = useState<string>('US');
   const [baseAmount, setBaseAmount] = useState<string>('49.99');
   const [pppData, setPppData] = useState<DynamicPPPData | null>(null);
+  const [pppMetadata, setPppMetadata] = useState<PPPMetadata | null>(null);
   const [exchangeRates, setExchangeRates] = useState<DynamicExchangeRates | null>(null);
   const [loading, setLoading] = useState(true);
   const [sortConfig, setSortConfig] = useState<{ key: SortKey; direction: SortDirection }>({
@@ -75,7 +87,10 @@ export default function IndexCheckerPage() {
     ])
       .then(([ppp, rates]) => {
         if (cancelled) return;
-        if (ppp.success) setPppData(ppp.data);
+        if (ppp.success) {
+          setPppData(ppp.data);
+          if (ppp.metadata) setPppMetadata(ppp.metadata);
+        }
         if (rates.success) {
           setExchangeRates({
             base: rates.data.base,
@@ -192,6 +207,25 @@ export default function IndexCheckerPage() {
             Calculate equivalent prices across countries using PPP (World Bank) or Big Mac Index data.
           </p>
         </div>
+
+        {pppMetadata?.warning && (
+          <div
+            role="status"
+            className="mb-6 rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-900 dark:border-yellow-900/40 dark:bg-yellow-900/20 dark:text-yellow-100"
+          >
+            <strong className="font-medium">Heads up: </strong>
+            {pppMetadata.warning}
+            {pppMetadata.exchangeRatesSnapshotDate && (
+              <>
+                {' '}Add an Open Exchange Rates API key in{' '}
+                <Link href="/dashboard/settings" className="underline">
+                  Settings
+                </Link>{' '}
+                for live rates.
+              </>
+            )}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           {/* Strategy */}
