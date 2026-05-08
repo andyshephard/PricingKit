@@ -34,9 +34,13 @@ import {
 import {
   getSupportedAppleTerritories,
   getTerritoryByAlpha2,
+  getTerritoryByAlpha3,
   alpha2ToAlpha3,
+  alpha3ToAlpha2,
 } from '@/lib/apple-connect/territories';
-import { findClosestTierForCurrency, getUsdPriceTiers } from '@/lib/apple-connect/price-tier-data';
+import { useAppleAppPrice } from '@/hooks/use-apple-app-price';
+import { findClosestTierForCurrency, getPriceTiersForCurrency } from '@/lib/apple-connect/price-tier-data';
+import { getCurrencySymbol } from '@/lib/utils/currency';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Select,
@@ -148,10 +152,16 @@ export function AppleSubscriptionBulkPricingModal({
   preserveCurrentPrice,
   onPreserveCurrentPriceChange,
 }: AppleSubscriptionBulkPricingModalProps) {
+  const { data: appPrice } = useAppleAppPrice();
+
   const [basePrice, setBasePrice] = useState<string>('');
+  const [baseRegion, setBaseRegion] = useState<string>('USA'); // alpha-3
+  const [userTouchedRegion, setUserTouchedRegion] = useState(false);
   const [inputMode, setInputMode] = useState<'tier' | 'manual'>('tier');
   const [strategy, setStrategy] = useState<PricingStrategy>('ppp');
-  const [rounding, setRounding] = useState<RoundingMode>('charm');
+  // Apple subs always use Apple price tiers; rounding is irrelevant but
+  // calculateBulkPrices requires the argument. Pin to 'charm' permanently.
+  const rounding: RoundingMode = 'charm';
   const [selectedRegions, setSelectedRegions] = useState<Set<string>>(new Set());
   const [startDate, setStartDate] = useState<string>('');
   const [isSaving, setIsSaving] = useState(false);
@@ -183,6 +193,25 @@ export function AppleSubscriptionBulkPricingModal({
   const basePriceNum = parseFloat(basePrice) || 0;
   const isApproved = subscription.state === 'APPROVED';
 
+  // Seed base region from app-level Apple base territory once it loads,
+  // unless the user has already picked a region this session.
+  useEffect(() => {
+    if (open && appPrice?.baseTerritory && !userTouchedRegion) {
+      setBaseRegion(appPrice.baseTerritory);
+    }
+  }, [open, appPrice?.baseTerritory, userTouchedRegion]);
+
+  // When base region changes, prefill basePrice from the subscription's price
+  // for that region (if it exists). Apple subs prices are keyed by alpha-2.
+  useEffect(() => {
+    const alpha2 = alpha3ToAlpha2(baseRegion) || baseRegion;
+    const priceForRegion = subscription.prices?.[alpha2]?.customerPrice
+      ?? subscription.prices?.[baseRegion]?.customerPrice;
+    if (priceForRegion) {
+      setBasePrice(priceForRegion);
+    }
+  }, [baseRegion, subscription.prices]);
+
   // Get all supported Apple territories
   const allTerritories = useMemo(() => {
     const supportedTerritories = getSupportedAppleTerritories();
@@ -206,7 +235,14 @@ export function AppleSubscriptionBulkPricingModal({
   }, [subscription.prices]);
 
   // Get all USD price tiers
-  const usdTiers = useMemo(() => getUsdPriceTiers(), []);
+  const baseCurrency = useMemo(
+    () => getTerritoryByAlpha3(baseRegion)?.currency || 'USD',
+    [baseRegion]
+  );
+  const currencyTiers = useMemo(
+    () => getPriceTiersForCurrency(baseCurrency),
+    [baseCurrency]
+  );
 
   // Initialize selected regions from existing prices
   useEffect(() => {
@@ -296,18 +332,8 @@ export function AppleSubscriptionBulkPricingModal({
   const previewPrices = useMemo((): PreviewPrice[] => {
     if (basePriceNum <= 0) return [];
 
-    // Determine the base currency and region from the subscription
-    // For subscriptions, we currently assume US as base if not specified, 
-    // but let's try to find the actual base territory if possible.
-    // Apple subscriptions don't have a single 'baseTerritory' field in our RawAppleSubscription type yet,
-    // so we'll use the one from the prices map that matches our current basePrice.
-    const baseRegion = Object.keys(subscription.prices || {}).find(
-      code => subscription.prices[code].customerPrice === basePrice
-    ) || 'US';
-    
-    const baseCurrency = subscription.prices[baseRegion]?.currency || 'USD';
-
-    // Calculate ideal prices using existing bulk pricing function
+    // Base region is user-controlled state (seeded from app-level Apple base territory).
+    // calculateBulkPrices accepts baseRegion as alpha-2 OR alpha-3; for Apple we pass alpha-3.
     const calculatedPrices = calculateBulkPrices(
       basePriceNum,
       targetRegions,
@@ -359,7 +385,7 @@ export function AppleSubscriptionBulkPricingModal({
         multiplierSource: calculated.multiplierSource,
       };
     });
-  }, [basePriceNum, basePrice, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, subscription.prices]);
+  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, subscription.prices, baseRegion, baseCurrency]);
 
   const sortedPreviewPrices = useMemo(() => {
     const items = [...previewPrices];
@@ -648,7 +674,7 @@ export function AppleSubscriptionBulkPricingModal({
       setBasePrice(initialPrice);
       setInputMode('tier');
       setStrategy('ppp');
-      setRounding('charm');
+      setUserTouchedRegion(false);
       setHasInitializedSelection(false);
       if (isApproved) {
         setStartDate(getEarliestEffectiveDate());
@@ -674,40 +700,68 @@ export function AppleSubscriptionBulkPricingModal({
 
         <div className="flex-1 min-h-0 overflow-y-auto pr-4">
           <div className="space-y-6 py-4">
-            {/* Base Price and Effective Date Row */}
-            <div className="flex gap-8">
+            {/* Base Region, Base Price and Effective Date Row */}
+            <div className="flex gap-8 flex-wrap">
+              {/* Base Region picker */}
+              <div className="space-y-2">
+                <Label htmlFor="base-region">Base Country / Region</Label>
+                <Select
+                  value={baseRegion}
+                  onValueChange={(v) => {
+                    setBaseRegion(v);
+                    setUserTouchedRegion(true);
+                  }}
+                >
+                  <SelectTrigger id="base-region" className="w-56">
+                    <SelectValue placeholder="Select region" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-64">
+                    {getSupportedAppleTerritories().map((t) => (
+                      <SelectItem key={t.alpha3} value={t.alpha3}>
+                        {t.alpha3} — {t.name} ({t.currency})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
               {/* Base Price Input */}
               <div className="space-y-2">
                 <Label>
-                  Base Price ({(() => {
-                    const usPrice = subscription.prices?.['US'] || subscription.prices?.['USA'];
-                    const firstPrice = Object.values(subscription.prices || {})[0];
-                    const basePrice = usPrice || firstPrice;
-                    return basePrice ? `${basePrice.currency} - ${basePrice.territoryCode}` : 'USD';
-                  })()})
+                  Base Price ({getTerritoryByAlpha3(baseRegion)?.currency || 'USD'} — {baseRegion})
                 </Label>
                 <Tabs value={inputMode} onValueChange={(v) => handleInputModeChange(v as 'tier' | 'manual')}>
                   <TabsList className="grid w-full grid-cols-2 max-w-xs">
-                    <TabsTrigger value="tier">Select Tier</TabsTrigger>
+                    <TabsTrigger value="tier" disabled={currencyTiers.length === 0}>
+                      Select Tier
+                    </TabsTrigger>
                     <TabsTrigger value="manual">Enter Price</TabsTrigger>
                   </TabsList>
 
                   <TabsContent value="tier" className="mt-3">
-                    <Select value={basePrice} onValueChange={setBasePrice}>
-                      <SelectTrigger className="w-48">
-                        <SelectValue placeholder="Select a price tier" />
-                      </SelectTrigger>
-                      <SelectContent className="max-h-64">
-                        {usdTiers.map((tier) => (
-                          <SelectItem key={tier.tier} value={tier.price.toString()}>
-                            ${tier.price.toFixed(2)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground mt-2">
-                      Select from Apple&apos;s {usdTiers.length} available USD price tiers
-                    </p>
+                    {currencyTiers.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        No Apple tier data available for {baseCurrency}. Use Manual instead.
+                      </p>
+                    ) : (
+                      <>
+                        <Select value={basePrice} onValueChange={setBasePrice}>
+                          <SelectTrigger className="w-48">
+                            <SelectValue placeholder="Select a price tier" />
+                          </SelectTrigger>
+                          <SelectContent className="max-h-64">
+                            {currencyTiers.map((tier) => (
+                              <SelectItem key={tier.tier} value={tier.price.toString()}>
+                                {getCurrencySymbol(baseCurrency)}{tier.price.toFixed(2)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground mt-2">
+                          Select from Apple&apos;s {currencyTiers.length} available {baseCurrency} price tiers
+                        </p>
+                      </>
+                    )}
                   </TabsContent>
 
                   <TabsContent value="manual" className="mt-3">
@@ -863,42 +917,8 @@ export function AppleSubscriptionBulkPricingModal({
               </TooltipProvider>
             </div>
 
-            {/* Rounding Options */}
-            <div className="space-y-3">
-              <Label>Price Rounding</Label>
-              <div className="flex gap-4">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="rounding"
-                    value="charm"
-                    checked={rounding === 'charm'}
-                    onChange={() => setRounding('charm')}
-                  />
-                  <span className="text-sm">Nearest .99</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="rounding"
-                    value="whole"
-                    checked={rounding === 'whole'}
-                    onChange={() => setRounding('whole')}
-                  />
-                  <span className="text-sm">Whole Numbers</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="rounding"
-                    value="none"
-                    checked={rounding === 'none'}
-                    onChange={() => setRounding('none')}
-                  />
-                  <span className="text-sm">No Rounding</span>
-                </label>
-              </div>
-            </div>
+            {/* Apple subscriptions snap calculated prices to the closest Apple
+                price tier; rounding controls aren't meaningful here. */}
 
             {/* Preserve Existing Subscriber Prices */}
             <div className="space-y-3">
@@ -928,17 +948,35 @@ export function AppleSubscriptionBulkPricingModal({
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
+                    <Button
+                      variant="outline"
+                      size="sm"
                       onClick={() => setSelectedRegions(new Set())}
                       disabled={selectedRegions.size === 0}
                     >
                       Deselect All
                     </Button>
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        const next = new Set<string>();
+                        previewPrices.forEach((preview) => {
+                          if (preview.noTierData) return;
+                          const isDifferent =
+                            preview.currentPrice === null ||
+                            (preview.priceChange !== null && Math.abs(preview.priceChange) >= 0.5);
+                          if (isDifferent) next.add(preview.territoryCode);
+                        });
+                        setSelectedRegions(next);
+                      }}
+                      disabled={previewPrices.length === 0}
+                    >
+                      Select only modified
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
                       onClick={() => setSelectedRegions(new Set(allTerritories.map(t => t.alpha2)))}
                       disabled={selectedRegions.size === allTerritories.length}
                     >
@@ -1059,7 +1097,30 @@ export function AppleSubscriptionBulkPricingModal({
                                 {preview.noTierData ? (
                                   <span className="text-red-600">No tier data</span>
                                 ) : (
-                                  formatPrice(preview.tierPrice, preview.currency)
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <span className="cursor-help">
+                                        {formatPrice(preview.tierPrice, preview.currency)}
+                                      </span>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top" className="max-w-xs">
+                                      <p className="text-xs font-medium mb-1">
+                                        {baseCurrency} → {preview.currency} Calculation
+                                      </p>
+                                      <div className="text-xs text-muted-foreground space-y-0.5">
+                                        <p>1. Base price: {basePriceNum.toFixed(2)} {baseCurrency} ({baseRegion})</p>
+                                        <p>2. Relative Adjustment: {preview.multiplier.toFixed(2)}×</p>
+                                        <p>3. Adjusted Price: {(basePriceNum * preview.multiplier).toFixed(2)} {baseCurrency}</p>
+                                        {baseCurrency !== preview.currency && (
+                                          <p>4. Exchange Rate ({baseCurrency}→{preview.currency}): {(preview.idealPrice / (basePriceNum * preview.multiplier)).toFixed(4)}</p>
+                                        )}
+                                        <p>{baseCurrency !== preview.currency ? '5' : '4'}. Ideal Target: {preview.idealPrice.toFixed(2)} {preview.currency}</p>
+                                        {preview.tier && (
+                                          <p>{baseCurrency !== preview.currency ? '6' : '5'}. Apple Tier: Tier {preview.tier} ({formatPrice(preview.tierPrice, preview.currency)})</p>
+                                        )}
+                                      </div>
+                                    </TooltipContent>
+                                  </Tooltip>
                                 )}
                               </TableCell>
                               <TableCell className="text-right">

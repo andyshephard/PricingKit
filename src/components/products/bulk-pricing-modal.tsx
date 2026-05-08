@@ -39,9 +39,18 @@ import {
   moneyToNumber,
   parseMoney,
 } from '@/lib/google-play/types';
-import { getSupportedAppleTerritories, getTerritoryByAlpha3 } from '@/lib/apple-connect/territories';
-import { findClosestTierForCurrency } from '@/lib/apple-connect/price-tier-data';
+import { getSupportedAppleTerritories, getTerritoryByAlpha3, alpha2ToAlpha3 } from '@/lib/apple-connect/territories';
+import { findClosestTierForCurrency, getPriceTiersForCurrency } from '@/lib/apple-connect/price-tier-data';
+import { getCurrencySymbol as sharedGetCurrencySymbol } from '@/lib/utils/currency';
 import { useAuthStore } from '@/store/auth-store';
+import { useAppleAppPrice } from '@/hooks/use-apple-app-price';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {
   calculateBulkPrices,
   calculatePriceChange,
@@ -53,16 +62,8 @@ import {
 } from '@/lib/google-play/currency';
 import { useUpdateProductPrices } from '@/hooks/use-products';
 
-// Helper to get the currency symbol for a currency code (e.g. "GBP" → "£")
-function getCurrencySymbol(currencyCode: string): string {
-  try {
-    return new Intl.NumberFormat('en', { style: 'currency', currency: currencyCode })
-      .formatToParts(0)
-      .find(part => part.type === 'currency')?.value || currencyCode;
-  } catch {
-    return currencyCode;
-  }
-}
+// Re-exported from shared util for backwards compatibility within this module.
+const getCurrencySymbol = sharedGetCurrencySymbol;
 
 // Helper to convert Apple price to Money format
 function appleToMoney(applePrice: { customerPrice: string; currency: string }): Money {
@@ -121,9 +122,86 @@ export function BulkPricingModal({
   onSave,
 }: BulkPricingModalProps) {
   const platform = useAuthStore((state) => state.platform);
-  const [basePrice, setBasePrice] = useState<string>(
-    product.defaultPrice ? moneyToNumber(product.defaultPrice).toString() : ''
-  );
+  const { data: appPrice } = useAppleAppPrice();
+
+  // Initial base region: app-level (Apple) → per-product → 'USA' / 'US'.
+  const initialBaseRegion = useMemo(() => {
+    if (platform === 'apple') {
+      return (
+        appPrice?.baseTerritory ||
+        (product as ProductWithApple)._appleProduct?.baseTerritory ||
+        'USA'
+      );
+    }
+    return 'US';
+  }, [platform, appPrice?.baseTerritory, product]);
+
+  const [baseRegion, setBaseRegion] = useState<string>(initialBaseRegion);
+  const [userTouchedRegion, setUserTouchedRegion] = useState(false);
+  const [inputMode, setInputMode] = useState<'tier' | 'manual'>('tier');
+  const [selectedTierId, setSelectedTierId] = useState<string | null>(null);
+
+  // Once app-level base territory loads, seed unless user already picked one.
+  useEffect(() => {
+    if (
+      open &&
+      platform === 'apple' &&
+      appPrice?.baseTerritory &&
+      !userTouchedRegion
+    ) {
+      setBaseRegion(appPrice.baseTerritory);
+    }
+  }, [open, platform, appPrice?.baseTerritory, userTouchedRegion]);
+
+  // Currency derived from selected base region.
+  const baseCurrency = useMemo(() => {
+    if (platform === 'apple') {
+      return getTerritoryByAlpha3(baseRegion)?.currency || 'USD';
+    }
+    return 'USD'; // Google base is always 'US' for now
+  }, [platform, baseRegion]);
+
+  // Available USD tiers for Apple tier mode (Phase 1: USD only).
+  const availableTiers = useMemo(() => {
+    if (platform !== 'apple') return [];
+    return getPriceTiersForCurrency(baseCurrency);
+  }, [platform, baseCurrency]);
+
+  // Initial price for selected base region (for prefill).
+  const priceForBaseRegion = useCallback((): number | null => {
+    if (!product.prices) return null;
+    if (platform === 'apple') {
+      const ap = product.prices[baseRegion] as unknown as AppleProductPrice | undefined;
+      if (ap?.customerPrice) return parseFloat(ap.customerPrice);
+      // Fallback: try alpha-2/alpha-3 conversion if region key shape mismatches.
+      const altKey = baseRegion.length === 3
+        ? Object.keys(product.prices).find(k => alpha2ToAlpha3(k) === baseRegion)
+        : undefined;
+      if (altKey) {
+        const fallback = product.prices[altKey] as unknown as AppleProductPrice | undefined;
+        if (fallback?.customerPrice) return parseFloat(fallback.customerPrice);
+      }
+      return null;
+    }
+    const m = product.prices[baseRegion] as Money | undefined;
+    return m ? moneyToNumber(m) : null;
+  }, [product.prices, baseRegion, platform]);
+
+  const [basePrice, setBasePrice] = useState<string>(() => {
+    const initial = product.defaultPrice ? moneyToNumber(product.defaultPrice) : null;
+    return initial !== null ? initial.toString() : '';
+  });
+
+  // When base region changes, prefill base price from product.prices[baseRegion].
+  useEffect(() => {
+    const seeded = priceForBaseRegion();
+    if (seeded !== null) {
+      setBasePrice(seeded.toString());
+    } else {
+      setBasePrice('');
+    }
+  }, [baseRegion, priceForBaseRegion]);
+
   const [strategy, setStrategy] = useState<PricingStrategy>('ppp');
   const [rounding, setRounding] = useState<RoundingMode>('charm');
   const [selectedRegions, setSelectedRegions] = useState<Set<string>>(new Set());
@@ -285,18 +363,9 @@ export function BulkPricingModal({
     return currencies;
   }, [normalizedPrices]);
 
-  // Calculate preview prices
-  const { previewPrices, baseCurrency, baseRegion } = useMemo(() => {
-    if (basePriceNum < 0) return { previewPrices: [], baseCurrency: 'USD', baseRegion: 'US' };
-    
-    // Determine the base currency and region from the product
-    const baseRegion = platform === 'apple'
-      ? (product as ProductWithApple)._appleProduct?.baseTerritory || 'USA'
-      : 'US';
-      
-    const baseCurrency = platform === 'apple' 
-      ? getTerritoryByAlpha3(baseRegion)?.currency || 'USD'
-      : product.defaultPrice?.currencyCode || 'USD';
+  // Calculate preview prices using the user-selected base region + currency.
+  const previewPrices = useMemo(() => {
+    if (basePriceNum < 0) return [];
 
     const calculatedPrices = calculateBulkPrices(
       basePriceNum,
@@ -327,8 +396,8 @@ export function BulkPricingModal({
       return calculated;
     }) : calculatedPrices;
 
-    return { previewPrices: finalPrices, baseCurrency, baseRegion };
-  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, platform, product]);
+    return finalPrices;
+  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, platform, baseCurrency, baseRegion]);
 
   // Get current price for a region
   const getCurrentPrice = useCallback((regionCode: string): Money | null => {
@@ -420,9 +489,7 @@ export function BulkPricingModal({
       
       if (!belongsToCurrentProduct) return;
 
-      const appleBaseRegion = platform === 'apple'
-        ? (product as ProductWithApple)._appleProduct?.baseTerritory || 'USA'
-        : null;
+      const appleBaseRegion = platform === 'apple' ? baseRegion : null;
 
       const newSelected = new Set<string>();
       
@@ -449,7 +516,7 @@ export function BulkPricingModal({
       setSelectedRegions(newSelected);
       setHasInitializedSelection(true);
     }
-  }, [open, previewPrices, hasInitializedSelection, platform, product, allRegions, pppFetched, exchangeRatesFetched, getCurrentPrice]);
+  }, [open, previewPrices, hasInitializedSelection, platform, product, allRegions, pppFetched, exchangeRatesFetched, getCurrentPrice, baseRegion]);
 
   // Handle region selection
   const toggleRegion = (regionCode: string) => {
@@ -518,9 +585,7 @@ export function BulkPricingModal({
       price: string;
     }> = [];
 
-    const appleBaseRegion = platform === 'apple'
-      ? (product as ProductWithApple)._appleProduct?.baseTerritory || 'USA'
-      : null;
+    const appleBaseRegion = platform === 'apple' ? baseRegion : null;
 
     allRegions.forEach(region => {
       const currentPrice = getCurrentPrice(region.code);
@@ -551,9 +616,7 @@ export function BulkPricingModal({
 
   const executeApply = async () => {
     const prices: Record<string, Money> = {};
-    const appleBaseRegion = platform === 'apple'
-      ? (product as ProductWithApple)._appleProduct?.baseTerritory || 'USA'
-      : null;
+    const appleBaseRegion = platform === 'apple' ? baseRegion : null;
 
     previewPrices.forEach((calculated) => {
       if (selectedRegions.has(calculated.regionCode) || calculated.regionCode === appleBaseRegion) {
@@ -642,33 +705,112 @@ export function BulkPricingModal({
 
         <ScrollArea className="flex-1 min-h-0 pr-4">
         <div className="space-y-6 py-4">
-          {/* Base Price Input */}
-          <div className="space-y-2">
-            <Label htmlFor="base-price">
-              Base Price ({platform === 'apple'
-                ? (product as ProductWithApple)._appleProduct?.baseTerritory
-                  ? `${getTerritoryByAlpha3((product as ProductWithApple)._appleProduct?.baseTerritory ?? '')?.currency || 'USD'} - ${(product as ProductWithApple)._appleProduct?.baseTerritory}`
-                  : 'USD'
-                : product.defaultPrice?.currencyCode || 'USD'})
-            </Label>
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
-                {getCurrencySymbol(platform === 'apple'
-                  ? (product as ProductWithApple)._appleProduct?.baseTerritory
-                    ? getTerritoryByAlpha3((product as ProductWithApple)._appleProduct?.baseTerritory ?? '')?.currency || 'USD'
-                    : 'USD'
-                  : product.defaultPrice?.currencyCode || 'USD')}
-              </span>
-              <Input
-                id="base-price"
-                type="number"
-                step="0.01"
-                min="0"
-                placeholder={product.defaultPrice?.units || "4.99"}
-                value={basePrice}
-                onChange={(e) => setBasePrice(e.target.value)}
-                className="pl-9 w-48"
-              />
+          {/* Base Region + Price */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Base Region picker */}
+            <div className="space-y-2">
+              <Label htmlFor="base-region">Base Country / Region</Label>
+              <Select
+                value={baseRegion}
+                onValueChange={(v) => {
+                  setBaseRegion(v);
+                  setUserTouchedRegion(true);
+                  setSelectedTierId(null);
+                }}
+              >
+                <SelectTrigger id="base-region">
+                  <SelectValue placeholder="Select region" />
+                </SelectTrigger>
+                <SelectContent>
+                  {platform === 'apple'
+                    ? getSupportedAppleTerritories().map((t) => (
+                        <SelectItem key={t.alpha3} value={t.alpha3}>
+                          {t.alpha3} — {t.name} ({t.currency})
+                        </SelectItem>
+                      ))
+                    : GOOGLE_PLAY_REGIONS.map((r) => (
+                        <SelectItem key={r.code} value={r.code}>
+                          {r.code} — {r.name}
+                        </SelectItem>
+                      ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Apple-only Input mode toggle */}
+            {platform === 'apple' && (
+              <div className="space-y-2">
+                <Label>Input Mode</Label>
+                <div className="flex gap-4 pt-2">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="input-mode"
+                      value="tier"
+                      checked={inputMode === 'tier'}
+                      onChange={() => setInputMode('tier')}
+                      disabled={availableTiers.length === 0}
+                    />
+                    <span className={`text-sm ${availableTiers.length === 0 ? 'text-muted-foreground' : ''}`}>
+                      Select Tier {availableTiers.length === 0 && `(no ${baseCurrency} tiers)`}
+                    </span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="input-mode"
+                      value="manual"
+                      checked={inputMode === 'manual' || availableTiers.length === 0}
+                      onChange={() => setInputMode('manual')}
+                    />
+                    <span className="text-sm">Enter Price</span>
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {/* Base Price input or Tier picker */}
+            <div className="space-y-2">
+              <Label htmlFor="base-price">
+                Base Price ({baseCurrency} — {baseRegion})
+              </Label>
+              {platform === 'apple' && inputMode === 'tier' && availableTiers.length > 0 ? (
+                <Select
+                  value={selectedTierId ?? ''}
+                  onValueChange={(v) => {
+                    setSelectedTierId(v);
+                    const tier = availableTiers.find((t) => t.tier === v);
+                    if (tier) setBasePrice(tier.price.toString());
+                  }}
+                >
+                  <SelectTrigger id="base-price">
+                    <SelectValue placeholder="Select tier" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableTiers.map((t) => (
+                      <SelectItem key={t.tier} value={t.tier}>
+                        Tier {t.tier} — {getCurrencySymbol(baseCurrency)}{t.price.toFixed(2)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+                    {getCurrencySymbol(baseCurrency)}
+                  </span>
+                  <Input
+                    id="base-price"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="4.99"
+                    value={basePrice}
+                    onChange={(e) => setBasePrice(e.target.value)}
+                    className="pl-9"
+                  />
+                </div>
+              )}
             </div>
           </div>
 
@@ -833,17 +975,39 @@ export function BulkPricingModal({
             <div className="flex items-center justify-between">
               <Label>Regions & Preview ({selectedRegions.size} selected)</Label>
               <div className="flex items-center gap-2">
-                <Button 
-                  variant="outline" 
-                  size="sm" 
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => setSelectedRegions(new Set())}
                   disabled={selectedRegions.size === 0}
                 >
                   Deselect All
                 </Button>
-                <Button 
-                  variant="outline" 
-                  size="sm" 
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const next = new Set<string>();
+                    const appleBaseRegion = platform === 'apple' ? baseRegion : null;
+                    previewPrices.forEach((calculated) => {
+                      const current = getCurrentPrice(calculated.regionCode);
+                      const currentNum = current ? moneyToNumber(current) : 0;
+                      const targetNum = moneyToNumber(calculated.price);
+                      const change = calculatePriceChange(currentNum, targetNum);
+                      const isDifferent = !current || Math.abs(change) >= 0.5;
+                      if (isDifferent || calculated.regionCode === appleBaseRegion) {
+                        next.add(calculated.regionCode);
+                      }
+                    });
+                    setSelectedRegions(next);
+                  }}
+                  disabled={previewPrices.length === 0}
+                >
+                  Select only modified
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => setSelectedRegions(new Set(allRegions.map(r => r.code)))}
                   disabled={selectedRegions.size === allRegions.length}
                 >
@@ -914,9 +1078,7 @@ export function BulkPricingModal({
                         calculated.regionCode
                       );
                       const isSelected = selectedRegions.has(calculated.regionCode);
-                      const appleBaseRegion = platform === 'apple' 
-                        ? (product as ProductWithApple)._appleProduct?.baseTerritory || 'USA'
-                        : null;
+                      const appleBaseRegion = platform === 'apple' ? baseRegion : null;
                       const isRequired = calculated.regionCode === appleBaseRegion;
 
                       return (

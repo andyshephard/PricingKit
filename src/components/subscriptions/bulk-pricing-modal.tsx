@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { Calculator, Globe, DollarSign, TrendingDown, Sliders, RefreshCw, Hamburger, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
+import { Calculator, Globe, TrendingDown, Sliders, RefreshCw, Hamburger, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -25,6 +25,14 @@ import {
 } from '@/components/ui/table';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { getCurrencySymbol } from '@/lib/utils/currency';
 import {
   Tooltip,
   TooltipContent,
@@ -91,6 +99,7 @@ export function SubscriptionBulkPricingModal({
   onOpenChange,
 }: SubscriptionBulkPricingModalProps) {
   const [basePrice, setBasePrice] = useState<string>('');
+  const [baseRegion, setBaseRegion] = useState<string>('US');
   const [strategy, setStrategy] = useState<PricingStrategy>('ppp');
   const [rounding, setRounding] = useState<RoundingMode>('charm');
   const [selectedRegions, setSelectedRegions] = useState<Set<string>>(new Set());
@@ -216,12 +225,23 @@ export function SubscriptionBulkPricingModal({
     return currencies;
   }, [normalizedPrices]);
 
+  // Currency derived from selected base region.
+  const baseCurrency = useMemo(() => {
+    return GOOGLE_PLAY_REGIONS.find((r) => r.code === baseRegion)?.currency || 'USD';
+  }, [baseRegion]);
+
+  // When the base region changes, prefill basePrice from the base plan's existing
+  // price for that region, if it has one.
+  useEffect(() => {
+    const config = basePlan.regionalConfigs?.find((rc) => rc.regionCode === baseRegion);
+    if (config?.price) {
+      setBasePrice(moneyToNumber(config.price).toString());
+    }
+  }, [baseRegion, basePlan.regionalConfigs]);
+
   // Calculate preview prices
   const previewPrices = useMemo(() => {
     if (basePriceNum < 0) return [];
-    
-    const baseRegion = 'US';
-    const baseCurrency = basePlan.regionalConfigs?.find(rc => rc.regionCode === 'US')?.price?.currencyCode || 'USD';
 
     return calculateBulkPrices(
       basePriceNum,
@@ -235,7 +255,7 @@ export function SubscriptionBulkPricingModal({
       baseCurrency,
       baseRegion
     );
-  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, basePlan.regionalConfigs]);
+  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, baseCurrency, baseRegion]);
 
   // Get current price for a region
   const getCurrentPrice = useCallback((regionCode: string): Money | null => {
@@ -506,21 +526,45 @@ export function SubscriptionBulkPricingModal({
 
         <div className="flex-1 min-h-0 overflow-y-auto pr-4">
         <div className="space-y-6 py-4">
-          {/* Base Price Input */}
-          <div className="space-y-2">
-            <Label htmlFor="base-price">Base Price ({basePlan.regionalConfigs?.find(rc => rc.regionCode === 'US')?.price?.currencyCode || 'USD'})</Label>
-            <div className="relative">
-              <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                id="base-price"
-                type="number"
-                step="0.01"
-                min="0"
-                placeholder="9.99"
-                value={basePrice}
-                onChange={(e) => setBasePrice(e.target.value)}
-                className="pl-9 w-48"
-              />
+          {/* Base Region + Price */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="base-region">Base Country / Region</Label>
+              <Select value={baseRegion} onValueChange={setBaseRegion}>
+                <SelectTrigger id="base-region" className="w-full md:w-72">
+                  <SelectValue placeholder="Select region" />
+                </SelectTrigger>
+                <SelectContent className="max-h-64">
+                  {[...GOOGLE_PLAY_REGIONS]
+                    .sort((a, b) => a.name.localeCompare(b.name))
+                    .map((r) => (
+                      <SelectItem key={r.code} value={r.code}>
+                        {r.code} — {r.name} ({r.currency})
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="base-price">
+                Base Price ({baseCurrency} — {baseRegion})
+              </Label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+                  {getCurrencySymbol(baseCurrency)}
+                </span>
+                <Input
+                  id="base-price"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder="9.99"
+                  value={basePrice}
+                  onChange={(e) => setBasePrice(e.target.value)}
+                  className="pl-9 w-48"
+                />
+              </div>
             </div>
           </div>
 
@@ -689,17 +733,36 @@ export function SubscriptionBulkPricingModal({
               <div className="flex items-center justify-between">
                 <Label>Regions & Preview ({selectedRegions.size} selected)</Label>
                 <div className="flex items-center gap-2">
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={() => setSelectedRegions(new Set())}
                     disabled={selectedRegions.size === 0}
                   >
                     Deselect All
                   </Button>
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const next = new Set<string>();
+                      previewPrices.forEach((calculated) => {
+                        const current = getCurrentPrice(calculated.regionCode);
+                        const currentNum = current ? moneyToNumber(current) : 0;
+                        const targetNum = moneyToNumber(calculated.price);
+                        const change = calculatePriceChange(currentNum, targetNum);
+                        const isDifferent = !current || Math.abs(change) >= 0.5;
+                        if (isDifferent) next.add(calculated.regionCode);
+                      });
+                      setSelectedRegions(next);
+                    }}
+                    disabled={previewPrices.length === 0}
+                  >
+                    Select only modified
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={() => setSelectedRegions(new Set(allRegions.map(r => r.code)))}
                     disabled={selectedRegions.size === allRegions.length}
                   >
@@ -820,7 +883,27 @@ export function SubscriptionBulkPricingModal({
                                 : '-'}
                             </TableCell>
                             <TableCell className="text-right font-medium">
-                              {formatMoney(calculated.price)}
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span className="cursor-help">
+                                    {formatMoney(calculated.price)}
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className="max-w-xs">
+                                  <p className="text-xs font-medium mb-1">
+                                    {baseCurrency} → {calculated.currencyCode} Calculation
+                                  </p>
+                                  <div className="text-xs text-muted-foreground space-y-0.5">
+                                    <p>1. Base price: {basePriceNum.toFixed(2)} {baseCurrency} ({baseRegion})</p>
+                                    <p>2. Relative Adjustment: {calculated.multiplier.toFixed(2)}×</p>
+                                    <p>3. Adjusted Price: {(basePriceNum * calculated.multiplier).toFixed(2)} {baseCurrency}</p>
+                                    {baseCurrency !== calculated.currencyCode && (
+                                      <p>4. Exchange Rate ({baseCurrency}→{calculated.currencyCode}): {(calculated.rawPrice / (basePriceNum * calculated.multiplier)).toFixed(4)}</p>
+                                    )}
+                                    <p>{baseCurrency !== calculated.currencyCode ? '5' : '4'}. Target Price: {calculated.rawPrice.toFixed(2)} {calculated.currencyCode}</p>
+                                  </div>
+                                </TooltipContent>
+                              </Tooltip>
                             </TableCell>
                             <TableCell className="text-right">
                               {currentPrice ? (

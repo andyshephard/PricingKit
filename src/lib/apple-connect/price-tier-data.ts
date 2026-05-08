@@ -99,3 +99,11 @@ export function hasTierData(): boolean {
 export function getUsdPriceTiers(): TierData[] {
   return getTiers()['USD'] || [];
 }
+
+/**
+ * Get all Apple price tiers for a given currency, sorted by price.
+ * Returns an empty array if Apple has no tier data for the currency.
+ */
+export function getPriceTiersForCurrency(currency: string): TierData[] {
+  return getTiers()[currency] || [];
+}
