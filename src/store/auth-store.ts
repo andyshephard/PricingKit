@@ -23,6 +23,9 @@ export interface GoogleAppHistoryEntry {
   addedAt: number; // unix ms
 }
 
+// Cap the persisted history to avoid unbounded growth in localStorage.
+const MAX_GOOGLE_APP_HISTORY = 20;
+
 interface AuthState {
   // Current active platform
   platform: Platform;
@@ -114,7 +117,7 @@ export const useAuthStore = create<AuthState>()(
                 clientEmail,
                 addedAt: Date.now(),
               },
-            ],
+            ].slice(-MAX_GOOGLE_APP_HISTORY),
           };
         }),
 
@@ -210,7 +213,7 @@ export const useAuthStore = create<AuthState>()(
                 clientEmail,
                 addedAt: Date.now(),
               },
-            ],
+            ].slice(-MAX_GOOGLE_APP_HISTORY),
           };
         }),
 
