@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect } from 'react';
-import { Calculator, Globe, DollarSign, TrendingDown, Sliders, RefreshCw, Hamburger, AlertTriangle, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
+import { Calculator, Globe, DollarSign, TrendingDown, Sliders, RefreshCw, Hamburger, Tv, AlertTriangle, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -142,7 +142,7 @@ interface PreviewPrice {
   priceChange: number | null; // Percentage change from current
   noTierData: boolean; // True if no tier data available for this currency
   multiplier: number; // Pricing multiplier applied to base
-  multiplierSource?: 'world-bank' | 'big-mac' | 'static' | 'custom' | 'direct';
+  multiplierSource?: 'world-bank' | 'big-mac' | 'netflix' | 'static' | 'custom' | 'direct';
 }
 
 export function AppleSubscriptionBulkPricingModal({
@@ -815,7 +815,7 @@ export function AppleSubscriptionBulkPricingModal({
                 )}
               </div>
               <TooltipProvider delayDuration={200}>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
@@ -835,6 +835,32 @@ export function AppleSubscriptionBulkPricingModal({
                       <p className="font-medium">Direct Conversion</p>
                       <p className="text-xs text-muted-foreground">
                         Same USD value in all regions (converted to local currency)
+                      </p>
+                    </TooltipContent>
+                  </Tooltip>
+
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+                        <input
+                          type="radio"
+                          name="strategy"
+                          value="netflix"
+                          checked={strategy === 'netflix'}
+                          onChange={() => setStrategy('netflix')}
+                          className="sr-only"
+                        />
+                        <Tv className="h-4 w-4 shrink-0" />
+                        <span className="text-sm font-medium truncate">Netflix</span>
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="max-w-xs">
+                      <p className="font-medium">Netflix Index</p>
+                      <p className="text-xs text-muted-foreground">
+                        Prices based on Netflix Standard ad-free subscription prices by country.
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Data: tompec/netflix-prices (CC-BY-4.0)
                       </p>
                     </TooltipContent>
                   </Tooltip>
@@ -1121,6 +1147,7 @@ export function AppleSubscriptionBulkPricingModal({
                                     <p className="text-xs">
                                       {preview.multiplierSource === 'world-bank' && 'World Bank PPP data'}
                                       {preview.multiplierSource === 'big-mac' && 'Big Mac Index'}
+                                      {preview.multiplierSource === 'netflix' && 'Netflix Price Index'}
                                       {preview.multiplierSource === 'static' && 'Static fallback data'}
                                       {preview.multiplierSource === 'custom' && 'Custom multiplier'}
                                       {preview.multiplierSource === 'direct' && 'Direct conversion (1:1)'}
