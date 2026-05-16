@@ -10,6 +10,7 @@ import {
   APPLE_BILLED_IN_USD,
 } from './fixtures/ppp-snapshot';
 import type { Money } from '../types';
+import { getNetflixMultiplier } from '../../conversion-indexes/netflix';
 
 describe('calculateRegionalPrice — direct strategy', () => {
   it('US base: applies exchange rate only (multiplier 1.0)', () => {
@@ -187,6 +188,31 @@ describe('calculateRegionalPrice — Big Mac strategy', () => {
     expect(result.multiplierSource).toBe('big-mac');
     // CH big-mac multiplier > 1 because Swiss prices are higher than US
     expect(result.multiplier).toBeGreaterThan(1);
+  });
+});
+
+describe('calculateRegionalPrice — Netflix strategy', () => {
+  it('returns multiplier from NETFLIX_PRICE_INDEX normalised by base region', () => {
+    const result = calculateRegionalPrice(
+      40,
+      'BR',
+      'netflix',
+      'none',
+      undefined,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES,
+      'EUR',
+      'DE'
+    );
+
+    const baseUsd = 40 / 0.851;
+    const effective = getNetflixMultiplier('BR') / getNetflixMultiplier('DE');
+    const expected = baseUsd * effective * 4.917;
+
+    expect(result.multiplierSource).toBe('netflix');
+    expect(result.multiplier).toBeCloseTo(effective, 4);
+    expect(result.rawPrice).toBeCloseTo(expected, 1);
   });
 });
 

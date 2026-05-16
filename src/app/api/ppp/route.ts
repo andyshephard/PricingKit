@@ -3,6 +3,7 @@ import { cookies } from 'next/headers';
 import { getPPPMultipliers } from '@/lib/world-bank/ppp';
 import { PRICING_INDEX, DEFAULT_PRICING_INDEX_ENTRY, LOCAL_CURRENCIES } from '@/lib/conversion-indexes/ppp';
 import { BIG_MAC_INDEX, DEFAULT_BIG_MAC_MULTIPLIER } from '@/lib/conversion-indexes/big-mac';
+import { NETFLIX_PRICE_INDEX, DEFAULT_NETFLIX_MULTIPLIER } from '@/lib/conversion-indexes/netflix';
 import { getExchangeRates } from '@/lib/exchange-rates/client';
 import { FALLBACK_EXCHANGE_RATES } from '@/lib/conversion-indexes/exchange-rates';
 
@@ -32,6 +33,7 @@ export async function GET(request: Request) {
     const staticData: Record<string, {
       pppMultiplier: number;
       bigMacMultiplier?: number;
+      netflixMultiplier?: number;
       minPrice: number;
       suggestedRounding: number;
       source: 'static';
@@ -41,6 +43,7 @@ export async function GET(request: Request) {
       staticData[regionCode] = {
         pppMultiplier: entry.pppMultiplier,
         bigMacMultiplier: BIG_MAC_INDEX[regionCode] ?? DEFAULT_BIG_MAC_MULTIPLIER,
+        netflixMultiplier: NETFLIX_PRICE_INDEX[regionCode]?.multiplier ?? DEFAULT_NETFLIX_MULTIPLIER,
         minPrice: entry.minPrice,
         suggestedRounding: entry.suggestedRounding,
         source: 'static',
@@ -93,6 +96,7 @@ export async function GET(request: Request) {
       pppConversionFactor?: number;
       marketExchangeRate?: number;
       bigMacMultiplier?: number;
+      netflixMultiplier?: number;
       minPrice: number;
       suggestedRounding: number;
       source: 'world-bank' | 'static';
@@ -103,6 +107,7 @@ export async function GET(request: Request) {
       mergedData[regionCode] = {
         pppMultiplier: entry.pppMultiplier,
         bigMacMultiplier: BIG_MAC_INDEX[regionCode] ?? DEFAULT_BIG_MAC_MULTIPLIER,
+        netflixMultiplier: NETFLIX_PRICE_INDEX[regionCode]?.multiplier ?? DEFAULT_NETFLIX_MULTIPLIER,
         minPrice: entry.minPrice,
         suggestedRounding: entry.suggestedRounding,
         source: 'static',
@@ -136,6 +141,7 @@ export async function GET(request: Request) {
           pppConversionFactor: conversionFactor,
           ...(marketRate ? { marketExchangeRate: marketRate } : {}),
           bigMacMultiplier: BIG_MAC_INDEX[regionCode] ?? DEFAULT_BIG_MAC_MULTIPLIER,
+          netflixMultiplier: NETFLIX_PRICE_INDEX[regionCode]?.multiplier ?? DEFAULT_NETFLIX_MULTIPLIER,
           minPrice: DEFAULT_PRICING_INDEX_ENTRY.minPrice,
           suggestedRounding: DEFAULT_PRICING_INDEX_ENTRY.suggestedRounding,
           source: 'world-bank',
@@ -170,6 +176,7 @@ export async function GET(request: Request) {
     const staticData: Record<string, {
       pppMultiplier: number;
       bigMacMultiplier?: number;
+      netflixMultiplier?: number;
       minPrice: number;
       suggestedRounding: number;
       source: 'static';
@@ -179,6 +186,7 @@ export async function GET(request: Request) {
       staticData[regionCode] = {
         pppMultiplier: entry.pppMultiplier,
         bigMacMultiplier: BIG_MAC_INDEX[regionCode] ?? DEFAULT_BIG_MAC_MULTIPLIER,
+        netflixMultiplier: NETFLIX_PRICE_INDEX[regionCode]?.multiplier ?? DEFAULT_NETFLIX_MULTIPLIER,
         minPrice: entry.minPrice,
         suggestedRounding: entry.suggestedRounding,
         source: 'static',

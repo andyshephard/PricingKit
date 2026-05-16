@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { Calculator, Globe, TrendingDown, Sliders, RefreshCw, Hamburger, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
+import { Calculator, Globe, TrendingDown, Sliders, RefreshCw, Hamburger, Tv, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -577,7 +577,7 @@ export function SubscriptionBulkPricingModal({
               )}
             </div>
             <TooltipProvider delayDuration={200}>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
@@ -597,6 +597,32 @@ export function SubscriptionBulkPricingModal({
                     <p className="font-medium">Direct Conversion</p>
                     <p className="text-xs text-muted-foreground">
                       Same USD value in all regions (converted to local currency)
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+                      <input
+                        type="radio"
+                        name="strategy"
+                        value="netflix"
+                        checked={strategy === 'netflix'}
+                        onChange={() => setStrategy('netflix')}
+                        className="sr-only"
+                      />
+                      <Tv className="h-4 w-4 shrink-0" />
+                      <span className="text-sm font-medium truncate">Netflix</span>
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-xs">
+                    <p className="font-medium">Netflix Index</p>
+                    <p className="text-xs text-muted-foreground">
+                      Prices based on Netflix Standard ad-free subscription prices by country.
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Data: tompec/netflix-prices (CC-BY-4.0)
                     </p>
                   </TooltipContent>
                 </Tooltip>
@@ -872,6 +898,7 @@ export function SubscriptionBulkPricingModal({
                                   <p className="text-xs">
                                     {calculated.multiplierSource === 'world-bank' && 'World Bank PPP data'}
                                     {calculated.multiplierSource === 'big-mac' && 'Big Mac Index'}
+                                    {calculated.multiplierSource === 'netflix' && 'Netflix Price Index'}
                                     {calculated.multiplierSource === 'static' && 'Static fallback data'}
                                     {calculated.multiplierSource === 'custom' && 'Custom multiplier'}
                                     {calculated.multiplierSource === 'direct' && 'Direct conversion (1:1)'}
