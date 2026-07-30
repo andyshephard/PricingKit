@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-PricingKit is a Next.js application for managing in-app product and subscription pricing across Google Play Store and Apple App Store. It enables developers to view, edit, and bulk-update pricing by region with currency conversion and multiple pricing strategies: PPP (World Bank), Big Mac Index, Netflix Index, and custom multipliers.
+PricingKit is a Next.js application for managing in-app product and subscription pricing across Google Play Store and Apple App Store. It enables developers to view, edit, and bulk-update pricing by region with currency conversion and multiple pricing strategies: GDP PPP and household-consumption PPP (World Bank), Big Mac Index, Netflix Index, and custom multipliers.
 
 ## Commands
 
@@ -41,7 +41,8 @@ npm test -- <path>   # Run specific test file(s)
   /google-play/         # Google Play Developer API integration
   /apple-connect/       # Apple App Store Connect API (JWT auth, price tiers)
   /exchange-rates/      # Open Exchange Rates API client with disk cache
-  /conversion-indexes/  # PPP, Big Mac, Netflix indexes + FALLBACK_EXCHANGE_RATES
+  /conversion-indexes/  # Legacy static PPP, Big Mac, Netflix indexes + FALLBACK_EXCHANGE_RATES
+  /world-bank/          # Live household-consumption PPP integration
 
 /src/hooks/             # React Query hooks for products/subscriptions
 /src/store/             # Zustand stores (auth-store, selection-store)
@@ -67,11 +68,12 @@ npm test -- <path>   # Run specific test file(s)
 - Public Index Checker page at `/index-checker` — no auth, exposes pricing strategies for any user
 
 ### Currency & Pricing
-- **Pricing strategies:** `'direct' | 'ppp' | 'bigmac' | 'netflix' | 'custom'` — defined in `/lib/google-play/currency.ts` (`PricingStrategy` type + `calculateRegionalPrice` switch)
-- **Multiplier convention:** all indexes clamp to `[0.1, 2.0]`, normalized to base region (not US directly)
+- **Pricing strategies:** `'direct' | 'ppp' | 'household-ppp' | 'bigmac' | 'netflix' | 'custom'` — defined in `/lib/google-play/currency.ts` (`PricingStrategy` type + `calculateRegionalPrice` switch)
+- **World Bank PPP indicators:** `'ppp'` uses GDP PPP (`PA.NUS.PPP`); `'household-ppp'` uses household and NPISH final-consumption PPP (`PA.NUS.PRVT.PP`)
+- **Multiplier convention:** static index entries clamp to `[0.1, 2.0]`; live World Bank PPP results are normalized to the selected base region and may legitimately fall outside that range
 - **Canonical territories:** `getSupportedAppleTerritories()` in `/lib/apple-connect/territories.ts` — use for coverage checks when adding new indexes
 - **Exchange rates:** Open Exchange Rates API with caching
-- **PPP multipliers:** Static `PRICING_INDEX` in `/lib/conversion-indexes/ppp.ts`; partial fallback to `FALLBACK_EXCHANGE_RATES` with UI banner when API fails
+- **PPP fallback and exclusions:** `/lib/conversion-indexes/ppp.ts` is a legacy static GDP-PPP fallback. Never describe fallback output as live World Bank data; preserve the UI warning and prevent fallback or known currency-basis-incompatible rows (currently Liberia) from being applied in either live PPP strategy.
 - **Apple price tiers:** Large mapping file (`price-tier-data.ts`, 400K+ lines)
 
 ### Adding a new pricing strategy

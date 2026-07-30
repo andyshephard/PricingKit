@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   calculateRegionalPrice,
   calculateBulkPrices,
+  getWorldBankPPPUpdateExclusionReason,
+  isBulkPriceEligibleForUpdate,
 } from '../currency';
 import { calculateNewPrice } from '../products';
 import {
@@ -11,6 +13,102 @@ import {
 } from './fixtures/ppp-snapshot';
 import type { Money } from '../types';
 import { getNetflixMultiplier } from '../../conversion-indexes/netflix';
+
+describe('isBulkPriceEligibleForUpdate', () => {
+  it('allows GDP-PPP updates only when target and base use World Bank data', () => {
+    expect(
+      isBulkPriceEligibleForUpdate(
+        'ppp',
+        { regionCode: 'DE', multiplierSource: 'world-bank' },
+        TEST_PPP_DATA,
+        'USA'
+      )
+    ).toBe(true);
+
+    expect(
+      isBulkPriceEligibleForUpdate(
+        'ppp',
+        { regionCode: 'DE', multiplierSource: 'static' },
+        TEST_PPP_DATA,
+        'USA'
+      )
+    ).toBe(false);
+
+    expect(
+      isBulkPriceEligibleForUpdate(
+        'ppp',
+        { regionCode: 'DE', multiplierSource: 'world-bank' },
+        {
+          ...TEST_PPP_DATA,
+          US: { ...TEST_PPP_DATA.US, source: 'static' },
+        },
+        'US'
+      )
+    ).toBe(false);
+  });
+
+  it('applies the same live-data safety rule to household PPP', () => {
+    expect(
+      isBulkPriceEligibleForUpdate(
+        'household-ppp',
+        { regionCode: 'DE', multiplierSource: 'world-bank' },
+        TEST_PPP_DATA,
+        'US'
+      )
+    ).toBe(true);
+
+    expect(
+      isBulkPriceEligibleForUpdate(
+        'household-ppp',
+        { regionCode: 'DE', multiplierSource: 'static' },
+        TEST_PPP_DATA,
+        'US'
+      )
+    ).toBe(false);
+  });
+
+  it.each(['ppp', 'household-ppp'] as const)(
+    'excludes Liberia from %s bulk updates because its PPP currency basis is incompatible',
+    (strategy) => {
+      expect(
+        isBulkPriceEligibleForUpdate(
+          strategy,
+          { regionCode: 'LBR', multiplierSource: 'world-bank' },
+          TEST_PPP_DATA,
+          'IN'
+        )
+      ).toBe(false);
+      expect(getWorldBankPPPUpdateExclusionReason('LBR', 'IN')).toBe(
+        'PPP currency-basis mismatch'
+      );
+    }
+  );
+
+  it('excludes every PPP target when Liberia is the base region', () => {
+    expect(
+      isBulkPriceEligibleForUpdate(
+        'household-ppp',
+        { regionCode: 'DE', multiplierSource: 'world-bank' },
+        TEST_PPP_DATA,
+        'LBR'
+      )
+    ).toBe(false);
+    expect(getWorldBankPPPUpdateExclusionReason('DE', 'LBR')).toBe(
+      'Base region has a PPP currency-basis mismatch'
+    );
+  });
+
+  it('does not restrict non-PPP strategies', () => {
+    expect(
+      isBulkPriceEligibleForUpdate(
+        'direct',
+        { regionCode: 'DE', multiplierSource: 'direct' },
+        undefined,
+        'US'
+      )
+    ).toBe(true);
+  });
+});
 
 describe('calculateRegionalPrice — direct strategy', () => {
   it('US base: applies exchange rate only (multiplier 1.0)', () => {
@@ -108,10 +206,28 @@ describe('calculateRegionalPrice — PPP strategy, US base', () => {
   });
 });
 
+describe('calculateRegionalPrice — household PPP strategy', () => {
+  it('uses the supplied household dataset with the World Bank PPP calculation', () => {
+    const result = calculateRegionalPrice(
+      49.99,
+      'DE',
+      'household-ppp',
+      'none',
+      undefined,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES
+    );
+
+    expect(result.rawPrice).toBeCloseTo(49.99 * 0.7053, 1);
+    expect(result.multiplierSource).toBe('world-bank');
+    expect(result.currencyCode).toBe('EUR');
+  });
+});
+
 describe('calculateRegionalPrice — PPP strategy, mixed billing/local currency', () => {
-  it('AR billed in USD: hyperinflation override → 0.25 affordability multiplier', () => {
+  it('AR billed in USD: preserves the strict World Bank PPP multiplier', () => {
     // AR pppFactor = 400, marketRate = 100 → pppPriceInUsd = 49.99 × 400 / 100 = $199.96
-    // Exceeds baseUsdPrice ($49.99) → override fires
     const result = calculateRegionalPrice(
       49.99,
       'AR',
@@ -123,10 +239,10 @@ describe('calculateRegionalPrice — PPP strategy, mixed billing/local currency'
       TEST_EXCHANGE_RATES
     );
     expect(result.currencyCode).toBe('USD');
-    // 49.99 × 0.25 × 1.0 (USD billing rate) = $12.4975
-    expect(result.rawPrice).toBeCloseTo(49.99 * 0.25, 2);
-    expect(result.multiplier).toBe(0.25);
-    expect(result.multiplierSource).toBe('static');
+    // 400 ARS PPP factor / 100 ARS market rate = a strict 4× multiplier.
+    expect(result.rawPrice).toBeCloseTo(49.99 * 4, 2);
+    expect(result.multiplier).toBe(4);
+    expect(result.multiplierSource).toBe('world-bank');
   });
 });
 

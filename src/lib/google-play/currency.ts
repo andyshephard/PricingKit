@@ -7,7 +7,13 @@ import { getNetflixMultiplier } from '../conversion-indexes/netflix';
 import { FALLBACK_EXCHANGE_RATES } from '../conversion-indexes/exchange-rates';
 import { alpha3ToAlpha2 } from '../apple-connect/territories';
 
-export type PricingStrategy = 'direct' | 'ppp' | 'bigmac' | 'netflix' | 'custom';
+export type PricingStrategy =
+  | 'direct'
+  | 'ppp'
+  | 'household-ppp'
+  | 'bigmac'
+  | 'netflix'
+  | 'custom';
 export type RoundingMode = 'nearest-tier' | 'nearest-99' | 'round-up' | 'none';
 
 export interface RoundingTier {
@@ -195,6 +201,81 @@ export interface DynamicPPPData {
   };
 }
 
+export interface DynamicPPPDatasets {
+  gdp: DynamicPPPData;
+  household: DynamicPPPData;
+}
+
+export interface PPPDatasetMetadata {
+  indicator: string;
+  baseYear: number | null;
+  fetchedAt: string;
+  worldBankRegions: number;
+  totalRegions: number;
+  fallback?: boolean;
+  error?: string;
+}
+
+export function isWorldBankPPPStrategy(
+  strategy: PricingStrategy
+): strategy is 'ppp' | 'household-ppp' {
+  return strategy === 'ppp' || strategy === 'household-ppp';
+}
+
+const WORLD_BANK_PPP_CURRENCY_BASIS_EXCLUSIONS = new Set(['LR']);
+
+/**
+ * Returns a reader-facing reason when World Bank PPP values cannot be safely
+ * combined with the configured market currency for bulk updates.
+ */
+export function getWorldBankPPPUpdateExclusionReason(
+  regionCode: string,
+  baseRegion?: string
+): string | null {
+  if (WORLD_BANK_PPP_CURRENCY_BASIS_EXCLUSIONS.has(toAlpha2(regionCode))) {
+    return 'PPP currency-basis mismatch';
+  }
+
+  if (
+    baseRegion &&
+    WORLD_BANK_PPP_CURRENCY_BASIS_EXCLUSIONS.has(toAlpha2(baseRegion))
+  ) {
+    return 'Base region has a PPP currency-basis mismatch';
+  }
+
+  return null;
+}
+
+/**
+ * World Bank PPP bulk updates are safe only when both the target and the base
+ * region come from the selected live dataset and their PPP currency basis is
+ * compatible with the configured market currency. Unsafe values remain useful
+ * for previewing coverage gaps, but must not be applied as live PPP.
+ */
+export function isBulkPriceEligibleForUpdate(
+  strategy: PricingStrategy,
+  calculatedPrice: Pick<CalculatedPrice, 'regionCode' | 'multiplierSource'>,
+  dynamicPPPData: DynamicPPPData | undefined,
+  baseRegion: string
+): boolean {
+  if (!isWorldBankPPPStrategy(strategy)) {
+    return true;
+  }
+
+  const alpha2BaseRegion = toAlpha2(baseRegion);
+  const baseEntry =
+    dynamicPPPData?.[baseRegion] ?? dynamicPPPData?.[alpha2BaseRegion];
+
+  return (
+    getWorldBankPPPUpdateExclusionReason(
+      calculatedPrice.regionCode,
+      baseRegion
+    ) === null &&
+    calculatedPrice.multiplierSource === 'world-bank' &&
+    baseEntry?.source === 'world-bank'
+  );
+}
+
 // Calculate regional price based on strategy
 export function calculateRegionalPrice(
   basePrice: number,
@@ -270,6 +351,7 @@ export function calculateRegionalPrice(
       multiplierSource = 'direct';
       break;
     case 'ppp':
+    case 'household-ppp':
       // PPP strategy: adjust prices based on purchasing power parity
       //
       // The World Bank PPP conversion factor is in LOCAL CURRENCY units per international $.
@@ -327,17 +409,8 @@ export function calculateRegionalPrice(
             
             effectiveMultiplier = rawRealMultiplier / baseRealMultiplier;
 
-            // For hyperinflation countries where PPP produces HIGHER prices than base,
-            // use a low default multiplier to make apps affordable.
-            if (effectiveMultiplier > 1.0 && rawRealMultiplier > 1.0) {
-              const affordabilityMultiplier = 0.25;
-              effectiveMultiplier = affordabilityMultiplier;
-              calculatedPrice = baseUsdPrice * effectiveMultiplier * exchangeRate;
-              multiplierSource = 'static';
-            } else {
-              calculatedPrice = baseUsdPrice * effectiveMultiplier * exchangeRate;
-              multiplierSource = dynamicEntry?.source ?? 'world-bank';
-            }
+            calculatedPrice = baseUsdPrice * effectiveMultiplier * exchangeRate;
+            multiplierSource = dynamicEntry?.source ?? 'world-bank';
           }
         }
       } else {

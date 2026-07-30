@@ -275,6 +275,6 @@ export const LOCAL_CURRENCIES: Record<string, string> = {
   MW: 'MWK', RW: 'RWF', BI: 'BIF', MG: 'MGA', MU: 'MUR', SC: 'SCR', CM: 'XAF',
   CI: 'XOF', SN: 'XOF', GN: 'GNF', ML: 'XOF', BF: 'XOF', NE: 'XOF', TG: 'XOF',
   BJ: 'XOF', GA: 'XAF', CG: 'XAF', CD: 'CDF', TD: 'XAF', CF: 'XAF', GQ: 'XAF',
-  GM: 'GMD', GW: 'XOF', LR: 'LRD', SL: 'SLL', CV: 'CVE', ST: 'STN', MR: 'MRU',
+  GM: 'GMD', GW: 'XOF', LR: 'LRD', SL: 'SLE', CV: 'CVE', ST: 'STN', MR: 'MRU',
   DJ: 'DJF', ER: 'ERN', SO: 'SOS', SS: 'SSP', KM: 'KMF',
 };

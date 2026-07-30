@@ -43,8 +43,8 @@ export const TEST_PPP_DATA: DynamicPPPData = {
     source: 'world-bank',
   },
   AR: {
-    // Synthetic: PPP factor much larger than market rate to trigger hyperinflation branch
-    // when billing in USD (pppPriceInUsd > baseUsdPrice).
+    // Synthetic: PPP factor much larger than market rate to verify that strict
+    // household PPP is preserved even when Apple bills the region in USD.
     pppMultiplier: 0.5,
     pppConversionFactor: 400,
     minPrice: 0.99,
@@ -69,7 +69,7 @@ export const TEST_EXCHANGE_RATES: DynamicExchangeRates = {
     GBP: 0.735,
     TRY: 45.2557,
     INR: 94.668,
-    ARS: 100, // synthetic: lower than PPP factor 400 → hyperinflation override path
+    ARS: 100, // synthetic: lower than PPP factor 400 → strict 4× PPP path
     JPY: 156.31,
     BRL: 4.917,
   },
@@ -77,7 +77,7 @@ export const TEST_EXCHANGE_RATES: DynamicExchangeRates = {
 
 /**
  * Apple-style billing currency overrides — make Argentina bill in USD so we
- * trigger the mixed-currency branch in calculateRegionalPrice.
+ * exercise the mixed-currency branch in calculateRegionalPrice.
  */
 export const APPLE_BILLED_IN_USD = {
   AR: 'USD',

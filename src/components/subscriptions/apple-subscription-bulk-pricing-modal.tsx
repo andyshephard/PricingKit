@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect } from 'react';
-import { Calculator, Globe, DollarSign, TrendingDown, Sliders, RefreshCw, Hamburger, Tv, AlertTriangle, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
+import { Calculator, Globe, DollarSign, TrendingDown, Sliders, RefreshCw, Hamburger, Tv, AlertTriangle, Loader2, ArrowUpDown, ChevronUp, ChevronDown, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -54,9 +54,14 @@ import {
   calculateBulkPrices,
   calculatePriceChange,
   formatPriceChange,
+  getWorldBankPPPUpdateExclusionReason,
+  isBulkPriceEligibleForUpdate,
+  isWorldBankPPPStrategy,
   type PricingStrategy,
   type RoundingMode,
   type DynamicPPPData,
+  type DynamicPPPDatasets,
+  type PPPDatasetMetadata,
   type DynamicExchangeRates,
 } from '@/lib/google-play/currency';
 import { useUpdateAppleSubscriptionPrices, useResolveAppleSubscriptionPricePoints } from '@/hooks/use-subscriptions';
@@ -84,13 +89,10 @@ function getEarliestEffectiveDate(): string {
 interface PPPApiResponse {
   success: boolean;
   data: DynamicPPPData;
-  metadata: {
-    baseYear: number | null;
-    fetchedAt: string;
-    worldBankRegions: number;
-    totalRegions: number;
-    fallback?: boolean;
-    error?: string;
+  datasets: DynamicPPPDatasets;
+  metadata: PPPDatasetMetadata & {
+    gdp: PPPDatasetMetadata;
+    household: PPPDatasetMetadata;
   };
 }
 
@@ -177,7 +179,7 @@ export function AppleSubscriptionBulkPricingModal({
   }>({ key: 'name', direction: 'asc' });
 
   // PPP data from World Bank API
-  const [pppData, setPppData] = useState<DynamicPPPData | null>(null);
+  const [pppDatasets, setPppDatasets] = useState<DynamicPPPDatasets | null>(null);
   const [pppMetadata, setPppMetadata] = useState<PPPApiResponse['metadata'] | null>(null);
   const [pppLoading, setPppLoading] = useState(false);
 
@@ -190,6 +192,13 @@ export function AppleSubscriptionBulkPricingModal({
 
   const basePriceNum = parseFloat(basePrice) || 0;
   const isApproved = subscription.state === 'APPROVED';
+  const pppData = useMemo(
+    () =>
+      strategy === 'household-ppp'
+        ? pppDatasets?.household ?? null
+        : pppDatasets?.gdp ?? null,
+    [pppDatasets, strategy]
+  );
 
   // Seed base region from app-level Apple base territory once it loads,
   // unless the user has already picked a region this session.
@@ -257,7 +266,7 @@ export function AppleSubscriptionBulkPricingModal({
   // Only depend on `open` to prevent infinite retry loops on fetch failure
   useEffect(() => {
     if (open) {
-      if (!pppData && !pppLoading) {
+      if (!pppDatasets && !pppLoading) {
         fetchPPPData();
       }
       if (!exchangeRates && !exchangeRatesLoading) {
@@ -275,7 +284,9 @@ export function AppleSubscriptionBulkPricingModal({
       const data: PPPApiResponse = await response.json();
 
       if (data.success) {
-        setPppData(data.data);
+        setPppDatasets(
+          data.datasets ?? { gdp: data.data, household: data.data }
+        );
         setPppMetadata(data.metadata);
       }
     } catch (error) {
@@ -386,6 +397,41 @@ export function AppleSubscriptionBulkPricingModal({
     });
   }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, subscription.prices, baseRegion, baseCurrency]);
 
+  const livePPPRegionCodes = useMemo(() => {
+    return new Set(
+      previewPrices
+        .filter((preview) =>
+          isBulkPriceEligibleForUpdate(
+            strategy,
+            {
+              regionCode: preview.territoryCode,
+              multiplierSource: preview.multiplierSource,
+            },
+            pppData ?? undefined,
+            baseRegion
+          )
+        )
+        .map((preview) => preview.territoryCode)
+    );
+  }, [previewPrices, strategy, pppData, baseRegion]);
+
+  const selectableRegionCodes = useMemo(() => {
+    return new Set(
+      previewPrices
+        .filter(
+          (preview) =>
+            livePPPRegionCodes.has(preview.territoryCode) &&
+            !preview.noTierData &&
+            Boolean(preview.tier)
+        )
+        .map((preview) => preview.territoryCode)
+    );
+  }, [previewPrices, livePPPRegionCodes]);
+
+  const excludedPPPRegionCount = isWorldBankPPPStrategy(strategy)
+    ? previewPrices.length - livePPPRegionCodes.size
+    : 0;
+
   const sortedPreviewPrices = useMemo(() => {
     const items = [...previewPrices];
 
@@ -456,6 +502,8 @@ export function AppleSubscriptionBulkPricingModal({
       const newSelected = new Set<string>();
       
       previewPrices.forEach((preview) => {
+        if (!selectableRegionCodes.has(preview.territoryCode)) return;
+
         // MATCH UI DISPLAY: Only pre-select if rounded change is non-zero
         // Using abs() >= 0.5 to match toFixed(0) rounding behavior seen in the table
         const isDifferent = preview.currentPrice === null || 
@@ -469,11 +517,22 @@ export function AppleSubscriptionBulkPricingModal({
       setSelectedRegions(newSelected);
       setHasInitializedSelection(true);
     }
-  }, [open, previewPrices, hasInitializedSelection, allTerritories, pppFetched, exchangeRatesFetched]);
+  }, [open, previewPrices, hasInitializedSelection, allTerritories, pppFetched, exchangeRatesFetched, selectableRegionCodes]);
+
+  useEffect(() => {
+    setSelectedRegions((current) => {
+      const next = new Set(
+        [...current].filter((regionCode) => selectableRegionCodes.has(regionCode))
+      );
+      return next.size === current.size ? current : next;
+    });
+  }, [selectableRegionCodes]);
 
   const validSelectedCount = useMemo(() => {
-    return previewPrices.filter(p => selectedRegions.has(p.territoryCode) && !p.noTierData && p.tier).length;
-  }, [previewPrices, selectedRegions]);
+    return [...selectedRegions].filter((regionCode) =>
+      selectableRegionCodes.has(regionCode)
+    ).length;
+  }, [selectedRegions, selectableRegionCodes]);
 
   // Handle sorting
   const requestSort = (key: string) => {
@@ -504,6 +563,8 @@ export function AppleSubscriptionBulkPricingModal({
 
   // Handle region selection
   const toggleRegion = (regionCode: string) => {
+    if (!selectableRegionCodes.has(regionCode)) return;
+
     const newSelected = new Set(selectedRegions);
     if (newSelected.has(regionCode)) {
       newSelected.delete(regionCode);
@@ -515,10 +576,13 @@ export function AppleSubscriptionBulkPricingModal({
 
   // Select/deselect all regions
   const toggleAllRegions = () => {
-    if (selectedRegions.size === allTerritories.length) {
+    if (
+      selectableRegionCodes.size > 0 &&
+      selectedRegions.size === selectableRegionCodes.size
+    ) {
       setSelectedRegions(new Set());
     } else {
-      setSelectedRegions(new Set(allTerritories.map((t) => t.alpha2)));
+      setSelectedRegions(new Set(selectableRegionCodes));
     }
   };
 
@@ -538,7 +602,7 @@ export function AppleSubscriptionBulkPricingModal({
 
   // Apply bulk pricing
   const handleApplyClick = () => {
-    if (selectedRegions.size === 0) {
+    if (validSelectedCount === 0) {
       toast.error('Please select at least one region');
       return;
     }
@@ -562,7 +626,9 @@ export function AppleSubscriptionBulkPricingModal({
 
     allTerritories.forEach(territory => {
       const previewItem = previewPrices.find(p => p.territoryCode === territory.alpha2);
-      const isSelected = selectedRegions.has(territory.alpha2);
+      const isSelected =
+        selectedRegions.has(territory.alpha2) &&
+        selectableRegionCodes.has(territory.alpha2);
       const currentPriceData = subscription.prices[territory.alpha2];
       const currentPriceFormatted = currentPriceData 
         ? formatPrice(currentPriceData.customerPrice, currentPriceData.currency)
@@ -590,7 +656,11 @@ export function AppleSubscriptionBulkPricingModal({
 
   const executeApply = async () => {
     // Filter to only selected regions
-    const selectedPreviewPrices = previewPrices.filter(p => selectedRegions.has(p.territoryCode));
+    const selectedPreviewPrices = previewPrices.filter(
+      (preview) =>
+        selectedRegions.has(preview.territoryCode) &&
+        selectableRegionCodes.has(preview.territoryCode)
+    );
 
     // Check for regions without tier data
     const regionsWithoutTiers = selectedPreviewPrices.filter(p => p.noTierData);
@@ -815,7 +885,7 @@ export function AppleSubscriptionBulkPricingModal({
                 )}
               </div>
               <TooltipProvider delayDuration={200}>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2">
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
@@ -877,18 +947,45 @@ export function AppleSubscriptionBulkPricingModal({
                           className="sr-only"
                         />
                         <TrendingDown className="h-4 w-4 shrink-0" />
-                        <span className="text-sm font-medium truncate">PPP (World Bank)</span>
+                        <span className="text-sm font-medium truncate">GDP PPP</span>
                       </label>
                     </TooltipTrigger>
                     <TooltipContent side="bottom" className="max-w-xs">
-                      <p className="font-medium">PPP-Adjusted (Recommended)</p>
+                      <p className="font-medium">GDP PPP</p>
                       <p className="text-xs text-muted-foreground">
-                        Lower prices for lower-income regions based on World Bank purchasing power parity data.
-                        Hyperinflation regions automatically receive reduced prices for affordability.
+                        Economy-wide purchasing power based on World Bank GDP PPP data.
                       </p>
-                      {pppMetadata && pppMetadata.worldBankRegions > 0 && (
+                      {pppMetadata?.gdp && pppMetadata.gdp.worldBankRegions > 0 && (
                         <p className="text-xs text-muted-foreground mt-1">
-                          Data: World Bank ({pppMetadata.baseYear}) &bull; {pppMetadata.worldBankRegions} regions
+                          Data: World Bank ({pppMetadata.gdp.baseYear}) &bull; {pppMetadata.gdp.worldBankRegions} regions
+                        </p>
+                      )}
+                    </TooltipContent>
+                  </Tooltip>
+
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+                        <input
+                          type="radio"
+                          name="strategy"
+                          value="household-ppp"
+                          checked={strategy === 'household-ppp'}
+                          onChange={() => setStrategy('household-ppp')}
+                          className="sr-only"
+                        />
+                        <Users className="h-4 w-4 shrink-0" />
+                        <span className="text-sm font-medium truncate">Household PPP</span>
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="max-w-xs">
+                      <p className="font-medium">Household PPP</p>
+                      <p className="text-xs text-muted-foreground">
+                        Consumer purchasing power based on household and NPISH final-consumption data.
+                      </p>
+                      {pppMetadata?.household && pppMetadata.household.worldBankRegions > 0 && (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Data: World Bank ({pppMetadata.household.baseYear}) &bull; {pppMetadata.household.worldBankRegions} regions
                         </p>
                       )}
                     </TooltipContent>
@@ -1015,6 +1112,15 @@ export function AppleSubscriptionBulkPricingModal({
                         <span className="text-[10px]">{warningCount} regions with issues</span>
                       </div>
                     )}
+                    {excludedPPPRegionCount > 0 && (
+                      <div className="flex items-center gap-1 text-amber-600 dark:text-amber-500 mt-1">
+                        <AlertTriangle className="h-3 w-3" />
+                        <span className="text-[10px]">
+                          {excludedPPPRegionCount} regions excluded: missing or incompatible{' '}
+                          {strategy === 'household-ppp' ? 'household PPP' : 'GDP PPP'} data
+                        </span>
+                      </div>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
                     <Button
@@ -1031,7 +1137,7 @@ export function AppleSubscriptionBulkPricingModal({
                       onClick={() => {
                         const next = new Set<string>();
                         previewPrices.forEach((preview) => {
-                          if (preview.noTierData) return;
+                          if (!selectableRegionCodes.has(preview.territoryCode)) return;
                           const isDifferent =
                             preview.currentPrice === null ||
                             (preview.priceChange !== null && Math.abs(preview.priceChange) >= 0.5);
@@ -1046,8 +1152,11 @@ export function AppleSubscriptionBulkPricingModal({
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setSelectedRegions(new Set(allTerritories.map(t => t.alpha2)))}
-                      disabled={selectedRegions.size === allTerritories.length}
+                      onClick={() => setSelectedRegions(new Set(selectableRegionCodes))}
+                      disabled={
+                        selectableRegionCodes.size === 0 ||
+                        selectedRegions.size === selectableRegionCodes.size
+                      }
                     >
                       Select All
                     </Button>
@@ -1061,7 +1170,10 @@ export function AppleSubscriptionBulkPricingModal({
                         <TableRow>
                           <TableHead className="w-12">
                             <Checkbox 
-                              checked={selectedRegions.size === allTerritories.length}
+                              checked={
+                                selectableRegionCodes.size > 0 &&
+                                selectedRegions.size === selectableRegionCodes.size
+                              }
                               onCheckedChange={toggleAllRegions}
                               aria-label="Select all"
                             />
@@ -1106,8 +1218,12 @@ export function AppleSubscriptionBulkPricingModal({
                       <TableBody>
                         {sortedPreviewPrices.map((preview) => {
                           const isSelected = selectedRegions.has(preview.territoryCode);
+                          const hasLivePPP = livePPPRegionCodes.has(preview.territoryCode);
+                          const isSelectable = selectableRegionCodes.has(preview.territoryCode);
                           const rowClassName = preview.noTierData
                             ? 'bg-red-50/50 dark:bg-red-950/20'
+                            : !hasLivePPP
+                              ? 'bg-amber-50/50 opacity-60 dark:bg-amber-950/20'
                             : !isSelected ? 'opacity-50' : '';
 
                           return (
@@ -1115,6 +1231,7 @@ export function AppleSubscriptionBulkPricingModal({
                               <TableCell>
                                 <Checkbox 
                                   checked={isSelected}
+                                  disabled={!isSelectable}
                                   onCheckedChange={() => toggleRegion(preview.territoryCode)}
                                   aria-label={`Select ${preview.territoryCode}`}
                                 />
@@ -1125,7 +1242,22 @@ export function AppleSubscriptionBulkPricingModal({
                                 </Badge>
                               </TableCell>
                               <TableCell className="text-sm">
-                                {preview.countryName}
+                                <div className="flex flex-col">
+                                  {preview.countryName}
+                                  {!hasLivePPP && isWorldBankPPPStrategy(strategy) && (
+                                    <span className="text-[10px] font-medium text-amber-600 dark:text-amber-500">
+                                      {getWorldBankPPPUpdateExclusionReason(
+                                        preview.territoryCode,
+                                        baseRegion
+                                      ) ??
+                                        `No live ${
+                                          strategy === 'household-ppp'
+                                            ? 'household PPP'
+                                            : 'GDP PPP'
+                                        }`}
+                                    </span>
+                                  )}
+                                </div>
                               </TableCell>
                               <TableCell className="text-sm text-muted-foreground">
                                 {preview.currency}
@@ -1145,7 +1277,10 @@ export function AppleSubscriptionBulkPricingModal({
                                   </TooltipTrigger>
                                   <TooltipContent side="top">
                                     <p className="text-xs">
-                                      {preview.multiplierSource === 'world-bank' && 'World Bank PPP data'}
+                                      {preview.multiplierSource === 'world-bank' &&
+                                        (strategy === 'household-ppp'
+                                          ? 'World Bank household PPP data'
+                                          : 'World Bank GDP PPP data')}
                                       {preview.multiplierSource === 'big-mac' && 'Big Mac Index'}
                                       {preview.multiplierSource === 'netflix' && 'Netflix Price Index'}
                                       {preview.multiplierSource === 'static' && 'Static fallback data'}
