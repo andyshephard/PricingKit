@@ -36,6 +36,7 @@ import type { AppleProductPrice } from '@/lib/apple-connect/types';
 import {
   GOOGLE_PLAY_REGIONS,
   formatMoney,
+  getGooglePlayRegionCurrency,
   moneyToNumber,
   parseMoney,
 } from '@/lib/google-play/types';
@@ -129,7 +130,7 @@ export function BulkPricingModal({
     '_appleProduct' in product &&
     (product as ProductWithApple)._appleProduct !== undefined;
   const platform: 'apple' | 'google' = isAppleProduct ? 'apple' : 'google';
-  const { data: appPrice } = useAppleAppPrice();
+  const { data: appPrice } = useAppleAppPrice(platform === 'apple');
 
   // Initial base region: app-level (Apple) → per-product → 'USA' / 'US'.
   const initialBaseRegion = useMemo(() => {
@@ -165,8 +166,11 @@ export function BulkPricingModal({
     if (platform === 'apple') {
       return getTerritoryByAlpha3(baseRegion)?.currency || 'USD';
     }
-    return 'USD'; // Google base is always 'US' for now
-  }, [platform, baseRegion]);
+    return (
+      (product.prices?.[baseRegion] as Money | undefined)?.currencyCode ||
+      getGooglePlayRegionCurrency(baseRegion)
+    );
+  }, [platform, baseRegion, product.prices]);
 
   // Available USD tiers for Apple tier mode (Phase 1: USD only).
   const availableTiers = useMemo(() => {
@@ -207,7 +211,7 @@ export function BulkPricingModal({
     } else {
       setBasePrice('');
     }
-  }, [baseRegion, priceForBaseRegion]);
+  }, [priceForBaseRegion]);
 
   const [strategy, setStrategy] = useState<PricingStrategy>('ppp');
   const [rounding, setRounding] = useState<RoundingMode>(
@@ -302,19 +306,7 @@ export function BulkPricingModal({
     return [...GOOGLE_PLAY_REGIONS].sort((a, b) => a.name.localeCompare(b.name));
   }, [platform, normalizedPrices]);
 
-  // Fetch PPP data and exchange rates when modal opens
-  // Only depend on `open` to prevent infinite retry loops on fetch failure
-  useEffect(() => {
-    if (open && !pppFetched && !pppLoading) {
-      fetchPPPData();
-    }
-    if (open && !exchangeRatesFetched && !exchangeRatesLoading) {
-      fetchExchangeRates();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
-
-  const fetchPPPData = async (forceRefresh = false) => {
+  const fetchPPPData = useCallback(async (forceRefresh = false) => {
     setPppLoading(true);
     try {
       const url = forceRefresh ? '/api/ppp?refresh=true' : '/api/ppp';
@@ -334,9 +326,9 @@ export function BulkPricingModal({
       setPppLoading(false);
       setPppFetched(true);
     }
-  };
+  }, []);
 
-  const fetchExchangeRates = async (forceRefresh = false) => {
+  const fetchExchangeRates = useCallback(async (forceRefresh = false) => {
     setExchangeRatesLoading(true);
     try {
       const url = forceRefresh ? '/api/exchange-rates?refresh=true' : '/api/exchange-rates';
@@ -359,7 +351,25 @@ export function BulkPricingModal({
       setExchangeRatesLoading(false);
       setExchangeRatesFetched(true);
     }
-  };
+  }, []);
+
+  // Fetch PPP data and exchange rates once when the modal opens.
+  useEffect(() => {
+    if (open && !pppFetched && !pppLoading) {
+      void fetchPPPData();
+    }
+    if (open && !exchangeRatesFetched && !exchangeRatesLoading) {
+      void fetchExchangeRates();
+    }
+  }, [
+    exchangeRatesFetched,
+    exchangeRatesLoading,
+    fetchExchangeRates,
+    fetchPPPData,
+    open,
+    pppFetched,
+    pppLoading,
+  ]);
 
   // Get regions to apply pricing to
   const targetRegions = useMemo(() => {
@@ -556,7 +566,7 @@ export function BulkPricingModal({
       setSelectedRegions(newSelected);
       setHasInitializedSelection(true);
     }
-  }, [open, previewPrices, hasInitializedSelection, platform, product, allRegions, pppFetched, exchangeRatesFetched, getCurrentPrice, baseRegion, eligibleRegionCodes]);
+  }, [open, previewPrices, hasInitializedSelection, platform, allRegions, pppFetched, exchangeRatesFetched, getCurrentPrice, baseRegion, eligibleRegionCodes]);
 
   // Drop stale selections whenever the strategy or live-data coverage changes.
   useEffect(() => {

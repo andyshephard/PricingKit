@@ -7,8 +7,6 @@ import type {
   Money,
   RegionsVersion,
 } from './types';
-import { GOOGLE_PLAY_REGIONS, moneyToNumber } from './types';
-import { calculateBulkPrices } from './currency';
 
 interface GoogleApiSubscription extends Subscription {
   regionsVersion?: RegionsVersion;
@@ -122,49 +120,17 @@ export async function updateBasePlanPrices(
   const configMap = new Map<string, RegionalBasePlanConfig>();
 
   for (const config of existingConfigs) {
-    configMap.set(config.regionCode, {
-      ...config,
-      newSubscriberAvailability: true,
-    });
+    configMap.set(config.regionCode, { ...config });
   }
 
   for (const config of regionalConfigs) {
+    const existingConfig = configMap.get(config.regionCode);
     configMap.set(config.regionCode, {
+      ...existingConfig,
       ...config,
-      newSubscriberAvailability: true,
+      newSubscriberAvailability:
+        existingConfig?.newSubscriberAvailability ?? false,
     });
-  }
-
-  const mergedConfigs = Array.from(configMap.values());
-  const usConfig = mergedConfigs.find(c => c.regionCode === 'US');
-  if (!usConfig) {
-    throw new Error(`US price not found for base plan ${basePlanId}. Cannot calculate regional prices without a base USD price.`);
-  }
-  const baseUsdPrice = moneyToNumber(usConfig.price);
-
-  const allRegionCodes = GOOGLE_PLAY_REGIONS.map(r => r.code);
-  const missingRegions = allRegionCodes.filter(code => !configMap.has(code));
-
-  if (missingRegions.length > 0) {
-    const calculatedPrices = calculateBulkPrices(
-      baseUsdPrice,
-      missingRegions,
-      'direct', // Use simple exchange rate for fill-in regions
-      'nearest-99',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      'USD',
-      'US'
-    );
-    for (const calculated of calculatedPrices) {
-      configMap.set(calculated.regionCode, {
-        regionCode: calculated.regionCode,
-        price: calculated.price,
-        newSubscriberAvailability: true,
-      });
-    }
   }
 
   const updatedConfigs = Array.from(configMap.values());
@@ -224,49 +190,11 @@ export async function deleteBasePlanRegionPrice(
     config => config.regionCode !== regionCode
   );
 
-  const configMap = new Map<string, RegionalBasePlanConfig>();
-  for (const config of filteredConfigs) {
-    configMap.set(config.regionCode, config);
-  }
-
-  const usConfig = filteredConfigs.find(c => c.regionCode === 'US');
-  if (!usConfig) {
-    throw new Error(`US price not found for base plan ${basePlanId}. Cannot calculate regional prices without a base USD price.`);
-  }
-  const baseUsdPrice = moneyToNumber(usConfig.price);
-
-  const allRegionCodes = GOOGLE_PLAY_REGIONS.map(r => r.code);
-  const missingRegions = allRegionCodes.filter(code => !configMap.has(code));
-
-  if (missingRegions.length > 0) {
-    const calculatedPrices = calculateBulkPrices(
-      baseUsdPrice,
-      missingRegions,
-      'direct',
-      'nearest-99',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      'USD',
-      'US'
-    );
-    for (const calculated of calculatedPrices) {
-      configMap.set(calculated.regionCode, {
-        regionCode: calculated.regionCode,
-        price: calculated.price,
-        newSubscriberAvailability: true,
-      });
-    }
-  }
-
-  const updatedConfigs = Array.from(configMap.values());
-
   const updatedBasePlans = subscription.basePlans?.map(bp => {
     if (bp.basePlanId === basePlanId) {
       return {
         ...bp,
-        regionalConfigs: updatedConfigs,
+        regionalConfigs: filteredConfigs,
       };
     }
     return bp;
@@ -301,7 +229,7 @@ export function calculateNewBasePlanPrice(
   operation: { type: 'fixed' | 'percentage' | 'round'; value?: number; roundTo?: number }
 ): RegionalBasePlanConfig {
   const parsedUnits = parseFloat(currentConfig.price.units);
-  if (isNaN(parsedUnits) || !Number.isFinite(parsedUnits)) {
+  if (Number.isNaN(parsedUnits) || !Number.isFinite(parsedUnits)) {
     throw new Error(`Invalid price units value: "${currentConfig.price.units}"`);
   }
   const currentAmount = parsedUnits +
@@ -316,10 +244,11 @@ export function calculateNewBasePlanPrice(
     case 'percentage':
       newAmount = currentAmount * (1 + (operation.value ?? 0) / 100);
       break;
-    case 'round':
+    case 'round': {
       const roundTo = operation.roundTo ?? 0.99;
       newAmount = Math.floor(currentAmount) + roundTo;
       break;
+    }
     default:
       newAmount = currentAmount;
   }

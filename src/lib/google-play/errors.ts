@@ -4,7 +4,7 @@ export const GOOGLE_PERMISSION_HELP_TEXT =
 
 export const GOOGLE_PRICING_WRITE_DENIED_ERROR = {
   error:
-    'Service account is missing write permissions for pricing edits. In Play Console → Users and permissions, grant your service account "Manage store presence" (or higher) for this app, then reconnect.',
+    'Google Play denied this pricing update. Confirm that the exact service-account email from your JSON key has active access to this app and the "Manage store presence" permission, then disconnect and reconnect PricingKit.',
   helpHref: GOOGLE_PERMISSION_HELP_HREF,
   helpText: GOOGLE_PERMISSION_HELP_TEXT,
 };

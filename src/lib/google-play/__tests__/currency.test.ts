@@ -11,7 +11,7 @@ import {
   TEST_EXCHANGE_RATES,
   APPLE_BILLED_IN_USD,
 } from './fixtures/ppp-snapshot';
-import type { Money } from '../types';
+import { getGooglePlayRegionCurrency, type Money } from '../types';
 import { getNetflixMultiplier } from '../../conversion-indexes/netflix';
 
 describe('isBulkPriceEligibleForUpdate', () => {
@@ -223,6 +223,31 @@ describe('calculateRegionalPrice — household PPP strategy', () => {
     expect(result.multiplierSource).toBe('world-bank');
     expect(result.currencyCode).toBe('EUR');
   });
+});
+
+describe('Google Play base-region currency', () => {
+  it.each(['ppp', 'household-ppp'] as const)(
+    'uses INR for an India-based %s calculation instead of treating ₹499 as $499',
+    (strategy) => {
+      const baseCurrency = getGooglePlayRegionCurrency('IN');
+      const [result] = calculateBulkPrices(
+        499,
+        ['US'],
+        strategy,
+        'none',
+        undefined,
+        TEST_PPP_DATA,
+        { US: 'USD' },
+        TEST_EXCHANGE_RATES,
+        baseCurrency,
+        'IN'
+      );
+
+      expect(baseCurrency).toBe('INR');
+      expect(result.currencyCode).toBe('USD');
+      expect(result.rawPrice).toBeCloseTo(499 / 20.422, 2);
+    }
+  );
 });
 
 describe('calculateRegionalPrice — PPP strategy, mixed billing/local currency', () => {

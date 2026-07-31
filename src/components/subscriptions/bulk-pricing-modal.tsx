@@ -42,6 +42,7 @@ import {
 import type { Money, Subscription, BasePlan } from '@/lib/google-play/types';
 import {
   GOOGLE_PLAY_REGIONS,
+  getGooglePlayRegionCurrency,
   formatMoney,
   moneyToNumber,
 } from '@/lib/google-play/types';
@@ -158,21 +159,7 @@ export function SubscriptionBulkPricingModal({
     return [...GOOGLE_PLAY_REGIONS].sort((a, b) => a.name.localeCompare(b.name));
   }, []);
 
-  // Fetch PPP data and exchange rates when modal opens
-  // Only depend on `open` to prevent infinite retry loops on fetch failure
-  useEffect(() => {
-    if (open) {
-      if (!pppDatasets && !pppLoading) {
-        fetchPPPData();
-      }
-      if (!exchangeRates && !exchangeRatesLoading) {
-        fetchExchangeRates();
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
-
-  const fetchPPPData = async (forceRefresh = false) => {
+  const fetchPPPData = useCallback(async (forceRefresh = false) => {
     setPppLoading(true);
     try {
       const url = forceRefresh ? '/api/ppp?refresh=true' : '/api/ppp';
@@ -192,9 +179,9 @@ export function SubscriptionBulkPricingModal({
       setPppLoading(false);
       setPppFetched(true);
     }
-  };
+  }, []);
 
-  const fetchExchangeRates = async (forceRefresh = false) => {
+  const fetchExchangeRates = useCallback(async (forceRefresh = false) => {
     setExchangeRatesLoading(true);
     try {
       const url = forceRefresh ? '/api/exchange-rates?refresh=true' : '/api/exchange-rates';
@@ -217,7 +204,25 @@ export function SubscriptionBulkPricingModal({
       setExchangeRatesLoading(false);
       setExchangeRatesFetched(true);
     }
-  };
+  }, []);
+
+  // Fetch PPP data and exchange rates once when the modal opens.
+  useEffect(() => {
+    if (open && !pppFetched && !pppLoading) {
+      void fetchPPPData();
+    }
+    if (open && !exchangeRatesFetched && !exchangeRatesLoading) {
+      void fetchExchangeRates();
+    }
+  }, [
+    exchangeRatesFetched,
+    exchangeRatesLoading,
+    fetchExchangeRates,
+    fetchPPPData,
+    open,
+    pppFetched,
+    pppLoading,
+  ]);
 
   // Get regions to apply pricing to
   const targetRegions = useMemo(() => {
@@ -238,7 +243,7 @@ export function SubscriptionBulkPricingModal({
 
   // Currency derived from selected base region.
   const baseCurrency = useMemo(() => {
-    return GOOGLE_PLAY_REGIONS.find((r) => r.code === baseRegion)?.currency || 'USD';
+    return getGooglePlayRegionCurrency(baseRegion);
   }, [baseRegion]);
 
   // When the base region changes, prefill basePrice from the base plan's existing
@@ -831,10 +836,10 @@ export function SubscriptionBulkPricingModal({
 
           {/* Preserve Existing Subscriber Prices */}
           <div className="space-y-3">
-            <label className="flex items-center gap-2 cursor-default">
+            <div className="flex items-center gap-2 cursor-default">
               <Checkbox checked disabled />
               <span className="text-sm font-medium text-muted-foreground">Preserve existing subscriber prices</span>
-            </label>
+            </div>
             <p className="text-xs text-muted-foreground ml-6">
               Google Play always preserves prices for existing subscribers. Price updates only apply to new subscribers.
             </p>

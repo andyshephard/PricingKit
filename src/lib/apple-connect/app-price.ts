@@ -5,7 +5,11 @@ import type {
   AppleProductPrice,
   AppleTerritory,
 } from './types';
-import { appleApiRequest, getAppIdForBundleId } from './client';
+import {
+  AppleApiError,
+  appleApiRequest,
+  getAppIdForBundleId,
+} from './client';
 import { UNSUPPORTED_IAP_TERRITORIES } from './territories';
 import { getAvailablePricePoints, findClosestPricePoint } from './products';
 
@@ -96,8 +100,14 @@ export async function getAppPrices(
 
   // Fetch both manual and automatic prices with pagination
   const [manualPrices, automaticPrices] = await Promise.all([
-    fetchPaginatedPrices(credentials, `/appPriceSchedules/${scheduleId}/manualPrices`),
-    fetchPaginatedPrices(credentials, `/appPriceSchedules/${scheduleId}/automaticPrices`),
+    fetchOptionalPaginatedPrices(
+      credentials,
+      `/appPriceSchedules/${scheduleId}/manualPrices`
+    ),
+    fetchOptionalPaginatedPrices(
+      credentials,
+      `/appPriceSchedules/${scheduleId}/automaticPrices`
+    ),
   ]);
 
   return {
@@ -107,10 +117,34 @@ export async function getAppPrices(
   };
 }
 
+function isMissingOptionalAppPriceCollection(error: unknown): boolean {
+  return (
+    error instanceof AppleApiError &&
+    error.statusCode === 404 &&
+    error.code === 'NOT_FOUND' &&
+    error.detail.includes("resource of type 'null'")
+  );
+}
+
+async function fetchOptionalPaginatedPrices(
+  credentials: AppleConnectCredentials,
+  basePath: string
+): Promise<Record<string, AppleProductPrice>> {
+  try {
+    return await fetchPaginatedPrices(credentials, basePath, true);
+  } catch (error) {
+    if (isMissingOptionalAppPriceCollection(error)) {
+      return {};
+    }
+    throw error;
+  }
+}
+
 // Fetch paginated prices from an endpoint, returning territory → price map
 async function fetchPaginatedPrices(
   credentials: AppleConnectCredentials,
-  basePath: string
+  basePath: string,
+  suppressExpectedNotFoundLog = false
 ): Promise<Record<string, AppleProductPrice>> {
   const prices: Record<string, AppleProductPrice> = {};
   let nextUrl: string | null = basePath;
@@ -148,6 +182,7 @@ async function fetchPaginatedPrices(
       }>
     >(credentials, endpoint, {
       queryParams: currentUrl.includes('?') ? undefined : queryParams,
+      suppressExpectedNotFoundLog,
     });
 
     // Build lookups from included data
@@ -290,10 +325,12 @@ export async function resolveAppPricesToPricePoints(
   const currencyToTerritories = new Map<string, string[]>();
   for (const [territoryCode, price] of Object.entries(prices)) {
     const currency = price.currencyCode;
-    if (!currencyToTerritories.has(currency)) {
-      currencyToTerritories.set(currency, []);
+    const territoryCodes = currencyToTerritories.get(currency);
+    if (territoryCodes) {
+      territoryCodes.push(territoryCode);
+    } else {
+      currencyToTerritories.set(currency, [territoryCode]);
     }
-    currencyToTerritories.get(currency)!.push(territoryCode);
   }
 
   // Fetch price points per currency (using first territory as representative)

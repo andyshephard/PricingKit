@@ -266,31 +266,17 @@ export default function SetupGuidePage() {
                   <ul className="space-y-2 text-sm">
                     <li className="flex items-center gap-2">
                       <CheckCircle2 className="h-4 w-4 text-green-500" />
-                      <strong>View app information and download bulk reports</strong>
+                      <strong>View app information (read only)</strong>
                     </li>
-                    <li className="flex items-center gap-2">
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                      <strong>View financial data, orders, and cancellation survey responses</strong>
-                    </li>
-                    <li className="flex items-center gap-2">
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                      <strong>Manage orders and subscriptions</strong>
-                    </li>
-                  </ul>
-                </div>
-
-                <div>
-                  <h4 className="font-medium mb-2">For Managing Pricing (also recommended)</h4>
-                  <ul className="space-y-2 text-sm">
                     <li className="flex items-center gap-2">
                       <CheckCircle2 className="h-4 w-4 text-green-500" />
                       <strong>Manage store presence</strong>
                     </li>
-                    <li className="flex items-center gap-2">
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                      <strong>Manage pricing and distribution</strong>
-                    </li>
                   </ul>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Financial-data and order-management permissions are not required
+                    for reading products or editing regional prices.
+                  </p>
                 </div>
 
                 <div className="text-sm text-muted-foreground">

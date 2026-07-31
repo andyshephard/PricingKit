@@ -7,9 +7,10 @@ interface AppPriceData {
   hasSchedule: boolean;
 }
 
-export function useAppleAppPrice() {
+export function useAppleAppPrice(enabled = true) {
   return useQuery<AppPriceData>({
     queryKey: ['apple', 'app-price'],
+    enabled,
     queryFn: async () => {
       const response = await fetch('/api/apple/app-price');
       if (!response.ok) {
