@@ -105,6 +105,10 @@ describe('LOCAL_CURRENCIES', () => {
   it('US maps to USD', () => {
     expect(LOCAL_CURRENCIES.US).toBe('USD');
   });
+
+  it('Sierra Leone uses the current SLE currency code', () => {
+    expect(LOCAL_CURRENCIES.SL).toBe('SLE');
+  });
 });
 
 describe('cross-index consistency', () => {

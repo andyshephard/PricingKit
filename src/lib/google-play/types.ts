@@ -376,6 +376,10 @@ export const GOOGLE_PLAY_REGIONS = [
 
 export type RegionCode = typeof GOOGLE_PLAY_REGIONS[number]['code'];
 
+export function getGooglePlayRegionCurrency(regionCode: string): string {
+  return GOOGLE_PLAY_REGIONS.find((region) => region.code === regionCode)?.currency || 'USD';
+}
+
 // Helper function to format Money to display string
 export function formatMoney(money: Money): string {
   const amount = safeParseUnits(money.units) + (money.nanos ? money.nanos / 1_000_000_000 : 0);
@@ -389,7 +393,7 @@ export function formatMoney(money: Money): string {
 function safeParseUnits(units: string): number {
   if (units == null || units === '') return 0;
   const value = parseFloat(units);
-  if (isNaN(value) || !Number.isFinite(value)) {
+  if (Number.isNaN(value) || !Number.isFinite(value)) {
     throw new Error(`Invalid price units value: "${units}"`);
   }
   return value;
@@ -406,7 +410,7 @@ function clampNanos(units: number, nanos: number): { units: number; nanos: numbe
 
 // Helper function to parse string to Money
 export function parseMoney(amount: number, currencyCode: string): Money {
-  if (isNaN(amount) || !Number.isFinite(amount)) {
+  if (Number.isNaN(amount) || !Number.isFinite(amount)) {
     throw new Error(`Invalid price amount: ${amount}`);
   }
   // Round to 2 decimal places first to avoid floating point precision issues

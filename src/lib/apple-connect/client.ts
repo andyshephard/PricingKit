@@ -157,9 +157,16 @@ export async function appleApiRequest<T>(
     body?: unknown;
     queryParams?: Record<string, string>;
     apiVersion?: 'v1' | 'v2';
+    suppressExpectedNotFoundLog?: boolean;
   } = {}
 ): Promise<T> {
-  const { method = 'GET', body, queryParams, apiVersion = 'v1' } = options;
+  const {
+    method = 'GET',
+    body,
+    queryParams,
+    apiVersion = 'v1',
+    suppressExpectedNotFoundLog = false,
+  } = options;
 
   const token = await generateJWT(credentials);
 
@@ -218,7 +225,9 @@ export async function appleApiRequest<T>(
 
   if (!response.ok) {
     const errorData = (await response.json()) as AppleApiErrorResponse;
-    console.error('[Apple API Error] Response:', JSON.stringify(errorData, null, 2));
+    if (!(suppressExpectedNotFoundLog && response.status === 404)) {
+      console.error('[Apple API Error] Response:', JSON.stringify(errorData, null, 2));
+    }
     const error = errorData.errors?.[0];
     throw new AppleApiError(
       response.status,

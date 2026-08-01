@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, ArrowUpDown, ChevronUp, ChevronDown, Hamburger, Globe, RefreshCw, Tv } from 'lucide-react';
+import { ArrowLeft, ArrowUpDown, ChevronUp, ChevronDown, Hamburger, Globe, RefreshCw, Tv, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -33,7 +33,9 @@ import {
   calculateBulkPrices,
   getAllRegionCodes,
   type DynamicPPPData,
+  type DynamicPPPDatasets,
   type DynamicExchangeRates,
+  type PPPDatasetMetadata,
 } from '@/lib/google-play/currency';
 import { GOOGLE_PLAY_REGIONS, formatMoney } from '@/lib/google-play/types';
 import { getCurrencySymbol } from '@/lib/utils/currency';
@@ -41,7 +43,10 @@ import { getCurrencySymbol } from '@/lib/utils/currency';
 interface PPPApiResponse {
   success: boolean;
   data: DynamicPPPData;
+  datasets?: DynamicPPPDatasets;
   metadata?: {
+    gdp?: PPPDatasetMetadata;
+    household?: PPPDatasetMetadata;
     exchangeRatesSource?: 'live' | 'fallback';
     exchangeRatesSnapshotDate?: string;
     warning?: string;
@@ -49,6 +54,8 @@ interface PPPApiResponse {
 }
 
 interface PPPMetadata {
+  gdp?: PPPDatasetMetadata;
+  household?: PPPDatasetMetadata;
   exchangeRatesSource?: 'live' | 'fallback';
   exchangeRatesSnapshotDate?: string;
   warning?: string;
@@ -67,10 +74,10 @@ type SortKey = 'region' | 'name' | 'currency' | 'multiplier' | 'price';
 type SortDirection = 'asc' | 'desc' | null;
 
 export default function IndexCheckerPage() {
-  const [strategy, setStrategy] = useState<'ppp' | 'bigmac' | 'netflix'>('ppp');
+  const [strategy, setStrategy] = useState<'ppp' | 'household-ppp' | 'bigmac' | 'netflix'>('ppp');
   const [baseRegion, setBaseRegion] = useState<string>('US');
   const [baseAmount, setBaseAmount] = useState<string>('49.99');
-  const [pppData, setPppData] = useState<DynamicPPPData | null>(null);
+  const [pppDatasets, setPppDatasets] = useState<DynamicPPPDatasets | null>(null);
   const [pppMetadata, setPppMetadata] = useState<PPPMetadata | null>(null);
   const [exchangeRates, setExchangeRates] = useState<DynamicExchangeRates | null>(null);
   const [loading, setLoading] = useState(true);
@@ -88,7 +95,12 @@ export default function IndexCheckerPage() {
       .then(([ppp, rates]) => {
         if (cancelled) return;
         if (ppp.success) {
-          setPppData(ppp.data);
+          setPppDatasets(
+            ppp.datasets ?? {
+              gdp: ppp.data,
+              household: ppp.data,
+            }
+          );
           if (ppp.metadata) setPppMetadata(ppp.metadata);
         }
         if (rates.success) {
@@ -113,6 +125,11 @@ export default function IndexCheckerPage() {
   );
 
   const baseAmountNum = parseFloat(baseAmount) || 0;
+
+  const pppData = useMemo(() => {
+    if (!pppDatasets) return null;
+    return strategy === 'household-ppp' ? pppDatasets.household : pppDatasets.gdp;
+  }, [pppDatasets, strategy]);
 
   const calculations = useMemo(() => {
     if (baseAmountNum <= 0) return [];
@@ -204,7 +221,7 @@ export default function IndexCheckerPage() {
           </Button>
           <h1 className="text-3xl font-bold mb-2">Index Checker</h1>
           <p className="text-muted-foreground">
-            Calculate equivalent prices across countries using PPP (World Bank), Big Mac Index, or Netflix Index data.
+            Compare economy-wide GDP PPP, consumer-focused Household PPP, Big Mac Index, and Netflix Index pricing.
           </p>
         </div>
 
@@ -231,7 +248,7 @@ export default function IndexCheckerPage() {
           {/* Strategy */}
           <div className="space-y-2">
             <Label>Index</Label>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <label
                 className={`flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer flex-1 transition-colors ${
                   strategy === 'ppp' ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'
@@ -246,7 +263,23 @@ export default function IndexCheckerPage() {
                   className="sr-only"
                 />
                 <Globe className="h-4 w-4" />
-                <span className="text-sm">PPP (World Bank)</span>
+                <span className="text-sm">GDP PPP</span>
+              </label>
+              <label
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer flex-1 transition-colors ${
+                  strategy === 'household-ppp' ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="strategy"
+                  value="household-ppp"
+                  checked={strategy === 'household-ppp'}
+                  onChange={() => setStrategy('household-ppp')}
+                  className="sr-only"
+                />
+                <Users className="h-4 w-4" />
+                <span className="text-sm">Household PPP</span>
               </label>
               <label
                 className={`flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer flex-1 transition-colors ${
@@ -398,7 +431,10 @@ export default function IndexCheckerPage() {
                             </TooltipTrigger>
                             <TooltipContent side="top">
                               <p className="text-xs">
-                                {calc.multiplierSource === 'world-bank' && 'World Bank PPP data'}
+                                {calc.multiplierSource === 'world-bank' &&
+                                  (strategy === 'household-ppp'
+                                    ? 'World Bank household PPP data'
+                                    : 'World Bank GDP PPP data')}
                                 {calc.multiplierSource === 'big-mac' && 'Big Mac Index'}
                                 {calc.multiplierSource === 'netflix' && 'Netflix Price Index'}
                                 {calc.multiplierSource === 'static' && 'Static fallback data'}
@@ -424,7 +460,10 @@ export default function IndexCheckerPage() {
         )}
 
         <div className="text-xs text-muted-foreground mt-4">
-          PPP data source: World Bank Open Data (PA.NUS.PPP indicator). Big Mac Index source: The Economist. Netflix Index source: tompec/netflix-prices (CC-BY-4.0).
+          GDP PPP source: World Bank Open Data (<code>PA.NUS.PPP</code>). Household PPP source:
+          World Bank Open Data (<code>PA.NUS.PRVT.PP</code>, household and NPISH final
+          consumption). Big Mac Index source: The Economist. Netflix Index source:
+          tompec/netflix-prices (CC-BY-4.0).{' '}
           Calculations are estimates — actual store pricing may apply rounding, tier snapping, or local rules
           that this tool does not.
         </div>

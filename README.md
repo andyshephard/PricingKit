@@ -11,9 +11,20 @@ Free, open-source regional pricing tool for the App Store and Google Play. Set P
 - **Subscription management** - Manage subscription base plan pricing
 - **Bulk updates** - Update prices across multiple products/regions at once
 - **Currency conversion** - Automatic exchange rate lookups
-- **Multiple pricing strategies** - PPP (World Bank), Big Mac Index, Netflix Index, or custom multipliers for regional pricing
+- **Multiple pricing strategies** - GDP PPP, household-consumption PPP (both World Bank), Big Mac Index, Netflix Index, or custom multipliers
 - **Public Index Checker** - Compare regional prices across strategies at `/index-checker` (no auth required)
 - **Search & filter** - Find products by SKU/product ID or name
+
+### World Bank PPP strategies
+
+PricingKit keeps two World Bank PPP strategies separate so you can preview their different pricing outcomes:
+
+- **GDP PPP** uses `PA.NUS.PPP`, the economy-wide PPP conversion factor covering all final goods and services included in GDP.
+- **Household PPP** uses `PA.NUS.PRVT.PP`, the consumer-focused PPP conversion factor for household and NPISH final-consumption expenditure.
+
+Both strategies combine live World Bank data with exchange rates and normalize results to the selected base storefront. Choose GDP PPP for an economy-wide comparison or Household PPP when consumer purchasing power is the better fit for your product. Legacy static index values remain visible for coverage review, but bulk PPP updates exclude fallback regions and require live World Bank data for both the base and target storefronts.
+
+PricingKit also excludes live rows whose World Bank PPP currency basis cannot be safely combined with the configured market currency. Liberia is currently excluded because its World Bank PPP series is incompatible with the Liberian-dollar exchange-rate series; the calculated value remains visible in previews but cannot be selected for a bulk update.
 
 ## Getting Started
 
@@ -81,7 +92,7 @@ src/
 │   └── subscriptions/    # Subscription components
 ├── lib/
 │   ├── google-play/      # Google Play API integration
-│   ├── apple-connect/    # Apple App Store Connect API integration
+│   ├── apple-connect/    # Apple App Store Connect API (JWT auth, price tiers)
 │   ├── exchange-rates/   # Currency conversion
 │   └── conversion-indexes/ # PPP, Big Mac, Netflix indexes + exchange rate fallbacks
 ├── hooks/                # React Query hooks
