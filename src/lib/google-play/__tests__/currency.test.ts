@@ -128,6 +128,32 @@ describe('calculateRegionalPrice — PPP strategy, mixed billing/local currency'
     expect(result.multiplier).toBe(0.25);
     expect(result.multiplierSource).toBe('static');
   });
+
+  it('uses actualCurrencies override (ARS for one-time products, USD for Apple/subscriptions)', () => {
+    const resultArs = calculateRegionalPrice(
+      49.99,
+      'AR',
+      'direct',
+      'none',
+      undefined,
+      TEST_PPP_DATA,
+      { AR: 'ARS' },
+      TEST_EXCHANGE_RATES
+    );
+    expect(resultArs.currencyCode).toBe('ARS');
+
+    const resultUsd = calculateRegionalPrice(
+      49.99,
+      'AR',
+      'direct',
+      'none',
+      undefined,
+      TEST_PPP_DATA,
+      { AR: 'USD' },
+      TEST_EXCHANGE_RATES
+    );
+    expect(resultUsd.currencyCode).toBe('USD');
+  });
 });
 
 describe('calculateRegionalPrice — PPP, non-USD base region', () => {

@@ -236,9 +236,9 @@ export async function updateInAppProductPrices(
     }
   }
 
-  purchaseOptions[0].regionalPricingAndAvailabilityConfigs = updatedConfigs;
-
   const regionsVersionString = currentProduct.regionsVersion?.version || '2022/02';
+
+  purchaseOptions[0].regionalPricingAndAvailabilityConfigs = updatedConfigs;
 
   // Google's discovery doc lists the PATCH path as lowercase `onetimeproducts`,
   // even though every other one-time-product method is camelCase. Don't "fix" this.

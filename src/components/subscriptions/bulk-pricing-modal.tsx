@@ -219,7 +219,12 @@ export function SubscriptionBulkPricingModal({
     const currencies: Record<string, string> = {};
     for (const [regionCode, money] of Object.entries(normalizedPrices)) {
       if (money.currencyCode) {
-        currencies[regionCode] = money.currencyCode;
+        // Google Play requires USD for Argentina; normalize legacy ARS configurations
+        if (regionCode === 'AR' && money.currencyCode === 'ARS') {
+          currencies[regionCode] = 'USD';
+        } else {
+          currencies[regionCode] = money.currencyCode;
+        }
       }
     }
     return currencies;

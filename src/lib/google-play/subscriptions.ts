@@ -81,7 +81,11 @@ async function normalizeRegionalConfigsForCurrentVersion(
   credentials: ServiceAccountCredentials,
   packageName: string,
   configs: RegionalBasePlanConfig[]
-): Promise<{ regionalConfigs: RegionalBasePlanConfig[]; regionsVersion: string }> {
+): Promise<{
+  regionalConfigs: RegionalBasePlanConfig[];
+  regionsVersion: string;
+  currentRegionPrices: Record<string, ConvertedRegionPrice>;
+}> {
   const configMap = new Map(configs.map((config) => [config.regionCode, config]));
   const usConfig = configMap.get('US');
 
@@ -149,6 +153,47 @@ async function normalizeRegionalConfigsForCurrentVersion(
   return {
     regionalConfigs: normalizedConfigs,
     regionsVersion: currentSnapshot.regionVersion!.version,
+    currentRegionPrices,
+  };
+}
+
+/**
+ * Sanitize untargeted base plans in the same subscription against the current regions version.
+ * Google Play validates all base plans on PATCH. Any base plan retaining legacy currencies
+ * (e.g. ARS for AR) or non-billable regions (e.g. ET) will fail the entire PATCH request.
+ */
+function sanitizeBasePlanForCurrentVersion(
+  bp: BasePlan,
+  currentRegionPrices: Record<string, ConvertedRegionPrice>
+): BasePlan {
+  if (!bp.regionalConfigs || bp.regionalConfigs.length === 0) {
+    return bp;
+  }
+
+  const sanitizedConfigs: RegionalBasePlanConfig[] = [];
+  for (const config of bp.regionalConfigs) {
+    const currentRegion = currentRegionPrices[config.regionCode];
+    // Drop regions that are not billable in the current regionsVersion (e.g. ET)
+    if (!currentRegion) {
+      continue;
+    }
+
+    let price = config.price;
+    // If currency does not match the current region's required currency (e.g. ARS -> USD for AR),
+    // update to current region's converted price
+    if (price.currencyCode !== currentRegion.price.currencyCode) {
+      price = currentRegion.price;
+    }
+
+    sanitizedConfigs.push({
+      ...config,
+      price,
+    });
+  }
+
+  return {
+    ...bp,
+    regionalConfigs: sanitizedConfigs,
   };
 }
 
@@ -249,7 +294,7 @@ export async function updateBasePlanPrices(
     throw new Error(`US price not found for base plan ${basePlanId}. Cannot calculate regional prices without a base USD price.`);
   }
 
-  const { regionalConfigs: updatedConfigs, regionsVersion } =
+  const { regionalConfigs: updatedConfigs, regionsVersion, currentRegionPrices } =
     await normalizeRegionalConfigsForCurrentVersion(
       credentials,
       packageName,
@@ -263,7 +308,7 @@ export async function updateBasePlanPrices(
         regionalConfigs: updatedConfigs,
       };
     }
-    return bp;
+    return sanitizeBasePlanForCurrentVersion(bp, currentRegionPrices);
   });
 
   const requestBody: SubscriptionUpdateRequestBody = {
@@ -313,7 +358,7 @@ export async function deleteBasePlanRegionPrice(
     throw new Error(`US price not found for base plan ${basePlanId}. Cannot calculate regional prices without a base USD price.`);
   }
 
-  const { regionalConfigs: updatedConfigs, regionsVersion } =
+  const { regionalConfigs: updatedConfigs, regionsVersion, currentRegionPrices } =
     await normalizeRegionalConfigsForCurrentVersion(
       credentials,
       packageName,
@@ -327,7 +372,7 @@ export async function deleteBasePlanRegionPrice(
         regionalConfigs: updatedConfigs,
       };
     }
-    return bp;
+    return sanitizeBasePlanForCurrentVersion(bp, currentRegionPrices);
   });
 
   const deleteRequestBody: SubscriptionUpdateRequestBody = {

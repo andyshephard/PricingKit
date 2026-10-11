@@ -77,10 +77,11 @@ function toAlpha2(regionCode: string): string {
 // Get the currency for a region
 // If actualCurrencies is provided (from API), use that; otherwise fall back to static data
 function getCurrencyForRegion(regionCode: string, actualCurrencies?: Record<string, string>): string {
-  // Prefer actual currency from API if available (supports both alpha-2 and alpha-3)
+  // If actualCurrencies is provided (from product/subscription API data or modal), prefer it
   if (actualCurrencies?.[regionCode]) {
     return actualCurrencies[regionCode];
   }
+
   // Fall back to our static mapping (using alpha-2)
   const alpha2Code = toAlpha2(regionCode);
   const region = GOOGLE_PLAY_REGIONS.find((r) => r.code === alpha2Code);

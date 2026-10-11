@@ -117,4 +117,107 @@ describe('subscription regional price updates', () => {
 
     expect(argentina?.price.currencyCode).toBe('USD');
   });
+
+  it('sanitizes untargeted base plans by normalizing legacy currencies and dropping non-billable regions', async () => {
+    const multiPlanSubscription: Subscription = {
+      ...subscription,
+      basePlans: [
+        subscription.basePlans![0],
+        {
+          basePlanId: 'yearly-legacy',
+          state: 'active',
+          regionalConfigs: [
+            {
+              regionCode: 'US',
+              newSubscriberAvailability: true,
+              price: { currencyCode: 'USD', units: '10' },
+            },
+            {
+              regionCode: 'AR',
+              newSubscriberAvailability: true,
+              price: { currencyCode: 'ARS', units: '5000' },
+            },
+            {
+              regionCode: 'ET',
+              newSubscriberAvailability: true,
+              price: { currencyCode: 'ETB', units: '200' },
+            },
+          ],
+        },
+      ],
+    };
+
+    const fetchMock = vi.mocked(googlePlayFetch);
+
+    fetchMock.mockImplementation(async (_credentials, path, options) => {
+      if (path.endsWith('/subscriptions/yearly') && options?.method === 'PATCH') {
+        return multiPlanSubscription;
+      }
+
+      if (path.endsWith('/subscriptions/yearly')) {
+        return structuredClone(multiPlanSubscription);
+      }
+
+      if (path.endsWith('/pricing:convertRegionPrices')) {
+        return {
+          convertedRegionPrices: {
+            US: {
+              regionCode: 'US',
+              price: { currencyCode: 'USD', units: '10' },
+            },
+            AR: {
+              regionCode: 'AR',
+              price: { currencyCode: 'USD', units: '9', nanos: 990_000_000 },
+            },
+          },
+          convertedOtherRegionsPrice: {
+            usdPrice: { currencyCode: 'USD', units: '10' },
+            eurPrice: { currencyCode: 'EUR', units: '9' },
+          },
+          regionVersion: { version: '2026/09' },
+        };
+      }
+
+      throw new Error(`Unexpected Google Play request: ${path}`);
+    });
+
+    await updateBasePlanPrices(
+      credentials,
+      'at.persie0.hanziHero',
+      'yearly',
+      'yearly-base',
+      [
+        {
+          regionCode: 'US',
+          price: { currencyCode: 'USD', units: '15' },
+          newSubscriberAvailability: true,
+        },
+      ]
+    );
+
+    const patchCall = fetchMock.mock.calls.find(([, , options]) => options?.method === 'PATCH');
+    expect(patchCall).toBeDefined();
+
+    const body = patchCall?.[2]?.body as {
+      basePlans?: Array<{
+        basePlanId?: string;
+        regionalConfigs?: Array<{
+          regionCode: string;
+          price: { currencyCode: string; units: string; nanos?: number };
+        }>;
+      }>;
+    };
+
+    const untargetedPlan = body.basePlans?.find((bp) => bp.basePlanId === 'yearly-legacy');
+    expect(untargetedPlan).toBeDefined();
+
+    // AR should have been normalized to USD
+    const legacyAr = untargetedPlan?.regionalConfigs?.find((rc) => rc.regionCode === 'AR');
+    expect(legacyAr?.price.currencyCode).toBe('USD');
+
+    // ET should have been dropped because it's not in currentRegionPrices
+    const legacyEt = untargetedPlan?.regionalConfigs?.find((rc) => rc.regionCode === 'ET');
+    expect(legacyEt).toBeUndefined();
+  });
 });
+

@@ -416,6 +416,11 @@ export function BulkPricingModal({
       currencies[region.code] = region.currency;
     }
 
+    // Google Play one-time products bill Argentina in ARS (unlike subscriptions which bill in USD)
+    if (platform === 'google') {
+      currencies['AR'] = 'ARS';
+    }
+
     // Existing API prices remain the strongest source when present.
     for (const [regionCode, money] of Object.entries(normalizedPrices)) {
       if (money.currencyCode) {
@@ -424,7 +429,7 @@ export function BulkPricingModal({
     }
 
     return currencies;
-  }, [allRegions, normalizedPrices]);
+  }, [allRegions, platform, normalizedPrices]);
 
   // Calculate preview prices using the user-selected base region + currency.
   const previewPrices = useMemo(() => {
