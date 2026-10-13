@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { Calculator, Globe, TrendingDown, Sliders, RefreshCw, Hamburger, Tv, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
+import { Calculator, Globe, TrendingDown, Sliders, RefreshCw, Hamburger, Tv, Sparkles, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -100,7 +100,7 @@ export function SubscriptionBulkPricingModal({
 }: SubscriptionBulkPricingModalProps) {
   const [basePrice, setBasePrice] = useState<string>('');
   const [baseRegion, setBaseRegion] = useState<string>('US');
-  const [strategy, setStrategy] = useState<PricingStrategy>('ppp');
+  const [strategy, setStrategy] = useState<PricingStrategy>('smart');
   const [rounding, setRounding] = useState<RoundingMode>('nearest-99');
   const [selectedRegions, setSelectedRegions] = useState<Set<string>>(new Set());
 
@@ -219,7 +219,12 @@ export function SubscriptionBulkPricingModal({
     const currencies: Record<string, string> = {};
     for (const [regionCode, money] of Object.entries(normalizedPrices)) {
       if (money.currencyCode) {
-        currencies[regionCode] = money.currencyCode;
+        // Google Play requires USD for Argentina; normalize legacy ARS configurations
+        if (regionCode === 'AR' && money.currencyCode === 'ARS') {
+          currencies[regionCode] = 'USD';
+        } else {
+          currencies[regionCode] = money.currencyCode;
+        }
       }
     }
     return currencies;
@@ -504,7 +509,7 @@ export function SubscriptionBulkPricingModal({
         : (firstConfig?.price ? moneyToNumber(firstConfig.price).toString() : '');
 
       setBasePrice(initialPrice);
-      setStrategy('ppp');
+      setStrategy('smart');
       setRounding('nearest-99');
       setHasInitializedSelection(false);
     }
@@ -577,7 +582,7 @@ export function SubscriptionBulkPricingModal({
               )}
             </div>
             <TooltipProvider delayDuration={200}>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2">
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
@@ -628,6 +633,55 @@ export function SubscriptionBulkPricingModal({
                 </Tooltip>
 
                 <Tooltip>
+
+                  <TooltipTrigger asChild>
+
+                    <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+
+                      <input
+
+                        type="radio"
+
+                        name="strategy"
+
+                        value="smart"
+
+                        checked={strategy === 'smart'}
+
+                        onChange={() => setStrategy('smart')}
+
+                        className="sr-only"
+
+                      />
+
+                      <Sparkles className="h-4 w-4 shrink-0" />
+
+                      <span className="text-sm font-medium truncate">Smart</span>
+
+                    </label>
+
+                  </TooltipTrigger>
+
+                  <TooltipContent side="bottom" className="max-w-sm">
+
+                    <p className="font-medium">Smart App-Market (Recommended)</p>
+
+                    <p className="text-xs text-muted-foreground">
+
+                        Revenue-oriented app pricing: compressed PPP plus mobile-market and
+
+                        platform priors. Google Play receives more aggressive emerging-market
+
+                        discounts than iOS, matching observed subscription-market behavior.
+
+                    </p>
+
+                  </TooltipContent>
+
+                </Tooltip>
+
+
+                <Tooltip>
                   <TooltipTrigger asChild>
                     <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
                       <input
@@ -643,10 +697,10 @@ export function SubscriptionBulkPricingModal({
                     </label>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" className="max-w-xs">
-                    <p className="font-medium">PPP-Adjusted (Recommended)</p>
+                    <p className="font-medium">Raw World Bank PPP</p>
                     <p className="text-xs text-muted-foreground">
-                      Lower prices for lower-income regions based on World Bank purchasing power parity data.
-                      Hyperinflation regions automatically receive reduced prices for affordability.
+                      Population-wide purchasing power. Useful as a raw reference, but it can
+                      over-discount the subset of users who pay for apps.
                     </p>
                     {pppMetadata && pppMetadata.worldBankRegions > 0 && (
                       <p className="text-xs text-muted-foreground mt-1">
@@ -723,6 +777,26 @@ export function SubscriptionBulkPricingModal({
                 <input
                   type="radio"
                   name="rounding"
+                  value="nearest-x9"
+                  checked={rounding === 'nearest-x9'}
+                  onChange={() => setRounding('nearest-x9')}
+                />
+                <span className="text-sm">Nearest .x9</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="rounding"
+                  value="round-up-x9"
+                  checked={rounding === 'round-up-x9'}
+                  onChange={() => setRounding('round-up-x9')}
+                />
+                <span className="text-sm">Round up to .x9</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="rounding"
                   value="round-up"
                   checked={rounding === 'round-up'}
                   onChange={() => setRounding('round-up')}
@@ -743,6 +817,8 @@ export function SubscriptionBulkPricingModal({
             <p className="text-xs text-muted-foreground">
               {rounding === 'nearest-99' && 'Closest .99 ending by absolute distance.'}
               {rounding === 'round-up' && 'Always rounds up to the next .99 ending.'}
+              {rounding === 'nearest-x9' && 'Closest .x9 ending (e.g. 1.55 to 1.59, 1.53 to 1.49).'}
+              {rounding === 'round-up-x9' && 'Always rounds up to the next .x9 ending (e.g. 1.55 to 1.59).'}
               {rounding === 'none' && 'Use the calculated value as-is.'}
             </p>
           </div>
@@ -896,6 +972,7 @@ export function SubscriptionBulkPricingModal({
                                 </TooltipTrigger>
                                 <TooltipContent side="top">
                                   <p className="text-xs">
+                                    {calculated.multiplierSource === 'app-market' && 'Smart app-market model'}
                                     {calculated.multiplierSource === 'world-bank' && 'World Bank PPP data'}
                                     {calculated.multiplierSource === 'big-mac' && 'Big Mac Index'}
                                     {calculated.multiplierSource === 'netflix' && 'Netflix Price Index'}

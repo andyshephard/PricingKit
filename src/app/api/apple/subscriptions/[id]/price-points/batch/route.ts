@@ -6,6 +6,7 @@ import {
   AppleApiError,
 } from '@/lib/apple-connect';
 import { alpha2ToAlpha3 } from '@/lib/apple-connect/territories';
+import { findPreferredTierIndex } from '@/lib/apple-connect/price-tier-selection';
 import { executeWithRateLimit, RateLimitError } from '@/lib/utils/rate-limit';
 import { createNdjsonStream, NDJSON_HEADERS } from '@/lib/utils/ndjson-stream';
 
@@ -20,7 +21,8 @@ const batchSchema = z.object({
 });
 
 // POST /api/apple/subscriptions/[id]/price-points/batch
-// Resolves the closest Apple price point for each territory server-side
+// Resolves the preferred Apple price point for each territory server-side.
+// Uses nearest-tier matching plus a conservative .99 charm-price preference.
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -99,24 +101,29 @@ export async function POST(
             writer.progress(completed, total, 'resolve'),
         });
 
-        // Find the closest price point for each territory
-        for (const { territoryCode, targetPrice, pricePoints } of results) {
+        // Find the preferred price point for each territory.
+        for (const { territoryCode, targetPrice, currency, pricePoints } of results) {
           if (!pricePoints || pricePoints.length === 0) {
             skipped.push(territoryCode);
             continue;
           }
 
-          const closest = pricePoints.reduce((best, pp) => {
-            const ppPrice = parseFloat(pp.customerPrice);
-            const bestPrice = parseFloat(best.customerPrice);
-            return Math.abs(ppPrice - targetPrice) < Math.abs(bestPrice - targetPrice)
-              ? pp
-              : best;
-          });
+          const preferredIndex = findPreferredTierIndex(
+            pricePoints.map((pp) => parseFloat(pp.customerPrice)),
+            targetPrice,
+            currency
+          );
+
+          if (preferredIndex === null) {
+            skipped.push(territoryCode);
+            continue;
+          }
+
+          const preferred = pricePoints[preferredIndex];
 
           resolved[territoryCode] = {
-            pricePointId: closest.id,
-            tierPrice: parseFloat(closest.customerPrice),
+            pricePointId: preferred.id,
+            tierPrice: parseFloat(preferred.customerPrice),
           };
         }
 

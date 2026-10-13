@@ -8,6 +8,7 @@ import {
   googlePlayFetch,
 } from '@/lib/google-play/client';
 import type { ServiceAccountCredentials } from '@/lib/google-play/types';
+import { GOOGLE_PLAY_REGIONS } from '@/lib/google-play/types';
 import { GOOGLE_PRICING_WRITE_DENIED_ERROR } from '@/lib/google-play/errors';
 
 interface ProbeListResp<T> {
@@ -17,6 +18,40 @@ interface ProbeListResp<T> {
 interface ProbeProduct {
   productId?: string;
   listings?: unknown;
+  regionsVersion?: { version?: string };
+  purchaseOptions?: Array<{
+    regionalPricingAndAvailabilityConfigs?: Array<{
+      regionCode?: string;
+      price?: { currencyCode?: string; units?: string; nanos?: number };
+    }>;
+  }>;
+  basePlans?: Array<{
+    regionalConfigs?: Array<{
+      regionCode?: string;
+      price?: { currencyCode?: string; units?: string; nanos?: number };
+    }>;
+  }>;
+}
+
+function sanitizeProbeSubscription(sub: ProbeProduct): ProbeProduct {
+  const validRegionCodes = new Set(GOOGLE_PLAY_REGIONS.map((r) => r.code));
+  return {
+    ...sub,
+    basePlans: sub.basePlans?.map((bp) => ({
+      ...bp,
+      regionalConfigs: bp.regionalConfigs
+        ?.filter((rc) => rc.regionCode && validRegionCodes.has(rc.regionCode))
+        .map((rc) => {
+          if (rc.regionCode === 'AR' && rc.price?.currencyCode === 'ARS') {
+            return {
+              ...rc,
+              price: { ...rc.price, currencyCode: 'USD' },
+            };
+          }
+          return rc;
+        }),
+    })),
+  };
 }
 
 const SESSION_COOKIE = 'gplay_session';
@@ -125,6 +160,7 @@ export async function POST(request: NextRequest) {
           creds,
           `${appsBase}/oneTimeProducts/${encodeURIComponent(probeProduct.productId)}`
         );
+        const otpVersion = full.regionsVersion?.version || '2022/02';
         // PATCH path is lowercase per Google's discovery doc (only this one method is).
         // updateMask=purchaseOptions tests the actual pricing-edit permission.
         await googlePlayFetch<unknown>(
@@ -132,7 +168,7 @@ export async function POST(request: NextRequest) {
           `${appsBase}/onetimeproducts/${encodeURIComponent(probeProduct.productId)}`,
           {
             method: 'PATCH',
-            query: { 'regionsVersion.version': '2025/03', updateMask: 'purchaseOptions' },
+            query: { 'regionsVersion.version': otpVersion, updateMask: 'purchaseOptions' },
             body: full,
           }
         );
@@ -149,14 +185,16 @@ export async function POST(request: NextRequest) {
             creds,
             `${appsBase}/subscriptions/${encodeURIComponent(probeSub.productId)}`
           );
+          const subVersion = fullSub.regionsVersion?.version || '2025/03';
+          const cleanedSub = sanitizeProbeSubscription(fullSub);
           // updateMask=basePlans tests the pricing-edit permission for subscriptions.
           await googlePlayFetch<unknown>(
             creds,
             `${appsBase}/subscriptions/${encodeURIComponent(probeSub.productId)}`,
             {
               method: 'PATCH',
-              query: { 'regionsVersion.version': '2025/03', updateMask: 'basePlans' },
-              body: fullSub,
+              query: { 'regionsVersion.version': subVersion, updateMask: 'basePlans' },
+              body: cleanedSub,
             }
           );
         }

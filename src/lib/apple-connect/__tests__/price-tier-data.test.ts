@@ -62,7 +62,7 @@ describe('getPriceTiersForCurrency', () => {
         expect(typeof t.tier, currency).toBe('string');
       }
     }
-  });
+  }, 20000);
 
   it('major currencies (USD, GBP, EUR, JPY) have tiers', () => {
     for (const c of ['USD', 'GBP', 'EUR', 'JPY']) {

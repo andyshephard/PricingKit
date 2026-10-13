@@ -49,7 +49,7 @@ export const APPLE_TERRITORIES: AppleTerritoryInfo[] = [
   { alpha3: 'BRA', alpha2: 'BR', name: 'Brazil', currency: 'BRL' },
   { alpha3: 'VGB', alpha2: 'VG', name: 'British Virgin Islands', currency: 'USD' },
   { alpha3: 'BRN', alpha2: 'BN', name: 'Brunei', currency: 'USD' },
-  { alpha3: 'BGR', alpha2: 'BG', name: 'Bulgaria', currency: 'BGN' },
+  { alpha3: 'BGR', alpha2: 'BG', name: 'Bulgaria', currency: 'EUR' },
   { alpha3: 'BFA', alpha2: 'BF', name: 'Burkina Faso', currency: 'USD' },
   { alpha3: 'KHM', alpha2: 'KH', name: 'Cambodia', currency: 'USD' },
   { alpha3: 'CMR', alpha2: 'CM', name: 'Cameroon', currency: 'USD' },

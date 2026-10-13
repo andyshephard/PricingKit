@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect } from 'react';
-import { Calculator, Globe, DollarSign, TrendingDown, Sliders, RefreshCw, Hamburger, Tv, AlertTriangle, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
+import { Calculator, Globe, DollarSign, TrendingDown, Sliders, RefreshCw, Hamburger, Tv, Sparkles, AlertTriangle, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -39,7 +39,10 @@ import {
   alpha3ToAlpha2,
 } from '@/lib/apple-connect/territories';
 import { useAppleAppPrice } from '@/hooks/use-apple-app-price';
+import { useAppleEqualizedPrices } from '@/hooks/use-apple-equalized-prices';
+import { useAppleSmallBusinessProgram } from '@/hooks/use-apple-small-business-program';
 import { findClosestTierForCurrency, getPriceTiersForCurrency } from '@/lib/apple-connect/price-tier-data';
+import { findSmartTierForCurrency } from '@/lib/apple-connect/price-tier-selection';
 import { getCurrencySymbol } from '@/lib/utils/currency';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
@@ -58,6 +61,7 @@ import {
   type RoundingMode,
   type DynamicPPPData,
   type DynamicExchangeRates,
+  type RegionalPriceBaseline,
 } from '@/lib/google-play/currency';
 import { useUpdateAppleSubscriptionPrices, useResolveAppleSubscriptionPricePoints } from '@/hooks/use-subscriptions';
 
@@ -142,7 +146,7 @@ interface PreviewPrice {
   priceChange: number | null; // Percentage change from current
   noTierData: boolean; // True if no tier data available for this currency
   multiplier: number; // Pricing multiplier applied to base
-  multiplierSource?: 'world-bank' | 'big-mac' | 'netflix' | 'static' | 'custom' | 'direct';
+  multiplierSource?: 'app-market' | 'world-bank' | 'big-mac' | 'netflix' | 'static' | 'custom' | 'direct';
 }
 
 export function AppleSubscriptionBulkPricingModal({
@@ -158,8 +162,10 @@ export function AppleSubscriptionBulkPricingModal({
   const [baseRegion, setBaseRegion] = useState<string>('USA'); // alpha-3
   const [userTouchedRegion, setUserTouchedRegion] = useState(false);
   const [inputMode, setInputMode] = useState<'tier' | 'manual'>('tier');
-  const [strategy, setStrategy] = useState<PricingStrategy>('ppp');
+  const [strategy, setStrategy] = useState<PricingStrategy>('smart');
   const [rounding, setRounding] = useState<RoundingMode>('nearest-tier');
+  const [smallBusinessProgram, setSmallBusinessProgram] =
+    useAppleSmallBusinessProgram();
   const [selectedRegions, setSelectedRegions] = useState<Set<string>>(new Set());
   const [startDate, setStartDate] = useState<string>('');
   const [isSaving, setIsSaving] = useState(false);
@@ -190,6 +196,48 @@ export function AppleSubscriptionBulkPricingModal({
 
   const basePriceNum = parseFloat(basePrice) || 0;
   const isApproved = subscription.state === 'APPROVED';
+
+  const {
+    data: equalizedPriceData,
+    isLoading: equalizedPricesLoading,
+    error: equalizedPricesError,
+  } = useAppleEqualizedPrices({
+    kind: 'subscription',
+    id: subscription.id,
+    baseRegion,
+    basePrice: basePriceNum,
+    enabled: open && strategy === 'smart',
+  });
+
+  const smartRegionalBaselines = useMemo(() => {
+    if (!equalizedPriceData) return undefined;
+
+    const baselines: Record<string, RegionalPriceBaseline> = {};
+    for (const [regionCode, price] of Object.entries(equalizedPriceData.prices)) {
+      const numericPrice = Number(price.customerPrice);
+      if (Number.isFinite(numericPrice)) {
+        const proceeds = Number(price.proceeds);
+        const proceedsYear2 = Number(price.proceedsYear2);
+        baselines[regionCode] = {
+          price: numericPrice,
+          currency: price.currency,
+          proceeds: Number.isFinite(proceeds) ? proceeds : undefined,
+          proceedsYear2: Number.isFinite(proceedsYear2)
+            ? proceedsYear2
+            : undefined,
+        };
+      }
+    }
+    return baselines;
+  }, [equalizedPriceData]);
+
+  useEffect(() => {
+    if (open && strategy === 'smart' && equalizedPricesError) {
+      toast.error(
+        `Apple equalized prices could not be loaded: ${equalizedPricesError.message}`
+      );
+    }
+  }, [open, strategy, equalizedPricesError]);
 
   // Seed base region from app-level Apple base territory once it loads,
   // unless the user has already picked a region this session.
@@ -330,6 +378,10 @@ export function AppleSubscriptionBulkPricingModal({
   const previewPrices = useMemo((): PreviewPrice[] => {
     if (basePriceNum <= 0) return [];
 
+    // Smart Apple pricing must never silently fall back to raw FX while Apple's
+    // equalized storefront baselines are still loading or unavailable.
+    if (strategy === 'smart' && !smartRegionalBaselines) return [];
+
     // Base region is user-controlled state (seeded from app-level Apple base territory).
     // calculateBulkPrices accepts baseRegion as alpha-2 OR alpha-3; for Apple we pass alpha-3.
     const calculatedPrices = calculateBulkPrices(
@@ -343,7 +395,9 @@ export function AppleSubscriptionBulkPricingModal({
       exchangeRates ?? undefined,
       baseCurrency,
       baseRegion,
-      getPriceTiersForCurrency // tier-aware rounding for Apple
+      getPriceTiersForCurrency, // tier-aware rounding for Apple
+      smartRegionalBaselines,
+      smallBusinessProgram
     );
 
     // Map to preview format with Apple tier matching
@@ -353,7 +407,7 @@ export function AppleSubscriptionBulkPricingModal({
       const currency = calculated.currencyCode;
 
       // Find closest Apple tier for this price/currency
-      const closestTier = findClosestTierForCurrency(calculated.rawPrice, currency);
+      const closestTier = findSmartTierForCurrency(calculated.rawPrice, currency);
 
       const tierPrice = closestTier?.price ?? calculated.rawPrice;
       const tier = closestTier?.tier ?? null;
@@ -384,7 +438,7 @@ export function AppleSubscriptionBulkPricingModal({
         multiplierSource: calculated.multiplierSource,
       };
     });
-  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, subscription.prices, baseRegion, baseCurrency]);
+  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, subscription.prices, baseRegion, baseCurrency, smartRegionalBaselines, smallBusinessProgram]);
 
   const sortedPreviewPrices = useMemo(() => {
     const items = [...previewPrices];
@@ -672,7 +726,7 @@ export function AppleSubscriptionBulkPricingModal({
       
       setBasePrice(initialPrice);
       setInputMode('tier');
-      setStrategy('ppp');
+      setStrategy('smart');
       setRounding('nearest-tier');
       setUserTouchedRegion(false);
       setHasInitializedSelection(false);
@@ -810,12 +864,12 @@ export function AppleSubscriptionBulkPricingModal({
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <Label>Pricing Strategy</Label>
-                {(pppLoading || exchangeRatesLoading) && (
+                {(pppLoading || exchangeRatesLoading || (strategy === 'smart' && equalizedPricesLoading)) && (
                   <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />
                 )}
               </div>
               <TooltipProvider delayDuration={200}>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2">
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
@@ -866,6 +920,57 @@ export function AppleSubscriptionBulkPricingModal({
                   </Tooltip>
 
                   <Tooltip>
+
+                    <TooltipTrigger asChild>
+
+                      <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+
+                        <input
+
+                          type="radio"
+
+                          name="strategy"
+
+                          value="smart"
+
+                          checked={strategy === 'smart'}
+
+                          onChange={() => setStrategy('smart')}
+
+                          className="sr-only"
+
+                        />
+
+                        <Sparkles className="h-4 w-4 shrink-0" />
+
+                        <span className="text-sm font-medium truncate">Smart</span>
+
+                      </label>
+
+                    </TooltipTrigger>
+
+                    <TooltipContent side="bottom" className="max-w-sm">
+
+                      <p className="font-medium">Smart App-Market (Recommended)</p>
+
+                      <p className="text-xs text-muted-foreground">
+
+                          Revenue-oriented starting model for digital apps: compresses World Bank PPP
+
+                          because paid app users are wealthier than the population average, then applies
+
+                          mobile-market and iOS/Android priors. Optimize with RPU/LTV experiments once
+
+                          you have enough country-level data.
+
+                      </p>
+
+                    </TooltipContent>
+
+                  </Tooltip>
+
+
+                  <Tooltip>
                     <TooltipTrigger asChild>
                       <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
                         <input
@@ -881,10 +986,10 @@ export function AppleSubscriptionBulkPricingModal({
                       </label>
                     </TooltipTrigger>
                     <TooltipContent side="bottom" className="max-w-xs">
-                      <p className="font-medium">PPP-Adjusted (Recommended)</p>
+                      <p className="font-medium">Raw World Bank PPP</p>
                       <p className="text-xs text-muted-foreground">
-                        Lower prices for lower-income regions based on World Bank purchasing power parity data.
-                        Hyperinflation regions automatically receive reduced prices for affordability.
+                        Population-wide purchasing power. Useful as a raw reference, but it can
+                        over-discount paid app users, especially on iOS.
                       </p>
                       {pppMetadata && pppMetadata.worldBankRegions > 0 && (
                         <p className="text-xs text-muted-foreground mt-1">
@@ -943,6 +1048,27 @@ export function AppleSubscriptionBulkPricingModal({
               </TooltipProvider>
             </div>
 
+            {strategy === 'smart' && (
+              <div className="space-y-2 rounded-lg border p-3">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <Checkbox
+                    checked={smallBusinessProgram}
+                    onCheckedChange={(checked) =>
+                      setSmallBusinessProgram(checked === true)
+                    }
+                  />
+                  <span className="text-sm font-medium">
+                    App Store Small Business Program (15% commission)
+                  </span>
+                </label>
+                <p className="text-xs text-muted-foreground ml-6">
+                  Enable this if your Apple developer account is enrolled.
+                  PricingKit uses the 85% proceeds schedule from day one;
+                  standard subscriptions use 70% in year one and 85% after one year.
+                </p>
+              </div>
+            )}
+
             {/* Rounding mode */}
             <div className="space-y-3">
               <Label>Rounding</Label>
@@ -996,10 +1122,10 @@ export function AppleSubscriptionBulkPricingModal({
                   checked={preserveCurrentPrice}
                   onCheckedChange={(checked) => onPreserveCurrentPriceChange(checked === true)}
                 />
-                <span className="text-sm font-medium">Preserve existing subscriber prices</span>
+                <span className="text-sm font-medium">Preserve current prices on increases</span>
               </label>
               <p className="text-xs text-muted-foreground ml-6">
-                When enabled, existing subscribers keep their current price. Only new subscribers get the updated price.
+                For price increases, existing subscribers stay on their current price. Apple always applies price decreases to existing subscribers; a higher old price cannot be preserved.
               </p>
             </div>
 
@@ -1145,6 +1271,7 @@ export function AppleSubscriptionBulkPricingModal({
                                   </TooltipTrigger>
                                   <TooltipContent side="top">
                                     <p className="text-xs">
+                                      {preview.multiplierSource === 'app-market' && 'Smart app-market model'}
                                       {preview.multiplierSource === 'world-bank' && 'World Bank PPP data'}
                                       {preview.multiplierSource === 'big-mac' && 'Big Mac Index'}
                                       {preview.multiplierSource === 'netflix' && 'Netflix Price Index'}

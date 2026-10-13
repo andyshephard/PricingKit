@@ -83,10 +83,10 @@ export const PRICING_INDEX: Record<string, PricingIndexEntry> = {
   AE: { regionCode: 'AE', pppMultiplier: 0.63, minPrice: 3, suggestedRounding: 0.99 },
   SA: { regionCode: 'SA', pppMultiplier: 0.49, minPrice: 3, suggestedRounding: 0.99 },
   QA: { regionCode: 'QA', pppMultiplier: 0.61, minPrice: 3, suggestedRounding: 0.99 },
-  KW: { regionCode: 'KW', pppMultiplier: 0.63, minPrice: 0.99, suggestedRounding: 0.99 },
-  BH: { regionCode: 'BH', pppMultiplier: 0.44, minPrice: 0.99, suggestedRounding: 0.99 },
-  OM: { regionCode: 'OM', pppMultiplier: 0.49, minPrice: 0.99, suggestedRounding: 0.99 },
-  JO: { regionCode: 'JO', pppMultiplier: 0.43, minPrice: 0.50, suggestedRounding: 0.99 },
+  KW: { regionCode: 'KW', pppMultiplier: 0.63, minPrice: 0.10, suggestedRounding: 0.99 },
+  BH: { regionCode: 'BH', pppMultiplier: 0.44, minPrice: 0.10, suggestedRounding: 0.99 },
+  OM: { regionCode: 'OM', pppMultiplier: 0.49, minPrice: 0.10, suggestedRounding: 0.99 },
+  JO: { regionCode: 'JO', pppMultiplier: 0.43, minPrice: 0.10, suggestedRounding: 0.99 },
   LB: { regionCode: 'LB', pppMultiplier: 0.27, minPrice: 0.99, suggestedRounding: 0.99 },
   IQ: { regionCode: 'IQ', pppMultiplier: 0.42, minPrice: 999, suggestedRounding: 0 },
   YE: { regionCode: 'YE', pppMultiplier: 0.39, minPrice: 0.99, suggestedRounding: 0.99 },
@@ -150,7 +150,7 @@ export const PRICING_INDEX: Record<string, PricingIndexEntry> = {
   KN: { regionCode: 'KN', pppMultiplier: 0.69, minPrice: 0.99, suggestedRounding: 0.99 },
   LC: { regionCode: 'LC', pppMultiplier: 0.51, minPrice: 0.99, suggestedRounding: 0.99 },
   AW: { regionCode: 'AW', pppMultiplier: 0.78, minPrice: 0.99, suggestedRounding: 0.99 },
-  KY: { regionCode: 'KY', pppMultiplier: 1.12, minPrice: 0.99, suggestedRounding: 0.99 },
+  KY: { regionCode: 'KY', pppMultiplier: 1.12, minPrice: 0.10, suggestedRounding: 0.99 },
   VG: { regionCode: 'VG', pppMultiplier: 1.02, minPrice: 0.99, suggestedRounding: 0.99 },
   TC: { regionCode: 'TC', pppMultiplier: 0.99, minPrice: 0.99, suggestedRounding: 0.99 },
   BM: { regionCode: 'BM', pppMultiplier: 1.15, minPrice: 0.99, suggestedRounding: 0.99 },
@@ -219,7 +219,7 @@ export const PRICING_INDEX: Record<string, PricingIndexEntry> = {
   // Mediterranean Islands
   CY: { regionCode: 'CY', pppMultiplier: 0.68, minPrice: 0.99, suggestedRounding: 0.99 },
   MT: { regionCode: 'MT', pppMultiplier: 0.68, minPrice: 0.99, suggestedRounding: 0.99 },
-  GI: { regionCode: 'GI', pppMultiplier: 0.91, minPrice: 0.99, suggestedRounding: 0.99 },
+  GI: { regionCode: 'GI', pppMultiplier: 0.91, minPrice: 0.10, suggestedRounding: 0.99 },
   GR: { regionCode: 'GR', pppMultiplier: 0.61, minPrice: 0.99, suggestedRounding: 0.99 },
 };
 

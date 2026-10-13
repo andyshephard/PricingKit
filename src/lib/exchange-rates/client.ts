@@ -1,7 +1,9 @@
-// Open Exchange Rates API client with caching
-// API Documentation: https://docs.openexchangerates.org/
+// Exchange-rate client with caching.
+// Primary: Open Exchange Rates when a key is configured.
+// Free fallback: Frankfurter v2, no API key required.
 
 const API_BASE_URL = 'https://openexchangerates.org/api';
+const FRANKFURTER_V2_URL = 'https://api.frankfurter.dev/v2/rates?base=USD';
 const CACHE_DURATION_MS = 6 * 60 * 60 * 1000; // 6 hours (free tier updates hourly)
 
 export class NoApiKeyError extends Error {
@@ -24,6 +26,13 @@ interface OpenExchangeRatesResponse {
   timestamp: number;
   base: string;
   rates: Record<string, number>;
+}
+
+interface FrankfurterRateRow {
+  date: string;
+  base: string;
+  quote: string;
+  rate: number;
 }
 
 // In-memory cache
@@ -76,34 +85,78 @@ function isCacheValid(data: ExchangeRatesData): boolean {
 /**
  * Fetch latest exchange rates from Open Exchange Rates API
  */
-async function fetchFromApi(providedApiKey?: string): Promise<ExchangeRatesData> {
-  const apiKey = getApiKey(providedApiKey);
-
-  if (!apiKey) {
-    throw new NoApiKeyError();
-  }
-
-  const url = `${API_BASE_URL}/latest.json?app_id=${apiKey}`;
-
-  const response = await fetch(url, {
-    headers: {
-      'Accept': 'application/json',
-    },
+async function fetchFromFrankfurter(): Promise<ExchangeRatesData> {
+  const response = await fetch(FRANKFURTER_V2_URL, {
+    headers: { Accept: 'application/json' },
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Open Exchange Rates API error: ${response.status} - ${errorText}`);
+    throw new Error(
+      `Frankfurter v2 error: ${response.status} - ${errorText}`
+    );
   }
 
-  const data: OpenExchangeRatesResponse = await response.json();
+  const rows: FrankfurterRateRow[] = await response.json();
+  const rates: Record<string, number> = { USD: 1 };
+
+  for (const row of rows) {
+    if (
+      row.base === 'USD' &&
+      typeof row.quote === 'string' &&
+      Number.isFinite(row.rate) &&
+      row.rate > 0
+    ) {
+      rates[row.quote] = row.rate;
+    }
+  }
 
   return {
-    base: data.base,
-    rates: data.rates,
-    timestamp: data.timestamp,
+    base: 'USD',
+    rates,
+    timestamp: Math.floor(Date.now() / 1000),
     fetchedAt: new Date().toISOString(),
   };
+}
+
+async function fetchFromApi(providedApiKey?: string): Promise<ExchangeRatesData> {
+  const apiKey = getApiKey(providedApiKey);
+
+  if (!apiKey) {
+    return fetchFromFrankfurter();
+  }
+
+  const url = `${API_BASE_URL}/latest.json?app_id=${apiKey}`;
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(
+        `Open Exchange Rates API error: ${response.status} - ${errorText}`
+      );
+    }
+
+    const data: OpenExchangeRatesResponse = await response.json();
+
+    return {
+      base: data.base,
+      rates: data.rates,
+      timestamp: data.timestamp,
+      fetchedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    console.warn(
+      'Open Exchange Rates unavailable; using Frankfurter v2:',
+      error
+    );
+    return fetchFromFrankfurter();
+  }
 }
 
 /**
@@ -173,11 +226,6 @@ export async function getAvailableCurrencies(): Promise<string[]> {
  * Check if exchange rates are available (API key is set and we have data)
  */
 export async function isExchangeRatesAvailable(): Promise<boolean> {
-  const apiKey = getApiKey();
-  if (!apiKey) {
-    return false;
-  }
-
   try {
     await getExchangeRates();
     return true;

@@ -128,6 +128,32 @@ describe('calculateRegionalPrice — PPP strategy, mixed billing/local currency'
     expect(result.multiplier).toBe(0.25);
     expect(result.multiplierSource).toBe('static');
   });
+
+  it('uses actualCurrencies override (ARS for one-time products, USD for Apple/subscriptions)', () => {
+    const resultArs = calculateRegionalPrice(
+      49.99,
+      'AR',
+      'direct',
+      'none',
+      undefined,
+      TEST_PPP_DATA,
+      { AR: 'ARS' },
+      TEST_EXCHANGE_RATES
+    );
+    expect(resultArs.currencyCode).toBe('ARS');
+
+    const resultUsd = calculateRegionalPrice(
+      49.99,
+      'AR',
+      'direct',
+      'none',
+      undefined,
+      TEST_PPP_DATA,
+      { AR: 'USD' },
+      TEST_EXCHANGE_RATES
+    );
+    expect(resultUsd.currencyCode).toBe('USD');
+  });
 });
 
 describe('calculateRegionalPrice — PPP, non-USD base region', () => {
@@ -357,6 +383,95 @@ describe('calculateRegionalPrice — rounding modes', () => {
     expect(result.rawPrice).toBe(1.49);
   });
 
+  it('nearest-tier prefers 17.99 over 18.00 for a 17.9955 USD target', () => {
+    const result = calculateRegionalPrice(
+      17.9955,
+      'US',
+      'direct',
+      'nearest-tier',
+      undefined,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES,
+      'USD',
+      'US',
+      () => [
+        { price: 17.49 },
+        { price: 17.99 },
+        { price: 18.00 },
+        { price: 18.49 },
+      ]
+    );
+
+    expect(result.rawPrice).toBe(17.99);
+  });
+
+  it('nearest-tier converts exact 18.00 to 17.99 for consumer pricing', () => {
+    const result = calculateRegionalPrice(
+      18,
+      'US',
+      'direct',
+      'nearest-tier',
+      undefined,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES,
+      'USD',
+      'US',
+      () => [
+        { price: 17.99 },
+        { price: 18.00 },
+        { price: 18.49 },
+      ]
+    );
+
+    expect(result.rawPrice).toBe(17.99);
+  });
+
+  it('nearest-tier converts 31.20 to 31.19', () => {
+    const result = calculateRegionalPrice(
+      31.20, 'US', 'direct', 'nearest-tier',
+      undefined, TEST_PPP_DATA, undefined, TEST_EXCHANGE_RATES,
+      'USD', 'US',
+      () => [{ price: 31.19 }, { price: 31.20 }, { price: 31.49 }]
+    );
+
+    expect(result.rawPrice).toBe(31.19);
+  });
+
+  it('nearest-tier converts 31.50 to 31.49', () => {
+    const result = calculateRegionalPrice(
+      31.50, 'US', 'direct', 'nearest-tier',
+      undefined, TEST_PPP_DATA, undefined, TEST_EXCHANGE_RATES,
+      'USD', 'US',
+      () => [{ price: 31.49 }, { price: 31.50 }, { price: 31.99 }]
+    );
+
+    expect(result.rawPrice).toBe(31.49);
+  });
+
+  it('nearest-tier converts 31.90 to 31.99', () => {
+    const result = calculateRegionalPrice(
+      31.90, 'US', 'direct', 'nearest-tier',
+      undefined, TEST_PPP_DATA, undefined, TEST_EXCHANGE_RATES,
+      'USD', 'US',
+      () => [{ price: 31.89 }, { price: 31.90 }, { price: 31.99 }]
+    );
+
+    expect(result.rawPrice).toBe(31.99);
+  });
+
+  it('nearest-tier converts 31.95 to 31.99', () => {
+    const result = calculateRegionalPrice(
+      31.95, 'US', 'direct', 'nearest-tier',
+      undefined, TEST_PPP_DATA, undefined, TEST_EXCHANGE_RATES,
+      'USD', 'US',
+      () => [{ price: 31.90 }, { price: 31.95 }, { price: 31.99 }]
+    );
+
+    expect(result.rawPrice).toBe(31.99);
+  });
+
   it('nearest-tier without tiers falls back to nearest-99', () => {
     const result = calculateRegionalPrice(
       2.99,
@@ -384,6 +499,104 @@ describe('calculateRegionalPrice — rounding modes', () => {
       TEST_EXCHANGE_RATES
     );
     expect(result.rawPrice).toBeCloseTo(12.34, 2);
+  });
+
+  it('round-up-x9: 1.55 → 1.59 (next .x9 ending)', () => {
+    const result = calculateRegionalPrice(
+      1.55,
+      'US',
+      'direct',
+      'round-up-x9',
+      undefined,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES
+    );
+    expect(result.rawPrice).toBe(1.59);
+  });
+
+  it('round-up-x9: 1.51 → 1.59 (next .x9 ending)', () => {
+    const result = calculateRegionalPrice(
+      1.51,
+      'US',
+      'direct',
+      'round-up-x9',
+      undefined,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES
+    );
+    expect(result.rawPrice).toBe(1.59);
+  });
+
+  it('round-up-x9: 1.59 → 1.59 (already ending in .x9, no-op)', () => {
+    const result = calculateRegionalPrice(
+      1.59,
+      'US',
+      'direct',
+      'round-up-x9',
+      undefined,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES
+    );
+    expect(result.rawPrice).toBe(1.59);
+  });
+
+  it('nearest-x9: 1.55 → 1.59 (midpoint, rounds up)', () => {
+    const result = calculateRegionalPrice(
+      1.55,
+      'US',
+      'direct',
+      'nearest-x9',
+      undefined,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES
+    );
+    expect(result.rawPrice).toBe(1.59);
+  });
+
+  it('nearest-x9: 1.54 → 1.59 (rounds up)', () => {
+    const result = calculateRegionalPrice(
+      1.54,
+      'US',
+      'direct',
+      'nearest-x9',
+      undefined,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES
+    );
+    expect(result.rawPrice).toBe(1.59);
+  });
+
+  it('nearest-x9: 1.53 → 1.49 (rounds down)', () => {
+    const result = calculateRegionalPrice(
+      1.53,
+      'US',
+      'direct',
+      'nearest-x9',
+      undefined,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES
+    );
+    expect(result.rawPrice).toBe(1.49);
+  });
+
+  it('nearest-x9: 1.59 → 1.59 (exact match)', () => {
+    const result = calculateRegionalPrice(
+      1.59,
+      'US',
+      'direct',
+      'nearest-x9',
+      undefined,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES
+    );
+    expect(result.rawPrice).toBe(1.59);
   });
 });
 

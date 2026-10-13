@@ -5,10 +5,12 @@ import { getPricingIndexEntry, LOCAL_CURRENCIES } from '../conversion-indexes/pp
 import { getBigMacMultiplier } from '../conversion-indexes/big-mac';
 import { getNetflixMultiplier } from '../conversion-indexes/netflix';
 import { FALLBACK_EXCHANGE_RATES } from '../conversion-indexes/exchange-rates';
+import { getSmartPricingMultiplier, type PricingPlatform } from '../conversion-indexes/smart';
 import { alpha3ToAlpha2 } from '../apple-connect/territories';
+import { findPreferredTierIndex } from '../apple-connect/price-tier-selection';
 
-export type PricingStrategy = 'direct' | 'ppp' | 'bigmac' | 'netflix' | 'custom';
-export type RoundingMode = 'nearest-tier' | 'nearest-99' | 'round-up' | 'none';
+export type PricingStrategy = 'direct' | 'smart' | 'ppp' | 'bigmac' | 'netflix' | 'custom';
+export type RoundingMode = 'nearest-tier' | 'nearest-99' | 'round-up' | 'nearest-x9' | 'round-up-x9' | 'none';
 
 export interface RoundingTier {
   price: number;
@@ -17,6 +19,42 @@ export interface RoundingTier {
 export type GetTiersForCurrency = (
   currency: string
 ) => readonly RoundingTier[] | undefined;
+
+/**
+ * Platform-localized baseline price for a territory.
+ *
+ * For Apple Smart pricing this comes from App Store Connect equalizations.
+ * V4 does NOT use it as the full price base. Instead, PricingKit compares it
+ * with the live-FX customer price to infer Apple's tax/local-convention uplift,
+ * then caps that uplift before applying the willingness-to-pay multiplier.
+ */
+export interface RegionalPriceBaseline {
+  price: number;
+  currency: string;
+  proceeds?: number;
+  proceedsYear2?: number;
+}
+
+/**
+ * V4 guardrail for Apple equalization.
+ *
+ * Apple explicitly equalizes global pricing around FX, taxes and local price
+ * conventions, but the resulting matrix can be materially above today's raw
+ * FX + tax equivalent. For revenue-oriented consumer pricing we use Apple as a
+ * tax/convention signal, not as an unlimited proceeds-equalization anchor.
+ *
+ * 1.25 roughly covers even high VAT/GST storefronts while preventing a stale
+ * or aggressive equalization matrix from dominating the app-market WTP model.
+ */
+export const APPLE_EQUALIZATION_UPLIFT_CAP = 1.25;
+
+const APPLE_STANDARD_DEVELOPER_SHARE = 0.70;
+const APPLE_REDUCED_DEVELOPER_SHARE = 0.85;
+
+// Apple price-point `proceeds` values are useful for developer-share
+// estimates, but they do not reliably expose the territory's VAT/tax factor.
+// Smart pricing therefore uses Apple's equalized customer price only as a
+// bounded local tax/pricing-convention signal.
 
 // Dynamic exchange rates from API (passed to calculation functions)
 export interface DynamicExchangeRates {
@@ -27,8 +65,8 @@ export interface DynamicExchangeRates {
 
 
 // Convert a region code to alpha-2 format (handles both alpha-2 and alpha-3)
+// If it's 3 characters, try to convert from alpha-3 to alpha-2
 function toAlpha2(regionCode: string): string {
-  // If it's 3 characters, try to convert from alpha-3 to alpha-2
   if (regionCode.length === 3) {
     const alpha2 = alpha3ToAlpha2(regionCode);
     return alpha2 || regionCode;
@@ -39,10 +77,11 @@ function toAlpha2(regionCode: string): string {
 // Get the currency for a region
 // If actualCurrencies is provided (from API), use that; otherwise fall back to static data
 function getCurrencyForRegion(regionCode: string, actualCurrencies?: Record<string, string>): string {
-  // Prefer actual currency from API if available (supports both alpha-2 and alpha-3)
+  // If actualCurrencies is provided (from product/subscription API data or modal), prefer it
   if (actualCurrencies?.[regionCode]) {
     return actualCurrencies[regionCode];
   }
+
   // Fall back to our static mapping (using alpha-2)
   const alpha2Code = toAlpha2(regionCode);
   const region = GOOGLE_PLAY_REGIONS.find((r) => r.code === alpha2Code);
@@ -91,16 +130,15 @@ function applyRounding(
   // when no tier list is supplied (e.g. Google).
   if (mode === 'nearest-tier') {
     if (tiers && tiers.length > 0) {
-      let closest = tiers[0];
-      let minDiff = Math.abs(closest.price - price);
-      for (let i = 1; i < tiers.length; i++) {
-        const diff = Math.abs(tiers[i].price - price);
-        if (diff < minDiff) {
-          minDiff = diff;
-          closest = tiers[i];
-        }
+      const preferredIndex = findPreferredTierIndex(
+        tiers.map((tier) => tier.price),
+        price,
+        currencyCode
+      );
+
+      if (preferredIndex !== null) {
+        return tiers[preferredIndex].price;
       }
-      return closest.price;
     }
     // Fall through: behave as nearest-99 when no tier list available.
   }
@@ -139,6 +177,58 @@ function applyRounding(
     return result < 0.99 ? 0.99 : result;
   }
 
+  // Round up to next .x9 ending (or platform-equivalent for no-decimal currencies).
+  if (mode === 'round-up-x9') {
+    if (isCfaFranc) {
+      return Math.ceil(price / 100) * 100;
+    }
+    if (isNoDecimal) {
+      if (price >= 1000) {
+        const next90 = Math.ceil((price + 10) / 100) * 100 - 10;
+        return next90 < 90 ? 90 : next90;
+      } else if (price >= 100) {
+        const next9 = Math.ceil((price + 1) / 10) * 10 - 1;
+        return next9 < 9 ? 9 : next9;
+      }
+      return Math.ceil(price);
+    }
+    const cents = Math.round(price * 100);
+    const lastDigit = cents % 10;
+    const diff = (9 - lastDigit + 10) % 10;
+    const roundedCents = cents + diff;
+    const result = roundedCents / 100;
+    return result < 0.09 ? 0.09 : result;
+  }
+
+  // 'nearest-x9' (closest .x9 ending by absolute distance).
+  if (mode === 'nearest-x9') {
+    if (isCfaFranc) {
+      return Math.round(price / 100) * 100;
+    }
+    if (isNoDecimal) {
+      if (price >= 1000) {
+        const closest90 = Math.round((price + 10) / 100) * 100 - 10;
+        return closest90 < 90 ? 90 : closest90;
+      } else if (price >= 100) {
+        const closest9 = Math.round((price + 1) / 10) * 10 - 1;
+        return closest9 < 9 ? 9 : closest9;
+      }
+      return Math.round(price);
+    }
+    const cents = Math.round(price * 100);
+    const lastDigit = cents % 10;
+
+    const diffUp = (9 - lastDigit + 10) % 10;
+    const upCents = cents + diffUp;
+
+    const diffDown = (lastDigit + 1) % 10;
+    const downCents = cents - diffDown;
+
+    const roundedCents = (upCents - cents) <= (cents - downCents) ? upCents : downCents;
+    const result = roundedCents / 100;
+    return result < 0.09 ? 0.09 : result;
+  }
+
   // 'nearest-99' (and the fallthrough from 'nearest-tier' with no tiers).
   if (isCfaFranc) {
     // CFA Francs: round to nearest 100 (.99 not applicable)
@@ -168,11 +258,14 @@ export interface CalculatedPrice {
   /** The multiplier applied to the base price (before exchange rate) */
   multiplier: number;
   /** Source of the multiplier data */
-  multiplierSource?: 'world-bank' | 'big-mac' | 'netflix' | 'static' | 'custom' | 'direct';
+  multiplierSource?: 'app-market' | 'world-bank' | 'big-mac' | 'netflix' | 'static' | 'custom' | 'direct';
   /** The exchange rate from USD to local currency */
   exchangeRate: number;
   /** The PPP-adjusted price in USD (before currency conversion) */
   adjustedUsdPrice: number;
+  appleTaxFactor?: number;
+  estimatedAppleProceeds?: number;
+  estimatedAppleProceedsYear2?: number;
 }
 
 // Dynamic PPP data from World Bank API
@@ -207,7 +300,9 @@ export function calculateRegionalPrice(
   dynamicExchangeRates?: DynamicExchangeRates, // Exchange rates from API
   baseCurrency: string = 'USD', // The currency of the basePrice
   baseRegion: string = 'US', // The region the basePrice is defined for
-  getTiersForCurrency?: GetTiersForCurrency // Optional tier ladder per currency (Apple)
+  getTiersForCurrency?: GetTiersForCurrency, // Optional tier ladder per currency (Apple)
+  regionalBaselines?: Record<string, RegionalPriceBaseline>, // Apple equalized storefront baselines
+  appleSmallBusinessProgram: boolean = false
 ): CalculatedPrice {
   // Convert to alpha-2 for lookups (handles both alpha-2 and alpha-3 inputs)
   const alpha2Code = toAlpha2(regionCode);
@@ -255,6 +350,7 @@ export function calculateRegionalPrice(
   let calculatedPrice: number;
   let effectiveMultiplier: number = 1.0;
   let multiplierSource: CalculatedPrice['multiplierSource'] = 'direct';
+  let appleTaxFactor: number | undefined;
 
   // Get Big Mac multiplier (from dynamic data or static, using alpha-2 for lookup)
   const bigMacMultiplier = dynamicEntry?.bigMacMultiplier ?? getBigMacMultiplier(alpha2Code);
@@ -262,14 +358,67 @@ export function calculateRegionalPrice(
   const netflixMultiplier = dynamicEntry?.netflixMultiplier ?? getNetflixMultiplier(alpha2Code);
   const baseNetflixMultiplier = baseDynamicEntry?.netflixMultiplier ?? getNetflixMultiplier(alpha2BaseRegion);
 
-  switch (strategy) {
+// Apple callers pass a tier ladder; Google callers do not. Keep platform
+// inference local so existing call sites remain backwards compatible.
+const pricingPlatform: PricingPlatform = getTiersForCurrency ? 'apple' : 'google';
+const smartMultiplier = getSmartPricingMultiplier(
+  alpha2Code,
+  pppMultiplier,
+  pricingPlatform,
+  staticEntry.pppMultiplier
+);
+const baseSmartMultiplier = getSmartPricingMultiplier(
+  alpha2BaseRegion,
+  basePppMultiplier,
+  pricingPlatform,
+  baseStaticEntry.pppMultiplier
+);
+
+switch (strategy) {
     case 'direct':
       // Same USD value everywhere - just convert currency using market exchange rate
       calculatedPrice = baseUsdPrice * exchangeRate;
       effectiveMultiplier = 1.0;
       multiplierSource = 'direct';
       break;
-    case 'ppp':
+case 'smart': {
+  // Final V4.1:
+  // base customer price -> live FX -> app-market WTP
+  // -> bounded Apple local tax/pricing-convention uplift -> Apple tier.
+  effectiveMultiplier = smartMultiplier / baseSmartMultiplier;
+  const rawFxPrice = baseUsdPrice * exchangeRate;
+  calculatedPrice = rawFxPrice * effectiveMultiplier;
+
+  const localizedBaseline =
+    regionalBaselines?.[regionCode] ?? regionalBaselines?.[alpha2Code];
+
+  if (
+    pricingPlatform === 'apple' &&
+    localizedBaseline &&
+    localizedBaseline.currency === currencyCode &&
+    Number.isFinite(localizedBaseline.price) &&
+    localizedBaseline.price > 0 &&
+    rawFxPrice > 0
+  ) {
+    const equalizationUplift = localizedBaseline.price / rawFxPrice;
+
+    if (Number.isFinite(equalizationUplift) && equalizationUplift > 0) {
+      // Apple equalizations contain useful tax + storefront convention
+      // information, but are not allowed to dominate the WTP target.
+      const boundedUplift = Math.min(
+        equalizationUplift,
+        APPLE_EQUALIZATION_UPLIFT_CAP
+      );
+
+      appleTaxFactor = boundedUplift;
+      calculatedPrice *= boundedUplift;
+    }
+  }
+
+  multiplierSource = 'app-market';
+  break;
+}
+case 'ppp':
       // PPP strategy: adjust prices based on purchasing power parity
       //
       // The World Bank PPP conversion factor is in LOCAL CURRENCY units per international $.
@@ -397,6 +546,19 @@ export function calculateRegionalPrice(
   // The PPP-adjusted USD price before currency conversion
   const adjustedUsdPrice = baseUsdPrice * effectiveMultiplier;
 
+  const estimatedAppleProceeds =
+    pricingPlatform === 'apple' && appleTaxFactor
+      ? (calculatedPrice / appleTaxFactor) *
+        (appleSmallBusinessProgram
+          ? APPLE_REDUCED_DEVELOPER_SHARE
+          : APPLE_STANDARD_DEVELOPER_SHARE)
+      : undefined;
+
+  const estimatedAppleProceedsYear2 =
+    pricingPlatform === 'apple' && appleTaxFactor
+      ? (calculatedPrice / appleTaxFactor) * APPLE_REDUCED_DEVELOPER_SHARE
+      : undefined;
+
   return {
     regionCode,
     currencyCode,
@@ -406,6 +568,9 @@ export function calculateRegionalPrice(
     multiplierSource,
     exchangeRate,
     adjustedUsdPrice,
+    appleTaxFactor,
+    estimatedAppleProceeds,
+    estimatedAppleProceedsYear2,
   };
 }
 
@@ -421,7 +586,9 @@ export function calculateBulkPrices(
   dynamicExchangeRates?: DynamicExchangeRates, // Exchange rates from API
   baseCurrency: string = 'USD', // The currency of the basePrice
   baseRegion: string = 'US', // The region the basePrice is defined for
-  getTiersForCurrency?: GetTiersForCurrency // Optional tier ladder per currency (Apple)
+  getTiersForCurrency?: GetTiersForCurrency, // Optional tier ladder per currency (Apple)
+  regionalBaselines?: Record<string, RegionalPriceBaseline>, // Apple equalized storefront baselines
+  appleSmallBusinessProgram: boolean = false
 ): CalculatedPrice[] {
   return regionCodes.map((regionCode) => {
     const customMultiplier = customMultipliers?.[regionCode];
@@ -436,7 +603,9 @@ export function calculateBulkPrices(
       dynamicExchangeRates,
       baseCurrency,
       baseRegion,
-      getTiersForCurrency
+      getTiersForCurrency,
+      regionalBaselines,
+      appleSmallBusinessProgram
     );
   });
 }

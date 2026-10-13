@@ -6,6 +6,8 @@ import {
 } from '@/lib/google-play/client';
 import { GOOGLE_PRICING_WRITE_DENIED_ERROR } from '@/lib/google-play/errors';
 
+import { GOOGLE_PLAY_REGIONS } from '@/lib/google-play/types';
+
 const GOOGLE_SESSION_COOKIE = 'gplay_session';
 const GOOGLE_PACKAGE_NAME_COOKIE = 'gplay_package_name';
 const COOKIE_MAX_AGE = 24 * 60 * 60;
@@ -17,6 +19,40 @@ interface ProbeListResp<T> {
 interface ProbeProduct {
   productId?: string;
   listings?: unknown;
+  regionsVersion?: { version?: string };
+  purchaseOptions?: Array<{
+    regionalPricingAndAvailabilityConfigs?: Array<{
+      regionCode?: string;
+      price?: { currencyCode?: string; units?: string; nanos?: number };
+    }>;
+  }>;
+  basePlans?: Array<{
+    regionalConfigs?: Array<{
+      regionCode?: string;
+      price?: { currencyCode?: string; units?: string; nanos?: number };
+    }>;
+  }>;
+}
+
+function sanitizeProbeSubscription(sub: ProbeProduct): ProbeProduct {
+  const validRegionCodes = new Set(GOOGLE_PLAY_REGIONS.map((r) => r.code));
+  return {
+    ...sub,
+    basePlans: sub.basePlans?.map((bp) => ({
+      ...bp,
+      regionalConfigs: bp.regionalConfigs
+        ?.filter((rc) => rc.regionCode && validRegionCodes.has(rc.regionCode))
+        .map((rc) => {
+          if (rc.regionCode === 'AR' && rc.price?.currencyCode === 'ARS') {
+            return {
+              ...rc,
+              price: { ...rc.price, currencyCode: 'USD' },
+            };
+          }
+          return rc;
+        }),
+    })),
+  };
 }
 
 export async function POST(request: NextRequest) {
@@ -106,13 +142,14 @@ export async function POST(request: NextRequest) {
         credentials,
         `${appsBase}/oneTimeProducts/${encodeURIComponent(probeProduct.productId)}`
       );
+      const otpVersion = full.regionsVersion?.version || '2022/02';
       // PATCH path is lowercase per Google's discovery doc.
       await googlePlayFetch<unknown>(
         credentials,
         `${appsBase}/onetimeproducts/${encodeURIComponent(probeProduct.productId)}`,
         {
           method: 'PATCH',
-          query: { 'regionsVersion.version': '2025/03', updateMask: 'purchaseOptions' },
+          query: { 'regionsVersion.version': otpVersion, updateMask: 'purchaseOptions' },
           body: full,
         }
       );
@@ -128,13 +165,15 @@ export async function POST(request: NextRequest) {
           credentials,
           `${appsBase}/subscriptions/${encodeURIComponent(probeSub.productId)}`
         );
+        const subVersion = fullSub.regionsVersion?.version || '2025/03';
+        const cleanedSub = sanitizeProbeSubscription(fullSub);
         await googlePlayFetch<unknown>(
           credentials,
           `${appsBase}/subscriptions/${encodeURIComponent(probeSub.productId)}`,
           {
             method: 'PATCH',
-            query: { 'regionsVersion.version': '2025/03', updateMask: 'basePlans' },
-            body: fullSub,
+            query: { 'regionsVersion.version': subVersion, updateMask: 'basePlans' },
+            body: cleanedSub,
           }
         );
       }

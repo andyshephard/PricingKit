@@ -7,7 +7,7 @@ interface AppPriceData {
   hasSchedule: boolean;
 }
 
-export function useAppleAppPrice() {
+export function useAppleAppPrice(enabled = true) {
   return useQuery<AppPriceData>({
     queryKey: ['apple', 'app-price'],
     queryFn: async () => {
@@ -21,6 +21,7 @@ export function useAppleAppPrice() {
       }
       return response.json();
     },
+    enabled,
   });
 }
 

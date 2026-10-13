@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { Calculator, Globe, TrendingDown, Sliders, RefreshCw, Hamburger, Tv, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
+import { Calculator, Globe, TrendingDown, Sliders, RefreshCw, Hamburger, Tv, Sparkles, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -40,9 +40,12 @@ import {
   parseMoney,
 } from '@/lib/google-play/types';
 import { getSupportedAppleTerritories, getTerritoryByAlpha3, alpha2ToAlpha3 } from '@/lib/apple-connect/territories';
-import { findClosestTierForCurrency, getPriceTiersForCurrency } from '@/lib/apple-connect/price-tier-data';
+import { getPriceTiersForCurrency } from '@/lib/apple-connect/price-tier-data';
+import { findSmartTierForCurrency } from '@/lib/apple-connect/price-tier-selection';
 import { getCurrencySymbol as sharedGetCurrencySymbol } from '@/lib/utils/currency';
 import { useAppleAppPrice } from '@/hooks/use-apple-app-price';
+import { useAppleEqualizedPrices } from '@/hooks/use-apple-equalized-prices';
+import { useAppleSmallBusinessProgram } from '@/hooks/use-apple-small-business-program';
 import {
   Select,
   SelectContent,
@@ -58,6 +61,7 @@ import {
   type RoundingMode,
   type DynamicPPPData,
   type DynamicExchangeRates,
+  type RegionalPriceBaseline,
 } from '@/lib/google-play/currency';
 import { useUpdateProductPrices } from '@/hooks/use-products';
 
@@ -127,7 +131,7 @@ export function BulkPricingModal({
     '_appleProduct' in product &&
     (product as ProductWithApple)._appleProduct !== undefined;
   const platform: 'apple' | 'google' = isAppleProduct ? 'apple' : 'google';
-  const { data: appPrice } = useAppleAppPrice();
+  const { data: appPrice } = useAppleAppPrice(platform === 'apple');
 
   // Initial base region: app-level (Apple) → per-product → 'USA' / 'US'.
   const initialBaseRegion = useMemo(() => {
@@ -163,7 +167,7 @@ export function BulkPricingModal({
     if (platform === 'apple') {
       return getTerritoryByAlpha3(baseRegion)?.currency || 'USD';
     }
-    return 'USD'; // Google base is always 'US' for now
+    return GOOGLE_PLAY_REGIONS.find((r) => r.code === baseRegion)?.currency || 'USD';
   }, [platform, baseRegion]);
 
   // Available USD tiers for Apple tier mode (Phase 1: USD only).
@@ -207,7 +211,9 @@ export function BulkPricingModal({
     }
   }, [baseRegion, priceForBaseRegion]);
 
-  const [strategy, setStrategy] = useState<PricingStrategy>('ppp');
+  const [strategy, setStrategy] = useState<PricingStrategy>('smart');
+  const [smallBusinessProgram, setSmallBusinessProgram] =
+    useAppleSmallBusinessProgram();
   const [rounding, setRounding] = useState<RoundingMode>(
     platform === 'apple' ? 'nearest-tier' : 'nearest-99'
   );
@@ -238,6 +244,49 @@ export function BulkPricingModal({
   }>({ key: 'name', direction: 'asc' });
 
   const basePriceNum = parseFloat(basePrice) || 0;
+
+  const {
+    data: equalizedPriceData,
+    isLoading: equalizedPricesLoading,
+    error: equalizedPricesError,
+  } = useAppleEqualizedPrices({
+    kind: 'product',
+    id: product.sku,
+    baseRegion,
+    basePrice: basePriceNum,
+    enabled: open && platform === 'apple' && strategy === 'smart',
+  });
+
+  const smartRegionalBaselines = useMemo(() => {
+    if (!equalizedPriceData) return undefined;
+
+    const baselines: Record<string, RegionalPriceBaseline> = {};
+    for (const [regionCode, price] of Object.entries(equalizedPriceData.prices)) {
+      const numericPrice = Number(price.customerPrice);
+      if (Number.isFinite(numericPrice)) {
+        const proceeds = Number(price.proceeds);
+        baselines[regionCode] = {
+          price: numericPrice,
+          currency: price.currency,
+          proceeds: Number.isFinite(proceeds) ? proceeds : undefined,
+        };
+      }
+    }
+    return baselines;
+  }, [equalizedPriceData]);
+
+  useEffect(() => {
+    if (
+      open &&
+      platform === 'apple' &&
+      strategy === 'smart' &&
+      equalizedPricesError
+    ) {
+      toast.error(
+        `Apple equalized prices could not be loaded: ${equalizedPricesError.message}`
+      );
+    }
+  }, [open, platform, strategy, equalizedPricesError]);
 
   // Normalize prices to Money format (handles both Google and Apple)
   // Must be calculated before allRegions so we can include territories with existing pricing
@@ -360,19 +409,39 @@ export function BulkPricingModal({
   // This ensures we use the correct currency that the platform expects for each region
   const actualCurrencies = useMemo(() => {
     const currencies: Record<string, string> = {};
-    if (normalizedPrices) {
-      for (const [regionCode, money] of Object.entries(normalizedPrices)) {
-        if (money.currencyCode) {
-          currencies[regionCode] = money.currencyCode;
-        }
+
+    // allRegions carries the platform-authoritative storefront currency even
+    // when the product doesn't already have a configured price in that region.
+    for (const region of allRegions) {
+      currencies[region.code] = region.currency;
+    }
+
+    // Google Play one-time products bill Argentina in ARS (unlike subscriptions which bill in USD)
+    if (platform === 'google') {
+      currencies['AR'] = 'ARS';
+    }
+
+    // Existing API prices remain the strongest source when present.
+    for (const [regionCode, money] of Object.entries(normalizedPrices)) {
+      if (money.currencyCode) {
+        currencies[regionCode] = money.currencyCode;
       }
     }
+
     return currencies;
-  }, [normalizedPrices]);
+  }, [allRegions, platform, normalizedPrices]);
 
   // Calculate preview prices using the user-selected base region + currency.
   const previewPrices = useMemo(() => {
     if (basePriceNum < 0) return [];
+
+    if (
+      platform === 'apple' &&
+      strategy === 'smart' &&
+      !smartRegionalBaselines
+    ) {
+      return [];
+    }
 
     const calculatedPrices = calculateBulkPrices(
       basePriceNum,
@@ -385,12 +454,14 @@ export function BulkPricingModal({
       exchangeRates ?? undefined, // Dynamic exchange rates from API
       baseCurrency,
       baseRegion,
-      platform === 'apple' ? getPriceTiersForCurrency : undefined
+      platform === 'apple' ? getPriceTiersForCurrency : undefined,
+      platform === 'apple' ? smartRegionalBaselines : undefined,
+      platform === 'apple' ? smallBusinessProgram : false
     );
 
     // For Apple, match each calculated price to the closest available tier
     const finalPrices = platform === 'apple' ? calculatedPrices.map(calculated => {
-      const closestTier = findClosestTierForCurrency(calculated.rawPrice, calculated.currencyCode);
+      const closestTier = findSmartTierForCurrency(calculated.rawPrice, calculated.currencyCode);
       if (closestTier) {
         return {
           ...calculated,
@@ -405,7 +476,7 @@ export function BulkPricingModal({
     }) : calculatedPrices;
 
     return finalPrices;
-  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, platform, baseCurrency, baseRegion]);
+  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, platform, baseCurrency, baseRegion, smartRegionalBaselines, smallBusinessProgram]);
 
   // Get current price for a region
   const getCurrentPrice = useCallback((regionCode: string): Money | null => {
@@ -688,7 +759,7 @@ export function BulkPricingModal({
       
       // Force the state update immediately
       setBasePrice(initialPrice);
-      setStrategy('ppp');
+      setStrategy('smart');
       setRounding(platform === 'apple' ? 'nearest-tier' : 'nearest-99');
       setHasInitializedSelection(false);
       // Selected regions will be initialized by the useEffect once previewPrices is calculated
@@ -738,7 +809,7 @@ export function BulkPricingModal({
                       ))
                     : GOOGLE_PLAY_REGIONS.map((r) => (
                         <SelectItem key={r.code} value={r.code}>
-                          {r.code} — {r.name}
+                          {r.code} — {r.name} ({r.currency})
                         </SelectItem>
                       ))}
                 </SelectContent>
@@ -826,12 +897,12 @@ export function BulkPricingModal({
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <Label>Pricing Strategy</Label>
-              {(pppLoading || exchangeRatesLoading) && (
+              {(pppLoading || exchangeRatesLoading || (platform === 'apple' && strategy === 'smart' && equalizedPricesLoading)) && (
                 <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />
               )}
             </div>
             <TooltipProvider delayDuration={200}>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2">
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
@@ -882,6 +953,55 @@ export function BulkPricingModal({
                 </Tooltip>
 
                 <Tooltip>
+
+                  <TooltipTrigger asChild>
+
+                    <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+
+                      <input
+
+                        type="radio"
+
+                        name="strategy"
+
+                        value="smart"
+
+                        checked={strategy === 'smart'}
+
+                        onChange={() => setStrategy('smart')}
+
+                        className="sr-only"
+
+                      />
+
+                      <Sparkles className="h-4 w-4 shrink-0" />
+
+                      <span className="text-sm font-medium truncate">Smart</span>
+
+                    </label>
+
+                  </TooltipTrigger>
+
+                  <TooltipContent side="bottom" className="max-w-sm">
+
+                    <p className="font-medium">Smart App-Market (Recommended)</p>
+
+                    <p className="text-xs text-muted-foreground">
+
+                        Revenue-oriented app pricing: compressed PPP plus mobile-market and
+
+                        platform priors. Intended as the best default before you have enough
+
+                        country-level RPU/LTV experiment data.
+
+                    </p>
+
+                  </TooltipContent>
+
+                </Tooltip>
+
+
+                <Tooltip>
                   <TooltipTrigger asChild>
                     <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
                       <input
@@ -897,10 +1017,10 @@ export function BulkPricingModal({
                     </label>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" className="max-w-xs">
-                    <p className="font-medium">PPP-Adjusted (Recommended)</p>
+                    <p className="font-medium">Raw World Bank PPP</p>
                     <p className="text-xs text-muted-foreground">
-                      Lower prices for lower-income regions based on World Bank purchasing power parity data.
-                      Hyperinflation regions automatically receive reduced prices for affordability.
+                      Population-wide purchasing power. Useful as a raw reference, but it can
+                      over-discount paid app users, especially on iOS.
                     </p>
                     {pppMetadata && pppMetadata.worldBankRegions > 0 && (
                       <p className="text-xs text-muted-foreground mt-1">
@@ -962,6 +1082,26 @@ export function BulkPricingModal({
             </TooltipProvider>
           </div>
 
+          {platform === 'apple' && strategy === 'smart' && (
+            <div className="space-y-2 rounded-lg border p-3">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <Checkbox
+                  checked={smallBusinessProgram}
+                  onCheckedChange={(checked) =>
+                    setSmallBusinessProgram(checked === true)
+                  }
+                />
+                <span className="text-sm font-medium">
+                  App Store Small Business Program (15% commission)
+                </span>
+              </label>
+              <p className="text-xs text-muted-foreground ml-6">
+                Enable this if your Apple developer account is enrolled.
+                PricingKit then estimates your proceeds at the 85% developer share.
+              </p>
+            </div>
+          )}
+
           {/* Rounding Options */}
           <div className="space-y-3">
             <Label>Price Rounding</Label>
@@ -988,6 +1128,30 @@ export function BulkPricingModal({
                 />
                 <span className="text-sm">Nearest .99</span>
               </label>
+              {platform === 'google' && (
+                <>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="rounding"
+                      value="nearest-x9"
+                      checked={rounding === 'nearest-x9'}
+                      onChange={() => setRounding('nearest-x9')}
+                    />
+                    <span className="text-sm">Nearest .x9</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="rounding"
+                      value="round-up-x9"
+                      checked={rounding === 'round-up-x9'}
+                      onChange={() => setRounding('round-up-x9')}
+                    />
+                    <span className="text-sm">Round up to .x9</span>
+                  </label>
+                </>
+              )}
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="radio"
@@ -1013,6 +1177,8 @@ export function BulkPricingModal({
               {rounding === 'nearest-tier' && 'Snaps to the closest Apple tier price.'}
               {rounding === 'nearest-99' && 'Closest .99 ending by absolute distance.'}
               {rounding === 'round-up' && 'Always rounds up to the next .99 ending.'}
+              {rounding === 'nearest-x9' && 'Closest .x9 ending (e.g. 1.55 to 1.59, 1.53 to 1.49).'}
+              {rounding === 'round-up-x9' && 'Always rounds up to the next .x9 ending (e.g. 1.55 to 1.59).'}
               {rounding === 'none' && 'Use the calculated value as-is.'}
             </p>
           </div>
@@ -1172,6 +1338,7 @@ export function BulkPricingModal({
                               </TooltipTrigger>
                               <TooltipContent side="top">
                                 <p className="text-xs">
+                                  {calculated.multiplierSource === 'app-market' && 'Smart app-market model'}
                                   {calculated.multiplierSource === 'world-bank' && 'World Bank PPP data'}
                                   {calculated.multiplierSource === 'big-mac' && 'Big Mac Index'}
                                   {calculated.multiplierSource === 'netflix' && 'Netflix Price Index'}

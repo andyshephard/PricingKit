@@ -288,6 +288,7 @@ export interface AppleSubscriptionPricePoint {
   attributes: {
     customerPrice: string;
     proceeds: string;
+    proceedsYear2?: string;
   };
   relationships?: {
     territory?: {

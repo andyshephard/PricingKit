@@ -506,6 +506,7 @@ export async function getSubscriptionPricePoints(
     id: string;
     customerPrice: string;
     proceeds: string;
+    proceedsYear2?: string;
   }>
 > {
   try {
@@ -513,13 +514,14 @@ export async function getSubscriptionPricePoints(
       id: string;
       customerPrice: string;
       proceeds: string;
+      proceedsYear2?: string;
     }> = [];
 
     let nextUrl: string | null = `/subscriptions/${subscriptionId}/pricePoints`;
     const queryParams = {
       'filter[territory]': territoryCode,
       limit: '200',
-      'fields[subscriptionPricePoints]': 'customerPrice,proceeds',
+      'fields[subscriptionPricePoints]': 'customerPrice,proceeds,proceedsYear2',
     };
 
     const MAX_PRICE_POINT_PAGES = 100;
@@ -558,6 +560,7 @@ export async function getSubscriptionPricePoints(
           id: pp.id,
           customerPrice: pp.attributes.customerPrice,
           proceeds: pp.attributes.proceeds,
+          proceedsYear2: pp.attributes.proceedsYear2,
         });
       }
 
