@@ -9,7 +9,6 @@ import {
 import {
   getSubscription,
   updateBasePlanPrices,
-  calculateNewBasePlanPrice,
 } from '@/lib/google-play/subscriptions';
 import type { Money, RegionalBasePlanConfig } from '@/lib/google-play/types';
 
@@ -200,7 +199,11 @@ export async function POST(request: NextRequest) {
             );
             if (!currentConfig) continue;
 
-            const newConfig = calculateNewBasePlanPrice(currentConfig, operation);
+            // Same price maths as products (round never raises, no JPY decimals)
+            const newConfig: RegionalBasePlanConfig = {
+              ...currentConfig,
+              price: calculateNewPrice(currentConfig.price, operation),
+            };
             newConfigs.push(newConfig);
 
             const oldAmount =

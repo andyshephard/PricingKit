@@ -4,7 +4,6 @@ import type {
   Subscription,
   BasePlan,
   RegionalBasePlanConfig,
-  Money,
   RegionsVersion,
 } from './types';
 
@@ -32,11 +31,6 @@ interface SubscriptionUpdateRequestBody {
  * silently migrates the product onto a newer region set.
  */
 export const FALLBACK_SUBSCRIPTION_REGIONS_VERSION = '2025/03';
-
-/** @deprecated Prefer the subscription's own regionsVersion; this is only the fallback. */
-export function getLatestRegionsVersion(): string {
-  return FALLBACK_SUBSCRIPTION_REGIONS_VERSION;
-}
 
 function resolveRegionsVersion(subscription: GoogleApiSubscription, productId: string): string {
   if (subscription.regionsVersion?.version) {
@@ -253,54 +247,4 @@ export async function deleteBasePlanRegionPrice(
   );
 
   return response.basePlans?.find(bp => bp.basePlanId === basePlanId) || basePlan;
-}
-
-export function calculateNewBasePlanPrice(
-  currentConfig: RegionalBasePlanConfig,
-  operation: { type: 'fixed' | 'percentage' | 'round'; value?: number; roundTo?: number }
-): RegionalBasePlanConfig {
-  const parsedUnits = parseFloat(currentConfig.price.units);
-  if (isNaN(parsedUnits) || !Number.isFinite(parsedUnits)) {
-    throw new Error(`Invalid price units value: "${currentConfig.price.units}"`);
-  }
-  const currentAmount = parsedUnits +
-    (currentConfig.price.nanos ? currentConfig.price.nanos / 1_000_000_000 : 0);
-
-  let newAmount: number;
-
-  switch (operation.type) {
-    case 'fixed':
-      newAmount = operation.value ?? currentAmount;
-      break;
-    case 'percentage':
-      newAmount = currentAmount * (1 + (operation.value ?? 0) / 100);
-      break;
-    case 'round':
-      const roundTo = operation.roundTo ?? 0.99;
-      newAmount = Math.floor(currentAmount) + roundTo;
-      break;
-    default:
-      newAmount = currentAmount;
-  }
-
-  newAmount = Math.max(0, newAmount);
-
-  let units = Math.floor(newAmount);
-  let nanos = Math.round((newAmount - units) * 1_000_000_000);
-
-  if (nanos > 999_999_999) {
-    units += Math.floor(nanos / 1_000_000_000);
-    nanos = nanos % 1_000_000_000;
-  }
-
-  const newPrice: Money = {
-    currencyCode: currentConfig.price.currencyCode,
-    units: units.toString(),
-    nanos: nanos > 0 ? nanos : undefined,
-  };
-
-  return {
-    ...currentConfig,
-    price: newPrice,
-  };
 }
