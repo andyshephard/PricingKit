@@ -17,7 +17,7 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 ### Added
 
 - **Price export.** Product and subscription detail pages (Google and Apple) have an "Export prices" menu that downloads the current prices as CSV or JSON. Google subscriptions export per base plan; Apple subscriptions include scheduled prices. Backed by the read-only `GET /api/export` endpoint, which never writes to a store. The JSON format is versioned (`schemaVersion: 1`).
-- **Retries with backoff** for Google Play and App Store Connect calls. 429, 5xx and network errors are retried up to 4 attempts with jittered exponential backoff, honouring `Retry-After` up to 60 seconds. Apple's hourly `X-Rate-Limit` is tracked, and requests stop once it reports 0 remaining instead of hammering the API.
+- **Retries with backoff** for Google Play and App Store Connect calls. 429, 5xx and network errors are retried up to 4 attempts with jittered exponential backoff, honouring `Retry-After` up to 60 seconds. Apple's hourly `X-Rate-Limit` is tracked: a 429 is not retried when it reports 0 requests remaining; callers that pass a `RequestBudget` stop sending entirely.
 - **CI.** GitHub Actions runs tests, `npm run typecheck` and lint on every pull request and push to `main`. Dependabot opens weekly grouped dependency updates.
 - `npm run typecheck` script.
 - `SECURITY.md` with private vulnerability reporting and the credential-handling model.
@@ -42,7 +42,7 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 ### Fixed
 
 - Deleting a Google one-time product region price reported success without changing anything. It now removes the region. Deleting a base plan region removes exactly that region instead of re-filling the others.
-- Google 400/409/412 rejections on region edits and deletes are shown with Google's reason instead of a generic 500.
+- Google 400/409/412 rejections on subscription base-plan price edits and on region deletes now return Google's status and reason instead of 500.
 - An Apple in-app purchase price update without a base territory price reported success without writing anything. It now fails with a 422 explaining the missing or unsupported base territory.
 - Apple subscription read errors (auth, rate limit, server errors) were shown as "Subscription not found" or as an empty price list. They now show the real error, and a genuine 404 still shows "Subscription not found".
 - The Apple subscription price-tier picker showed "No price tiers available" when loading failed. It now shows the error with a Retry button.
