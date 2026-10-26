@@ -12,6 +12,7 @@ import type {
 import { appleApiRequest, getAppIdForBundleId } from './client';
 import { alpha3ToAlpha2, UNSUPPORTED_IAP_TERRITORIES } from './territories';
 import { findClosestTierForCurrency, hasTierData } from './price-tier-data';
+import { ApiError } from '../utils/api-error';
 
 // List all in-app purchases for an app
 export async function listInAppPurchases(
@@ -585,6 +586,15 @@ export async function updateInAppPurchasePrices(
   manualPrices: Array<{ territoryId: string; pricePointId: string }>,
   baseTerritoryId: string = 'USA'
 ): Promise<void> {
+  // Apple requires a manual price for the base territory; without one the
+  // whole schedule is rejected, so fail loudly instead of reporting success
+  if (UNSUPPORTED_IAP_TERRITORIES.includes(baseTerritoryId)) {
+    throw new ApiError(
+      `Base territory ${baseTerritoryId} is not supported for in-app purchase pricing`,
+      { status: 422, code: 'UNSUPPORTED_BASE_TERRITORY', platform: 'apple' }
+    );
+  }
+
   // Filter out unsupported territories that cause 500 errors
   const supportedPrices = manualPrices.filter(p => !UNSUPPORTED_IAP_TERRITORIES.includes(p.territoryId));
 
@@ -592,8 +602,11 @@ export async function updateInAppPurchasePrices(
   const basePrice = supportedPrices.find(p => p.territoryId === baseTerritoryId);
 
   if (!basePrice) {
-    console.error(`[Apple] Base territory ${baseTerritoryId} not found in prices`);
-    return;
+    throw new ApiError(
+      `No price for base territory ${baseTerritoryId}. Apple requires the base territory price ` +
+      'to be included when updating in-app purchase prices.',
+      { status: 422, code: 'MISSING_BASE_TERRITORY_PRICE', platform: 'apple' }
+    );
   }
 
   // console.log(`[Apple] updateInAppPurchasePrices - Updating ${supportedPrices.length} prices for ${inAppPurchaseId}`);
