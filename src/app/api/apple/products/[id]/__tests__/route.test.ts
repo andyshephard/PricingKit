@@ -54,6 +54,9 @@ describe('GET /api/apple/products/[id]', () => {
     const response = await GET(new NextRequest('http://localhost/x'), params());
 
     expect(response.status).toBe(status);
+    const { error } = await response.json();
+    if (status === 401) expect(error).toBe('Session expired. Please reconnect.');
+    if (status === 403) expect(error).toMatch(/Access denied/);
   });
 
   it('returns 404 only when the product genuinely does not exist', async () => {
