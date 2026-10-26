@@ -60,3 +60,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .wrangler/
+
+# local working notes, never committed
+docs/local/
