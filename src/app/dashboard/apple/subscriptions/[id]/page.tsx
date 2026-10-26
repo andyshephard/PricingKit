@@ -58,7 +58,7 @@ export default function AppleSubscriptionDetailPage({
   const decodedId = decodeURIComponent(id);
 
   const { data, isLoading, error, refetch, isRefetching } =
-    useQuery<AppleSubscriptionResponse>({
+    useQuery<AppleSubscriptionResponse | null>({
       queryKey: ['subscriptions', 'apple', decodedId],
       queryFn: async () => {
         const response = await fetch(
@@ -67,6 +67,10 @@ export default function AppleSubscriptionDetailPage({
         if (!response.ok) {
           if (response.status === 401) {
             throw new Error('401: Unauthorized');
+          }
+          // A genuine 404 is "not found", not a failed load
+          if (response.status === 404) {
+            return null;
           }
           const error = await response.json();
           throw new Error(error.error || 'Failed to fetch subscription');
