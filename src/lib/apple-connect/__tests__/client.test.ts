@@ -70,6 +70,15 @@ async function settle(promise: Promise<unknown>): Promise<void> {
   }
 }
 
+/**
+ * Let real async work run (without moving fake time) until `calls` reaches
+ * `count`. Credential hashing/signing may run on Node's thread pool, so a
+ * fixed number of flushes is not enough under load.
+ */
+async function untilCalls(calls: unknown[], count: number): Promise<void> {
+  for (let i = 0; i < 10_000 && calls.length < count; i++) await flush();
+}
+
 /** Advance fake timers by ms, letting real async work run first */
 async function advance(ms: number): Promise<void> {
   for (let i = 0; i < 20; i++) await flush();
@@ -122,9 +131,11 @@ describe('appleApiRequest retries', () => {
     // Sign the JWT up front so timing only covers the API calls
     await generateJWT(credentials);
     const promise = appleApiRequest(credentials, '/apps');
+    await untilCalls(calls, 1);
     await advance(4_900);
     expect(calls).toHaveLength(1);
     await advance(200);
+    await untilCalls(calls, 2);
     expect(calls).toHaveLength(2);
     await expect(promise).resolves.toEqual({ data: [] });
   });
@@ -139,13 +150,16 @@ describe('appleApiRequest retries', () => {
     await generateJWT(credentials);
     const promise = appleApiRequest(credentials, '/apps');
     // Math.random = 0.5 -> delays of exactly 1000ms then 2000ms
+    await untilCalls(calls, 1);
     await advance(999);
     expect(calls).toHaveLength(1);
     await advance(1);
+    await untilCalls(calls, 2);
     expect(calls).toHaveLength(2);
     await advance(1_999);
     expect(calls).toHaveLength(2);
     await advance(1);
+    await untilCalls(calls, 3);
     expect(calls).toHaveLength(3);
     await expect(promise).resolves.toEqual({ data: [] });
   });

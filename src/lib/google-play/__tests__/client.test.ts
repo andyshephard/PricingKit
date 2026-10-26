@@ -88,6 +88,15 @@ async function settle(promise: Promise<unknown>): Promise<void> {
   }
 }
 
+/**
+ * Let real async work run (without moving fake time) until `calls` reaches
+ * `count`. Credential hashing/signing may run on Node's thread pool, so a
+ * fixed number of flushes is not enough under load.
+ */
+async function untilCalls(calls: unknown[], count: number): Promise<void> {
+  for (let i = 0; i < 10_000 && calls.length < count; i++) await flush();
+}
+
 /** Advance fake timers by ms, letting real async work run first */
 async function advance(ms: number): Promise<void> {
   for (let i = 0; i < 20; i++) await flush();
@@ -160,9 +169,11 @@ describe('googlePlayFetch retries', () => {
     await getGoogleAccessToken(credentials);
 
     const promise = googlePlayFetch(credentials, '/test');
+    await untilCalls(apiCalls, 1);
     await advance(4_900);
     expect(apiCalls).toHaveLength(1);
     await advance(200);
+    await untilCalls(apiCalls, 2);
     expect(apiCalls).toHaveLength(2);
     await expect(promise).resolves.toEqual({ ok: true });
   });
