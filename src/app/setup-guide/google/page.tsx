@@ -468,7 +468,7 @@ export default function SetupGuidePage() {
                 </li>
                 <li className="flex items-start gap-2">
                   <CheckCircle2 className="h-4 w-4 text-green-500 mt-0.5 flex-shrink-0" />
-                  Credentials are encrypted and stored only in your browser
+                  Credentials are encrypted into an HttpOnly session cookie and used in memory per request
                 </li>
                 <li className="flex items-start gap-2">
                   <CheckCircle2 className="h-4 w-4 text-green-500 mt-0.5 flex-shrink-0" />

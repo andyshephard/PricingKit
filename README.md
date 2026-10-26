@@ -2,7 +2,7 @@
 
 # PricingKit
 
-Free, open-source regional pricing tool for the App Store and Google Play. Set PPP-adjusted prices across 175+ territories in one click &mdash; your credentials never leave your browser.
+Free, open-source regional pricing tool for the App Store and Google Play. Set PPP-adjusted prices across 175+ territories in one click. Your credentials are sent only to the server you use, kept in an encrypted HttpOnly cookie, and never stored server-side &mdash; or self-host for full control.
 
 ## Features
 
@@ -93,7 +93,8 @@ src/
 Create a `.env.local` file (optional):
 
 ```env
-# Custom encryption key for credential storage (recommended for production)
+# Encrypts credentials in the session cookie. Required everywhere except `next dev`
+# (generate with: openssl rand -base64 32)
 ENCRYPTION_KEY=your-secure-random-string
 
 # Open Exchange Rates API key (for currency conversion)
@@ -102,9 +103,14 @@ OPEN_EXCHANGE_RATES_APP_ID=your-api-key
 
 ## Security
 
-- Credentials are encrypted and stored in HTTP-only cookies
-- Credentials are never persisted on the server
+- Credentials are sent to the PricingKit server you are using (the hosted instance or your own), encrypted with `ENCRYPTION_KEY` (AES-256-GCM), and stored only in an HttpOnly cookie
+- The server does not persist credentials; it decrypts them in memory per request to call the Apple/Google APIs
+- Short-lived API tokens (Apple JWTs, Google access tokens) are cached in memory, keyed by a hash of the full credential
+- Without `ENCRYPTION_KEY`, sign-in is refused (except under `next dev`)
 - Sessions expire after 24 hours
+- Using a hosted instance means trusting its operator with your credentials; self-host for full control
+
+See [SECURITY.md](SECURITY.md) for the full credential-handling model and how to report a vulnerability.
 
 ## License
 

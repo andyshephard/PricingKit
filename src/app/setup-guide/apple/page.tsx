@@ -506,7 +506,7 @@ export default function AppleSetupGuidePage() {
                 </li>
                 <li className="flex items-start gap-2">
                   <CheckCircle2 className="h-4 w-4 text-green-500 mt-0.5 flex-shrink-0" />
-                  JWTs are generated locally and expire after 20 minutes
+                  JWTs are signed on the server per request and expire after 20 minutes
                 </li>
                 <li className="flex items-start gap-2">
                   <CheckCircle2 className="h-4 w-4 text-green-500 mt-0.5 flex-shrink-0" />

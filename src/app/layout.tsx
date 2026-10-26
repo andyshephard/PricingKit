@@ -16,16 +16,16 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL('https://pricing-kit.com'),
   title: "PricingKit - Free, Open-Source Regional Pricing for the App Store & Google Play",
-  description: "Free, open-source regional pricing tool for the App Store and Google Play. Set PPP-adjusted prices across 175+ territories in one click — your credentials never leave your browser.",
+  description: "Free, open-source regional pricing tool for the App Store and Google Play. Set PPP-adjusted prices across 175+ territories in one click. Credentials stay in an encrypted HttpOnly cookie and are never stored server-side — or self-host it.",
   openGraph: {
     title: "PricingKit - Free, Open-Source Regional Pricing for the App Store & Google Play",
-    description: "Free, open-source regional pricing tool for the App Store and Google Play. Set PPP-adjusted prices across 175+ territories in one click — your credentials never leave your browser.",
+    description: "Free, open-source regional pricing tool for the App Store and Google Play. Set PPP-adjusted prices across 175+ territories in one click. Credentials stay in an encrypted HttpOnly cookie and are never stored server-side — or self-host it.",
     images: [{ url: '/banner.webp', width: 2202, height: 1222 }],
   },
   twitter: {
     card: 'summary_large_image',
     title: "PricingKit - Free, Open-Source Regional Pricing for the App Store & Google Play",
-    description: "Free, open-source regional pricing tool for the App Store and Google Play. Set PPP-adjusted prices across 175+ territories in one click — your credentials never leave your browser.",
+    description: "Free, open-source regional pricing tool for the App Store and Google Play. Set PPP-adjusted prices across 175+ territories in one click. Credentials stay in an encrypted HttpOnly cookie and are never stored server-side — or self-host it.",
     images: ['/banner.webp'],
   },
   icons: {
