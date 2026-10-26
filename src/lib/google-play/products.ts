@@ -38,6 +38,23 @@ interface OneTimeProductListResponse {
   nextPageToken?: string;
 }
 
+/**
+ * Fallback regions version, used ONLY when the fetched product has no
+ * `regionsVersion` of its own. We always prefer the product's own version so
+ * a price edit never silently migrates it onto a newer region set.
+ */
+export const FALLBACK_PRODUCT_REGIONS_VERSION = '2022/02';
+
+function resolveRegionsVersion(product: OneTimeProduct, productId: string): string {
+  if (product.regionsVersion?.version) {
+    return product.regionsVersion.version;
+  }
+  console.warn(
+    `Product ${productId} has no regionsVersion; falling back to ${FALLBACK_PRODUCT_REGIONS_VERSION}`
+  );
+  return FALLBACK_PRODUCT_REGIONS_VERSION;
+}
+
 // Convert Google's OneTimeProduct to our InAppProduct type
 function convertOneTimeProduct(product: OneTimeProduct): InAppProduct {
   const prices: Record<string, Money> = {};
@@ -200,18 +217,21 @@ export async function updateInAppProductPrices(
 
   const existingConfigs = purchaseOptions[0].regionalPricingAndAvailabilityConfigs || [];
 
-  const existingConfigMap = new Map<string, RegionalPricingConfig>();
-  for (const config of existingConfigs) {
-    if (config.regionCode) {
-      existingConfigMap.set(config.regionCode, config);
+  // Only regions present in `prices` change. Every other region is re-sent
+  // exactly as fetched (same object, same order). In particular a region that
+  // came back without a price (or with a partial price) is never "repaired"
+  // into USD 0: proto3 JSON omits zero/default fields, so the fetched shape is
+  // already what Google considers valid, and inventing a USD price would either
+  // be rejected (wrong currency for the region) or silently make it free.
+  const remaining = new Map(Object.entries(prices));
+  const updatedConfigs: RegionalPricingConfig[] = existingConfigs.map(existing => {
+    const money = existing.regionCode ? remaining.get(existing.regionCode) : undefined;
+    if (!existing.regionCode || !money) {
+      return existing;
     }
-  }
-
-  const updatedConfigs: RegionalPricingConfig[] = Object.entries(prices).map(([regionCode, money]) => {
-    const existing = existingConfigMap.get(regionCode);
+    remaining.delete(existing.regionCode);
     return {
-      regionCode,
-      availability: existing?.availability || 'AVAILABLE',
+      ...existing,
       price: {
         currencyCode: money.currencyCode,
         units: money.units,
@@ -220,26 +240,66 @@ export async function updateInAppProductPrices(
     };
   });
 
-  for (const [regionCode, config] of existingConfigMap) {
-    if (!prices[regionCode]) {
-      updatedConfigs.push({
-        regionCode,
-        availability: config.availability || 'AVAILABLE',
-        price: config.price
-          ? {
-              currencyCode: config.price.currencyCode || 'USD',
-              units: config.price.units || '0',
-              nanos: config.price.nanos,
-            }
-          : { currencyCode: 'USD', units: '0', nanos: undefined },
-      });
-    }
+  for (const [regionCode, money] of remaining) {
+    updatedConfigs.push({
+      regionCode,
+      availability: 'AVAILABLE',
+      price: {
+        currencyCode: money.currencyCode,
+        units: money.units,
+        nanos: money.nanos,
+      },
+    });
   }
 
   purchaseOptions[0].regionalPricingAndAvailabilityConfigs = updatedConfigs;
 
-  const regionsVersionString = currentProduct.regionsVersion?.version || '2022/02';
+  return patchPurchaseOptions(credentials, packageName, productId, currentProduct);
+}
 
+/**
+ * Remove one region from the product's first purchase option.
+ *
+ * The region is filtered out of `regionalPricingAndAvailabilityConfigs` and the
+ * rest of the product is PATCHed back exactly as fetched. If Google refuses to
+ * drop the region (for example because it would leave the purchase option
+ * without any priced region), its error is propagated unchanged so the caller
+ * can show Google's reason.
+ */
+export async function deleteRegionPrice(
+  credentials: ServiceAccountCredentials,
+  packageName: string,
+  productId: string,
+  regionCode: string
+): Promise<InAppProduct> {
+  const currentProduct = await getInAppProductRaw(credentials, packageName, productId);
+
+  const purchaseOptions = currentProduct.purchaseOptions || [];
+  if (purchaseOptions.length === 0) {
+    throw new Error('Product has no purchase options configured');
+  }
+
+  const existingConfigs = purchaseOptions[0].regionalPricingAndAvailabilityConfigs || [];
+  if (!existingConfigs.some(config => config.regionCode === regionCode)) {
+    throw Object.assign(
+      new Error(`Region ${regionCode} is not configured on product ${productId}`),
+      { code: 404 }
+    );
+  }
+
+  purchaseOptions[0].regionalPricingAndAvailabilityConfigs = existingConfigs.filter(
+    config => config.regionCode !== regionCode
+  );
+
+  return patchPurchaseOptions(credentials, packageName, productId, currentProduct);
+}
+
+async function patchPurchaseOptions(
+  credentials: ServiceAccountCredentials,
+  packageName: string,
+  productId: string,
+  product: OneTimeProduct
+): Promise<InAppProduct> {
   // Google's discovery doc lists the PATCH path as lowercase `onetimeproducts`,
   // even though every other one-time-product method is camelCase. Don't "fix" this.
   const response = await googlePlayFetch<OneTimeProduct>(
@@ -248,31 +308,16 @@ export async function updateInAppProductPrices(
     {
       method: 'PATCH',
       query: {
-        'regionsVersion.version': regionsVersionString,
+        'regionsVersion.version': resolveRegionsVersion(product, productId),
         updateMask: 'purchaseOptions',
       },
-      body: currentProduct,
+      body: product,
     }
   );
 
   const converted = convertOneTimeProduct(response);
   converted.packageName = packageName;
   return converted;
-}
-
-export async function deleteRegionPrice(
-  credentials: ServiceAccountCredentials,
-  packageName: string,
-  productId: string,
-  _regionCode: string
-): Promise<InAppProduct> {
-  // Stub — region delete via the new API would need a full no-op patch with the region removed.
-  // For now, return the current product unchanged.
-  const product = await getInAppProduct(credentials, packageName, productId);
-  if (!product) {
-    throw new Error(`Product ${productId} not found`);
-  }
-  return product;
 }
 
 export function calculateNewPrice(
