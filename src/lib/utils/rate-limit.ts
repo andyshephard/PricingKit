@@ -3,6 +3,8 @@
  * Processes tasks with controlled concurrency and retry logic
  */
 
+import { getErrorStatus, toApiError } from './api-error';
+
 export interface RateLimitOptions {
   /** Max concurrent requests (default: 3) */
   concurrency?: number;
@@ -31,16 +33,13 @@ export class RateLimitError extends Error {
   }
 }
 
-interface RetryableError {
-  statusCode?: number;
-}
-
-function isRetryableError(error: unknown, retryableStatusCodes: number[]): boolean {
-  if (error && typeof error === 'object' && 'statusCode' in error) {
-    const statusCode = (error as RetryableError).statusCode;
-    return typeof statusCode === 'number' && retryableStatusCodes.includes(statusCode);
-  }
-  return false;
+export function isRetryableError(error: unknown, retryableStatusCodes: number[]): boolean {
+  if (!error || typeof error !== 'object') return false;
+  // An explicit retryable: false (e.g. ApiError for an exhausted budget) always wins
+  if ((error as { retryable?: unknown }).retryable === false) return false;
+  // Status may be on statusCode (Apple), status (ApiError) or code (Google)
+  const status = getErrorStatus(error);
+  return status !== undefined && retryableStatusCodes.includes(status);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -90,7 +89,7 @@ export async function executeWithRateLimit<T>(
         const result = await task();
         return { result, attempts };
       } catch (error) {
-        lastError = error instanceof Error ? error : new Error(String(error));
+        lastError = error instanceof Error ? error : toApiError(error);
 
         // Check if we should retry
         if (attempt < maxRetries && isRetryableError(error, retryableStatusCodes)) {
@@ -144,7 +143,7 @@ export async function executeWithRateLimit<T>(
         return {
           success: false as const,
           index: absoluteIndex,
-          error: error instanceof Error ? error : new Error(String(error)),
+          error: error instanceof Error ? error : toApiError(error),
           attempts,
         };
       }
