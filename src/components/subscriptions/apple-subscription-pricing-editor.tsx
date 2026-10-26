@@ -177,11 +177,12 @@ export function AppleSubscriptionPricingEditor({
     : null;
 
   // Fetch price points for the territory being edited
-  const { data: pricePointsData, isLoading: isLoadingPricePoints } =
-    useSubscriptionPricePoints(
-      subscription.id,
-      editingTerritory || ''
-    );
+  const {
+    data: pricePointsData,
+    isLoading: isLoadingPricePoints,
+    error: pricePointsError,
+    refetch: refetchPricePoints,
+  } = useSubscriptionPricePoints(subscription.id, editingTerritory || '');
 
   // Get sorted list of current prices (including pending new additions)
   const sortedPrices = useMemo(() => {
@@ -686,6 +687,20 @@ export function AppleSubscriptionPricingEditor({
               {isLoadingPricePoints ? (
                 <div className="flex items-center justify-center py-8">
                   <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : pricePointsError ? (
+                // A failed read is not the same as "no tiers"
+                <div className="text-center py-8">
+                  <p className="text-destructive">
+                    Could not load price points: {pricePointsError.message}
+                  </p>
+                  <Button
+                    variant="outline"
+                    className="mt-4"
+                    onClick={() => refetchPricePoints()}
+                  >
+                    Retry
+                  </Button>
                 </div>
               ) : pricePointsData?.pricePoints && pricePointsData.pricePoints.length > 0 ? (
                 <ScrollArea className="h-80">

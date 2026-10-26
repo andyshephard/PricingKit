@@ -112,8 +112,8 @@ export function BulkUpdateModal({
       const items = selectedIds.map((id) => ({
         type,
         id,
-        // For subscriptions, we'd need to handle base plans
-        // This simplified version targets all base plans
+        // No basePlanId is sent, so /api/bulk reports each subscription
+        // as a per-item error until base plans are selectable here
       }));
 
       const response = await fetch('/api/bulk', {
