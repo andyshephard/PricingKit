@@ -118,11 +118,11 @@ async function buildGoogleExport(query: ExportQuery): Promise<PriceExport | Resp
 }
 
 // A store read failure may surface either as a thrown error (mapped to its
-// status in GET) or, for readers that swallow API errors, as an empty price
-// list. Both are treated as a failed read: an empty "backup" is worse than no
-// backup.
+// status in GET) or as an empty price list (from readers that swallow API
+// errors, or a product with no price schedule yet). An empty list is refused
+// either way: an empty "backup" is worse than no backup.
 const APPLE_EMPTY_PRICES_ERROR =
-  'App Store Connect returned no prices for this product. Nothing was exported; try again.';
+  'App Store Connect returned no prices for this product (none are set, or the read failed). Nothing was exported.';
 
 async function buildAppleExport(query: ExportQuery): Promise<PriceExport | Response> {
   const auth = await getAppleAuthFromCookies();
@@ -143,7 +143,8 @@ async function buildAppleExport(query: ExportQuery): Promise<PriceExport | Respo
     return appleInAppPurchaseToExport(auth.bundleId, {
       id: product.id,
       productId: product.productId,
-      baseTerritory,
+      // The base-territory lookup may resolve to null when Apple has no schedule.
+      baseTerritory: baseTerritory ?? undefined,
       prices,
     });
   }

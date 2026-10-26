@@ -162,6 +162,21 @@ describe('/api/export', () => {
     expect(empty.status).toBe(502);
   });
 
+  it('exports an Apple IAP when the base territory lookup resolves to null', async () => {
+    mocks.getAppleAuthFromCookies.mockResolvedValue(appleAuth);
+    mocks.getInAppPurchase.mockResolvedValue({ id: '123', productId: 'com.example.app.coins', prices: {} });
+    mocks.getBaseTerritoryForProduct.mockResolvedValue(null);
+    mocks.getInAppPurchasePrices.mockResolvedValue({
+      USA: { territoryCode: 'USA', currency: 'USD', customerPrice: '0.99', proceeds: '0.84', pricePointId: 'p' },
+    });
+
+    const res = await route.GET(request('platform=apple&type=inapp&id=com.example.app.coins'));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.product.baseTerritory).toBeUndefined();
+    expect(json.prices).toHaveLength(1);
+  });
+
   it('exports an Apple subscription by numeric id with scheduled prices', async () => {
     mocks.getAppleAuthFromCookies.mockResolvedValue(appleAuth);
     mocks.getAppleSubscriptionById.mockResolvedValue({ id: '6700000000', productId: 'com.example.app.pro' });
