@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
     "preview": "CI=1 opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "deploy": "CI=1 opennextjs-cloudflare build && opennextjs-cloudflare deploy",
     "test": "vitest run",
