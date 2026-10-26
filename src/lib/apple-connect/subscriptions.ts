@@ -280,7 +280,7 @@ async function getSubscriptionDetails(
   }
 }
 
-// Get a subscription by its Apple subscription ID (numeric ID like "6746950587")
+// Get a subscription by its Apple subscription ID (numeric ID like "1234567890")
 export async function getSubscriptionById(
   credentials: AppleConnectCredentials,
   subscriptionId: string

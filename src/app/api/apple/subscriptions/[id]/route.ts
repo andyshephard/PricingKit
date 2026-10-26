@@ -17,13 +17,13 @@ import {
   regionCodeSchema,
 } from '@/lib/validation';
 
-// Check if the ID is a numeric Apple subscription ID (e.g., "6746950587")
+// Check if the ID is a numeric Apple subscription ID (e.g., "1234567890")
 function isNumericSubscriptionId(id: string): boolean {
   return /^\d+$/.test(id);
 }
 
 // GET /api/apple/subscriptions/[id] - Get a single subscription with prices
-// Supports both numeric subscription ID (e.g., "6746950587") and productId (e.g., "com.example.subscription")
+// Supports both numeric subscription ID (e.g., "1234567890") and productId (e.g., "com.example.subscription")
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
