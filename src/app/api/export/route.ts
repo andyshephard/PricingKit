@@ -124,6 +124,28 @@ async function buildGoogleExport(query: ExportQuery): Promise<PriceExport | Resp
 const APPLE_EMPTY_PRICES_ERROR =
   'App Store Connect returned no prices for this product (none are set, or the read failed). Nothing was exported.';
 
+const APPLE_BASE_TERRITORY_ERROR =
+  'Could not read the base territory for this product from App Store Connect. Nothing was exported.';
+
+// The base territory is part of the export, so a failed lookup fails the
+// whole export rather than guessing (it used to fall back to USA silently).
+async function getAppleBaseTerritory(
+  credentials: Parameters<typeof getBaseTerritoryForProduct>[0],
+  inAppPurchaseId: string
+): Promise<string | null> {
+  try {
+    return await getBaseTerritoryForProduct(credentials, inAppPurchaseId);
+  } catch (error) {
+    console.error('Price export: base territory lookup failed:', error);
+    // Keep auth/rate-limit statuses; anything else is a bad upstream read
+    const status = errorStatus(error);
+    throw new ExportHttpError(
+      status === 401 || status === 403 || status === 429 ? status : 502,
+      APPLE_BASE_TERRITORY_ERROR
+    );
+  }
+}
+
 async function buildAppleExport(query: ExportQuery): Promise<PriceExport | Response> {
   const auth = await getAppleAuthFromCookies();
   if (!auth) {
@@ -136,15 +158,16 @@ async function buildAppleExport(query: ExportQuery): Promise<PriceExport | Respo
 
     const [prices, baseTerritory] = await Promise.all([
       getInAppPurchasePrices(auth.credentials, product.id),
-      getBaseTerritoryForProduct(auth.credentials, product.id),
+      getAppleBaseTerritory(auth.credentials, product.id),
     ]);
     if (Object.keys(prices).length === 0) throw new ExportHttpError(502, APPLE_EMPTY_PRICES_ERROR);
+    // Prices exist, so a price schedule (and its base territory) must too
+    if (!baseTerritory) throw new ExportHttpError(502, APPLE_BASE_TERRITORY_ERROR);
 
     return appleInAppPurchaseToExport(auth.bundleId, {
       id: product.id,
       productId: product.productId,
-      // The base-territory lookup may resolve to null when Apple has no schedule.
-      baseTerritory: baseTerritory ?? undefined,
+      baseTerritory,
       prices,
     });
   }
