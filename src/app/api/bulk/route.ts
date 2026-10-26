@@ -199,7 +199,7 @@ export async function POST(request: NextRequest) {
             );
             if (!currentConfig) continue;
 
-            // Same price maths as products (round never raises, no JPY decimals)
+            // Same price maths as products (calculateNewPrice)
             const newConfig: RegionalBasePlanConfig = {
               ...currentConfig,
               price: calculateNewPrice(currentConfig.price, operation),
