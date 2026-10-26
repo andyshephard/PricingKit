@@ -619,15 +619,21 @@ export function AppleSubscriptionBulkPricingModal({
         };
       }
 
-      const { resolved, skipped } = await resolveMutation.mutateAsync({
+      const { resolved, skipped, skippedReasons } = await resolveMutation.mutateAsync({
         subscriptionId: subscription.id,
         territories,
       });
 
       const skipCount = skipped.length;
+      const skipDetails = skipped
+        .slice(0, 3)
+        .map((code) => (skippedReasons?.[code] ? `${code}: ${skippedReasons[code]}` : code))
+        .join('; ') + (skipCount > 3 ? ` and ${skipCount - 3} more` : '');
 
       if (Object.keys(resolved).length === 0) {
-        toast.error('Failed to resolve any prices to Apple price points');
+        toast.error('Failed to resolve any prices to Apple price points', {
+          description: skipCount > 0 ? skipDetails : undefined,
+        });
         return;
       }
 
@@ -648,7 +654,9 @@ export function AppleSubscriptionBulkPricingModal({
 
       const successCount = Object.keys(resolved).length;
       if (skipCount > 0) {
-        toast.success(`Updated ${successCount} regions (${skipCount} skipped)`);
+        toast.warning(`Updated ${successCount} regions, ${skipCount} skipped`, {
+          description: skipDetails,
+        });
       } else {
         toast.success(`Updated prices for ${successCount} regions`);
       }

@@ -1,0 +1,354 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { AppleConnectCredentials, AppleProductPrice } from '../types';
+import { ApiError } from '@/lib/utils/api-error';
+
+// No network: every Apple call goes through this mock
+const appleApiRequest = vi.fn();
+vi.mock('../client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../client')>();
+  return {
+    ...actual,
+    appleApiRequest: (...args: unknown[]) => appleApiRequest(...args),
+    getAppIdForBundleId: vi.fn(async () => '1234567890'),
+  };
+});
+
+import { AppleApiError } from '../client';
+import {
+  applySubscriptionPriceChanges,
+  getSubscription,
+  getSubscriptionById,
+  getSubscriptionPricePoints,
+  getSubscriptionPrices,
+  toAppleTerritoryId,
+  updateSubscriptionPrice,
+} from '../subscriptions';
+
+const credentials: AppleConnectCredentials = {
+  privateKey: 'unused',
+  keyId: 'TESTKEY123',
+  issuerId: '00000000-0000-0000-0000-000000000000',
+  bundleId: 'com.example.test',
+};
+
+type Call = { endpoint: string; method: string; body?: unknown };
+
+function recordCalls(handler: (call: Call) => unknown) {
+  const calls: Call[] = [];
+  appleApiRequest.mockImplementation(
+    async (_creds: unknown, endpoint: string, options: { method?: string; body?: unknown } = {}) => {
+      const call = { endpoint, method: options.method ?? 'GET', body: options.body };
+      calls.push(call);
+      return handler(call);
+    }
+  );
+  return calls;
+}
+
+function territoryOf(call: Call): string | undefined {
+  const body = call.body as {
+    data?: { relationships?: { territory?: { data?: { id?: string } } } };
+  };
+  return body?.data?.relationships?.territory?.data?.id;
+}
+
+function pricePointOf(call: Call): string | undefined {
+  const body = call.body as {
+    data?: { relationships?: { subscriptionPricePoint?: { data?: { id?: string } } } };
+  };
+  return body?.data?.relationships?.subscriptionPricePoint?.data?.id;
+}
+
+const scheduledFR: AppleProductPrice = {
+  territoryCode: 'FR',
+  currency: 'EUR',
+  customerPrice: '4.99',
+  proceeds: '3.50',
+  pricePointId: 'old-pp-fr',
+  subscriptionPriceId: 'old-price-fr',
+  startDate: '2099-01-01',
+};
+
+const noDelay = { rateLimit: { delayBetweenBatches: 0 } };
+
+beforeEach(() => {
+  appleApiRequest.mockReset();
+});
+
+describe('Apple subscription reads surface errors', () => {
+  it('getSubscriptionPrices throws ApiError instead of returning empty prices', async () => {
+    recordCalls(() => {
+      throw new AppleApiError(500, 'UNEXPECTED_ERROR', 'Server error', 'Something broke');
+    });
+
+    const promise = getSubscriptionPrices(credentials, 'sub-1');
+    await expect(promise).rejects.toBeInstanceOf(ApiError);
+    await expect(promise).rejects.toMatchObject({ status: 500, platform: 'apple' });
+  });
+
+  it('getSubscriptionPricePoints throws ApiError instead of returning []', async () => {
+    recordCalls(() => {
+      throw new AppleApiError(429, 'RATE_LIMIT_EXCEEDED', 'Rate limited', 'Too many requests');
+    });
+
+    await expect(getSubscriptionPricePoints(credentials, 'sub-1', 'USA')).rejects.toMatchObject({
+      status: 429,
+    });
+  });
+
+  it('getSubscriptionPricePoints converts non-ApiError failures', async () => {
+    recordCalls(() => {
+      throw new TypeError('fetch failed');
+    });
+
+    await expect(getSubscriptionPricePoints(credentials, 'sub-1', 'USA')).rejects.toBeInstanceOf(
+      ApiError
+    );
+  });
+
+  it('getSubscriptionById returns null only for a genuine 404', async () => {
+    recordCalls(() => {
+      throw new AppleApiError(404, 'NOT_FOUND', 'Not found', 'No such subscription');
+    });
+    await expect(getSubscriptionById(credentials, '999')).resolves.toBeNull();
+
+    recordCalls(() => {
+      throw new AppleApiError(403, 'FORBIDDEN', 'Forbidden', 'Not allowed');
+    });
+    await expect(getSubscriptionById(credentials, '999')).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('getSubscription throws when listing subscription groups fails', async () => {
+    recordCalls(() => {
+      throw new AppleApiError(401, 'NOT_AUTHORIZED', 'Unauthorized', 'Bad token');
+    });
+
+    await expect(getSubscription(credentials, 'com.example.monthly')).rejects.toMatchObject({
+      status: 401,
+    });
+  });
+
+  it('getSubscription returns null when the product genuinely does not exist', async () => {
+    recordCalls((call) => {
+      if (call.endpoint.endsWith('/subscriptionGroups')) {
+        return { data: [{ id: 'g1', attributes: { referenceName: 'Group' } }], links: {} };
+      }
+      return { data: [], links: {} };
+    });
+
+    await expect(getSubscription(credentials, 'com.example.missing')).resolves.toBeNull();
+  });
+});
+
+describe('toAppleTerritoryId', () => {
+  it('converts alpha-2 to alpha-3 and passes alpha-3 through', () => {
+    expect(toAppleTerritoryId('US')).toBe('USA');
+    expect(toAppleTerritoryId('fr')).toBe('FRA');
+    expect(toAppleTerritoryId('GBR')).toBe('GBR');
+  });
+
+  it('throws a 400 ApiError for unknown territories', () => {
+    expect(() => toAppleTerritoryId('XX')).toThrow(ApiError);
+    try {
+      toAppleTerritoryId('ZZZ');
+    } catch (error) {
+      expect(error).toMatchObject({ status: 400, code: 'INVALID_TERRITORY' });
+    }
+  });
+});
+
+describe('updateSubscriptionPrice', () => {
+  it('POSTs alpha-3 territory IDs even when given alpha-2', async () => {
+    const calls = recordCalls(() => ({}));
+
+    await updateSubscriptionPrice(credentials, 'sub-1', 'pp-1', 'DE', '2099-01-01');
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe('POST');
+    expect(territoryOf(calls[0])).toBe('DEU');
+  });
+});
+
+describe('applySubscriptionPriceChanges', () => {
+  it('creates a price when no scheduled price exists', async () => {
+    const calls = recordCalls(() => ({}));
+
+    const outcomes = await applySubscriptionPriceChanges(
+      credentials,
+      'sub-1',
+      { FR: { pricePointId: 'new-pp-fr', startDate: '2099-02-01' } },
+      {},
+      noDelay
+    );
+
+    expect(outcomes).toEqual([{ territoryCode: 'FR', status: 'created' }]);
+    expect(calls.map((c) => c.method)).toEqual(['POST']);
+  });
+
+  it('creates the replacement before deleting the old scheduled price', async () => {
+    const calls = recordCalls(() => ({}));
+
+    const outcomes = await applySubscriptionPriceChanges(
+      credentials,
+      'sub-1',
+      { FR: { pricePointId: 'new-pp-fr', startDate: '2099-02-01' } },
+      { FR: scheduledFR },
+      noDelay
+    );
+
+    expect(outcomes[0]).toMatchObject({ territoryCode: 'FR', status: 'replaced' });
+    expect(calls.map((c) => `${c.method} ${c.endpoint}`)).toEqual([
+      'POST /subscriptionPrices',
+      'DELETE /subscriptionPrices/old-price-fr',
+    ]);
+  });
+
+  it('leaves the old scheduled price untouched when the create fails', async () => {
+    const calls = recordCalls((call) => {
+      if (call.method === 'POST') {
+        throw new AppleApiError(500, 'UNEXPECTED_ERROR', 'Server error', 'Apple is down');
+      }
+      return {};
+    });
+
+    const outcomes = await applySubscriptionPriceChanges(
+      credentials,
+      'sub-1',
+      { FR: { pricePointId: 'new-pp-fr', startDate: '2099-02-01' } },
+      { FR: scheduledFR },
+      noDelay
+    );
+
+    expect(outcomes[0]).toMatchObject({
+      territoryCode: 'FR',
+      status: 'failed',
+      errorStatus: 500,
+      error: 'Apple is down',
+      previousScheduled: { subscriptionPriceId: 'old-price-fr', pricePointId: 'old-pp-fr' },
+    });
+    expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
+  });
+
+  it('restores the old scheduled price when the replacement fails after a conflict', async () => {
+    let posts = 0;
+    const calls = recordCalls((call) => {
+      if (call.method === 'POST') {
+        posts++;
+        if (posts === 1) {
+          throw new AppleApiError(409, 'ENTITY_ERROR', 'Conflict', 'A scheduled price already exists');
+        }
+        if (posts === 2) {
+          throw new AppleApiError(422, 'ENTITY_ERROR', 'Invalid', 'Price point rejected');
+        }
+      }
+      return {};
+    });
+
+    const outcomes = await applySubscriptionPriceChanges(
+      credentials,
+      'sub-1',
+      { FR: { pricePointId: 'new-pp-fr', startDate: '2099-02-01' } },
+      { FR: scheduledFR },
+      noDelay
+    );
+
+    expect(outcomes[0]).toMatchObject({ status: 'failed', restored: true, errorStatus: 422 });
+    expect(calls.map((c) => c.method)).toEqual(['POST', 'DELETE', 'POST', 'POST']);
+
+    // The last POST re-creates the original scheduled price
+    const restore = calls[3];
+    expect(pricePointOf(restore)).toBe('old-pp-fr');
+    expect(territoryOf(restore)).toBe('FRA');
+    expect(
+      (restore.body as { data: { attributes: { startDate: string } } }).data.attributes.startDate
+    ).toBe('2099-01-01');
+  });
+
+  it('reports when the old scheduled price could not be restored', async () => {
+    let posts = 0;
+    recordCalls((call) => {
+      if (call.method === 'POST') {
+        posts++;
+        if (posts === 1) throw new AppleApiError(409, 'ENTITY_ERROR', 'Conflict', 'Exists');
+        throw new AppleApiError(500, 'UNEXPECTED_ERROR', 'Server error', 'Down');
+      }
+      return {};
+    });
+
+    const outcomes = await applySubscriptionPriceChanges(
+      credentials,
+      'sub-1',
+      { FR: { pricePointId: 'new-pp-fr', startDate: '2099-02-01' } },
+      { FR: scheduledFR },
+      noDelay
+    );
+
+    expect(outcomes[0]).toMatchObject({ status: 'failed', restored: false });
+    expect(outcomes[0].error).toMatch(/could NOT be restored/);
+  });
+
+  it('replaces after a conflict when the retry succeeds', async () => {
+    let posts = 0;
+    recordCalls((call) => {
+      if (call.method === 'POST' && ++posts === 1) {
+        throw new AppleApiError(409, 'ENTITY_ERROR', 'Conflict', 'Exists');
+      }
+      return {};
+    });
+
+    const outcomes = await applySubscriptionPriceChanges(
+      credentials,
+      'sub-1',
+      { FR: { pricePointId: 'new-pp-fr', startDate: '2099-02-01' } },
+      { FR: scheduledFR },
+      noDelay
+    );
+
+    expect(outcomes[0]).toMatchObject({ status: 'replaced' });
+  });
+
+  it('keeps the old price and warns when it cannot be deleted after a successful create', async () => {
+    recordCalls((call) => {
+      if (call.method === 'DELETE') {
+        throw new AppleApiError(500, 'UNEXPECTED_ERROR', 'Server error', 'Down');
+      }
+      return {};
+    });
+
+    const outcomes = await applySubscriptionPriceChanges(
+      credentials,
+      'sub-1',
+      { FR: { pricePointId: 'new-pp-fr', startDate: '2099-02-01' } },
+      { FR: scheduledFR },
+      noDelay
+    );
+
+    expect(outcomes[0].status).toBe('created');
+    expect(outcomes[0].warning).toMatch(/could not be removed/);
+  });
+
+  it('reports a separate outcome per territory', async () => {
+    recordCalls((call) => {
+      if (call.method === 'POST' && territoryOf(call) === 'DEU') {
+        throw new AppleApiError(422, 'ENTITY_ERROR', 'Invalid', 'Bad price point');
+      }
+      return {};
+    });
+
+    const outcomes = await applySubscriptionPriceChanges(
+      credentials,
+      'sub-1',
+      {
+        FR: { pricePointId: 'pp-fr' },
+        DE: { pricePointId: 'pp-de' },
+      },
+      {},
+      noDelay
+    );
+
+    expect(outcomes).toEqual([
+      { territoryCode: 'FR', status: 'created' },
+      expect.objectContaining({ territoryCode: 'DE', status: 'failed', error: 'Bad price point' }),
+    ]);
+  });
+});

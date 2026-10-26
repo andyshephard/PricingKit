@@ -5,9 +5,10 @@ import {
   getSubscriptionById,
   getSubscriptionPrices,
   deleteSubscriptionPrice,
-  AppleApiError,
 } from '@/lib/apple-connect';
+import { appleErrorResponse, getAppleErrorMessage } from '../../../_lib/error-response';
 import { executeWithRateLimit, RateLimitError } from '@/lib/utils/rate-limit';
+import { getErrorStatus } from '@/lib/utils/api-error';
 import { createNdjsonStream, NDJSON_HEADERS } from '@/lib/utils/ndjson-stream';
 import {
   validateAndDecodeAppleProductId,
@@ -90,8 +91,12 @@ export async function POST(
             await deleteSubscriptionPrice(auth.credentials, price.subscriptionPriceId!);
             return { territory, deleted: true as const };
           } catch (error) {
-            if (error instanceof AppleApiError && error.statusCode === 409) {
-              return { territory, deleted: false as const, reason: error.detail };
+            if (getErrorStatus(error) === 409) {
+              return {
+                territory,
+                deleted: false as const,
+                reason: getAppleErrorMessage(error, 'Scheduled price can no longer be deleted'),
+              };
             }
             throw error;
           }
@@ -127,6 +132,10 @@ export async function POST(
           message,
           deletedCount: deleted.length,
           skippedCount: skipped.length,
+          skipped: skipped.map((r) => ({
+            territory: r.territory,
+            reason: 'reason' in r ? r.reason : undefined,
+          })),
           remainingScheduled: Object.keys(updatedPricesResult.scheduled).length,
         });
       } catch (error) {
@@ -138,10 +147,8 @@ export async function POST(
             error.successCount,
             error.totalCount
           );
-        } else if (error instanceof AppleApiError) {
-          writer.error(error.detail || 'Failed to clear scheduled prices');
         } else {
-          writer.error('Failed to clear scheduled prices');
+          writer.error(getAppleErrorMessage(error, 'Failed to clear scheduled prices'));
         }
       }
     })();
@@ -150,16 +157,6 @@ export async function POST(
   } catch (error) {
     console.error('Error clearing scheduled prices:', error);
 
-    if (error instanceof AppleApiError) {
-      return NextResponse.json(
-        { error: error.detail || 'Failed to clear scheduled prices' },
-        { status: error.statusCode }
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'Failed to clear scheduled prices' },
-      { status: 500 }
-    );
+    return appleErrorResponse(error, 'Failed to clear scheduled prices');
   }
 }

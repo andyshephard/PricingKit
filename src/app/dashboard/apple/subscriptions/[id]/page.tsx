@@ -211,7 +211,15 @@ export default function AppleSubscriptionDetailPage({
         ) : (
           <Card>
             <CardContent className="py-12 text-center">
-              <p className="text-muted-foreground">Subscription not found</p>
+              {/* Distinguish a failed load from a genuinely missing subscription */}
+              <p className={error ? 'text-destructive' : 'text-muted-foreground'}>
+                {error ? `Could not load subscription: ${error.message}` : 'Subscription not found'}
+              </p>
+              {error && (
+                <Button variant="outline" className="mt-4 mr-2" onClick={() => refetch()}>
+                  Retry
+                </Button>
+              )}
               <Button variant="outline" className="mt-4" asChild>
                 <Link href="/dashboard/apple/subscriptions">
                   Back to Subscriptions

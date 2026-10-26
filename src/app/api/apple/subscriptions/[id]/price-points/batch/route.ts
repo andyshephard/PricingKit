@@ -3,10 +3,11 @@ import { z } from 'zod';
 import { getAppleAuthFromCookies } from '../../../../auth/route';
 import {
   getSubscriptionPricePoints,
-  AppleApiError,
 } from '@/lib/apple-connect';
+import { appleErrorResponse, getAppleErrorMessage } from '../../../../_lib/error-response';
 import { alpha2ToAlpha3 } from '@/lib/apple-connect/territories';
 import { executeWithRateLimit, RateLimitError } from '@/lib/utils/rate-limit';
+import { getErrorStatus } from '@/lib/utils/api-error';
 import { createNdjsonStream, NDJSON_HEADERS } from '@/lib/utils/ndjson-stream';
 
 const batchSchema = z.object({
@@ -73,20 +74,39 @@ export async function POST(
       try {
         const resolved: Record<string, { pricePointId: string; tierPrice: number }> = {};
         const skipped: string[] = [];
+        // Why each skipped territory couldn't be resolved
+        const skippedReasons: Record<string, string> = {};
 
-        // Build tasks — one per territory
+        const skip = (territoryCode: string, reason: string) => {
+          skipped.push(territoryCode);
+          skippedReasons[territoryCode] = reason;
+        };
+
+        // Build tasks — one per territory. A failed lookup skips that territory
+        // with its reason; auth failures abort the whole run.
         const tasks = entries.map(
           ([territoryCode, { targetPrice, currency }]) =>
             async () => {
               const alpha3 = alpha2ToAlpha3(territoryCode) || territoryCode;
 
-              const pricePoints = await getSubscriptionPricePoints(
-                credentials,
-                subscriptionId,
-                alpha3
-              );
-
-              return { territoryCode, targetPrice, currency, pricePoints };
+              try {
+                const pricePoints = await getSubscriptionPricePoints(
+                  credentials,
+                  subscriptionId,
+                  alpha3
+                );
+                return { territoryCode, targetPrice, currency, pricePoints, error: undefined };
+              } catch (error) {
+                const status = getErrorStatus(error);
+                if (status === 401 || status === 403) throw error;
+                return {
+                  territoryCode,
+                  targetPrice,
+                  currency,
+                  pricePoints: [],
+                  error: getAppleErrorMessage(error, 'Failed to fetch price points'),
+                };
+              }
             }
         );
 
@@ -100,9 +120,13 @@ export async function POST(
         });
 
         // Find the closest price point for each territory
-        for (const { territoryCode, targetPrice, pricePoints } of results) {
+        for (const { territoryCode, targetPrice, currency, pricePoints, error } of results) {
+          if (error) {
+            skip(territoryCode, error);
+            continue;
+          }
           if (!pricePoints || pricePoints.length === 0) {
-            skipped.push(territoryCode);
+            skip(territoryCode, `No Apple price points available for ${territoryCode} (${currency})`);
             continue;
           }
 
@@ -120,7 +144,7 @@ export async function POST(
           };
         }
 
-        writer.done({ resolved, skipped });
+        writer.done({ resolved, skipped, skippedReasons });
       } catch (error) {
         console.error('Error resolving subscription price points:', error);
 
@@ -130,10 +154,8 @@ export async function POST(
             error.successCount,
             error.totalCount
           );
-        } else if (error instanceof AppleApiError) {
-          writer.error(error.detail || 'Failed to resolve price points');
         } else {
-          writer.error('Failed to resolve price points');
+          writer.error(getAppleErrorMessage(error, 'Failed to resolve price points'));
         }
       }
     })();
@@ -142,16 +164,6 @@ export async function POST(
   } catch (error) {
     console.error('Error in batch price points:', error);
 
-    if (error instanceof AppleApiError) {
-      return NextResponse.json(
-        { error: error.detail || 'Failed to resolve price points' },
-        { status: error.statusCode }
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'Failed to resolve price points' },
-      { status: 500 }
-    );
+    return appleErrorResponse(error, 'Failed to resolve price points');
   }
 }
