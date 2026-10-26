@@ -180,6 +180,36 @@ describe('googlePlayFetch retries', () => {
     expect(apiCalls).toHaveLength(2);
   });
 
+  it('retries a network error from the token endpoint', async () => {
+    const { fetchMock, apiCalls } = mockFetch([jsonResponse(200, { ok: true })]);
+    const passThrough = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementationOnce(async (input: RequestInfo | URL) => {
+      if (String(input) === TOKEN_ENDPOINT) throw new TypeError('fetch failed');
+      return passThrough(input);
+    });
+
+    const promise = googlePlayFetch(credentials, '/test');
+    await settle(promise);
+    await expect(promise).resolves.toEqual({ ok: true });
+    const tokenCalls = fetchMock.mock.calls.filter(([input]) => String(input) === TOKEN_ENDPOINT);
+    expect(tokenCalls).toHaveLength(2);
+    expect(apiCalls).toHaveLength(1);
+  });
+
+  it('does not retry a token endpoint 401 and keeps its shape', async () => {
+    const fetchMock = vi.fn(async () => new Response('invalid_grant', { status: 400 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const promise = googlePlayFetch(credentials, '/test');
+    const assertion = expect(promise).rejects.toMatchObject({
+      code: 401,
+      errors: [{ reason: 'invalidCredentials' }],
+    });
+    await settle(promise);
+    await assertion;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('gives up after maxAttempts leaving retryable to follow the status', async () => {
     const { apiCalls } = mockFetch([
       jsonResponse(503, googleError(503, 'down')),

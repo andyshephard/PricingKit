@@ -1,6 +1,6 @@
 import type { ServiceAccountCredentials } from './types';
 import { encrypt, decrypt, isEncryptionAvailable } from '../encryption';
-import { ApiError, isRetryableStatus, toApiError } from '../utils/api-error';
+import { ApiError, getErrorStatus, isRetryableStatus, toApiError } from '../utils/api-error';
 import type { RequestBudget } from '../utils/request-budget';
 import {
   computeBackoffDelay,
@@ -232,17 +232,18 @@ export async function googlePlayFetch<T>(
     // Throws BUDGET_EXCEEDED before anything is sent
     budget?.consume('google');
 
-    const token = await getGoogleAccessToken(credentials);
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/json',
-    };
-    if (body !== undefined) {
-      headers['Content-Type'] = 'application/json';
-    }
-
     let response: Response;
     try {
+      // Inside the try so a network failure while minting the token is retried too
+      const token = await getGoogleAccessToken(credentials);
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      };
+      if (body !== undefined) {
+        headers['Content-Type'] = 'application/json';
+      }
+
       response = await fetch(url, {
         method,
         headers,
@@ -250,6 +251,10 @@ export async function googlePlayFetch<T>(
         signal: AbortSignal.timeout(60_000),
       });
     } catch (networkError) {
+      // Token endpoint HTTP errors (e.g. 401 invalid credentials) keep their shape
+      if (getErrorStatus(networkError) !== undefined) {
+        throw networkError;
+      }
       const normalised = toApiError(networkError, 'google');
       // fetch() rejections are network failures / timeouts: transient
       const retryable = normalised.retryable || networkError instanceof TypeError;
