@@ -11,7 +11,7 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 1. **Make sure `ENCRYPTION_KEY` is set anywhere other than `npm run dev`.** Production builds (`npm start`, Cloudflare Workers) already needed it to sign anyone in, so a working production deployment is unaffected. What changes: login now checks for the key before contacting Apple or Google and explains how to set it (instead of a generic 500), and session cookies are no longer read as plaintext base64 anywhere except `next dev`, including when `NODE_ENV` is unset or non-standard. If you ran without `NODE_ENV=production` and without a key, existing sessions stop working and sign-in is refused until you set one. Generate a key with `openssl rand -base64 32` and set it in `.env.local`, your process environment, or as a Worker secret (`npx wrangler secret put ENCRYPTION_KEY`). Earlier README text called the key "recommended"; that was wrong.
 2. **Node 22 or later** is now declared in `package.json` `engines` and `.nvmrc`.
 3. **Scripts calling `?refresh=true`** on `/api/ppp` or `/api/exchange-rates` must now send a valid Google or Apple session cookie, or they get `401`. Plain reads without `refresh` are still public.
-4. **Clients of `/api/bulk`** should read the per-item `success`, `error` and `skippedRegions` fields. The top-level `success` is now `false` when nothing was written.
+4. **Clients of `/api/bulk`** should read the per-result `success`, `error` and `skippedRegions` fields. The top-level `success` is now `false` when nothing was written. A subscription item sent without a `basePlanId` now produces one result per base plan (each carrying its `basePlanId`), so `total` and `results` count base plans for subscriptions, not request items.
 5. Nothing else needs configuring. There is no database, no session file and no new environment variable.
 
 ### Added
@@ -32,7 +32,8 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 - **"Custom" pricing strategy is hidden** in the bulk pricing modals until per-territory multipliers exist. PPP, Big Mac and Netflix are unchanged.
 - **Rounding rounds down.** The bulk "round" operation now rounds to the nearest price ending at or below the current price (12.00 becomes 11.99, not 12.99). Zero-decimal currencies such as JPY and KRW get whole-number prices. Subscription base plans use the same rounding as products.
 - Live World Bank PPP multipliers are clamped to 0.1–2.0, like the static indexes.
-- **Bulk updates report what they skipped.** `/api/bulk` now marks subscription items without a base plan, and items where none of the target regions had a price, as failed, and lists skipped regions with a reason. The bulk modal shows them and no longer says "Successfully updated 0 items".
+- **Bulk updates report what they skipped.** `/api/bulk` now marks items where none of the target regions had a price as failed and lists skipped regions with a reason. The bulk modal shows them and no longer says "Successfully updated 0 items".
+- **Bulk subscription items without a base plan apply to every base plan.** A subscription item sent to `/api/bulk` without a `basePlanId` is applied to each of the subscription's base plans, with one result per base plan, so a failure in one base plan does not hide the others. `stopOnFailure` still stops the rest, and the base plans not attempted are reported as skipped. A subscription with no base plans, or a `basePlanId` that matches none, is a failed item. The bulk modal labels subscription results by base plan.
 - The generic bulk update button was removed from the Apple products and subscriptions list pages. It called the Google-only `/api/bulk` endpoint and could not work for Apple. Use the Apple bulk pricing modals instead.
 - **Apple subscription price edits keep scheduled prices.** New prices are created before the scheduled price they replace is deleted. On a 409 conflict the old scheduled price is deleted and the create retried; if that retry fails, the old price is restored. The result lists each territory's outcome and is not reported as a success if any territory failed.
 - `?refresh=true` on the public `/api/ppp` and `/api/exchange-rates` endpoints requires a signed-in session (see upgrade notes).
@@ -41,6 +42,7 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 
 ### Fixed
 
+- The bulk update button on the Google subscriptions list page failed every selected subscription, because it sends no base plan. It now updates each subscription's base plans.
 - Deleting a Google one-time product region price reported success without changing anything. It now removes the region. Deleting a base plan region removes exactly that region instead of re-filling the others.
 - Google 400/409/412 rejections on subscription base-plan price edits and on region deletes now return Google's status and reason instead of 500.
 - An Apple in-app purchase price update without a base territory price reported success without writing anything. It now fails with a 422 explaining the missing or unsupported base territory.
