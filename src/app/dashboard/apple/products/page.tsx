@@ -5,7 +5,6 @@ import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Header } from '@/components/layout';
 import { ProductsTable } from '@/components/products/products-table';
-import { BulkUpdateModal } from '@/components/pricing/bulk-update-modal';
 import { Button } from '@/components/ui/button';
 import { useSelectionStore } from '@/store/selection-store';
 import { parseMoney } from '@/lib/google-play/types';
@@ -13,7 +12,6 @@ import type { RawAppleProduct, ProductsListResponse } from '@/types/api';
 
 export default function AppleProductsPage() {
   const [searchQuery, setSearchQuery] = useState('');
-  const [bulkModalOpen, setBulkModalOpen] = useState(false);
 
   const { data, isLoading, refetch, isRefetching, error } = useQuery<ProductsListResponse>({
     queryKey: ['products', 'apple'],
@@ -85,9 +83,6 @@ export default function AppleProductsPage() {
               <span className="text-sm text-muted-foreground">
                 {selectedProductSkus.length} selected
               </span>
-              <Button onClick={() => setBulkModalOpen(true)}>
-                Bulk Update Prices
-              </Button>
               <Button
                 variant="outline"
                 onClick={() => setSelectedProducts([])}
@@ -107,17 +102,6 @@ export default function AppleProductsPage() {
           platform="apple"
         />
       </div>
-
-      <BulkUpdateModal
-        open={bulkModalOpen}
-        onOpenChange={setBulkModalOpen}
-        type="product"
-        selectedIds={selectedProductSkus}
-        onSuccess={() => {
-          setSelectedProducts([]);
-          refetch();
-        }}
-      />
     </div>
   );
 }

@@ -9,9 +9,13 @@ import {
 import {
   getSubscription,
   updateBasePlanPrices,
-  calculateNewBasePlanPrice,
 } from '@/lib/google-play/subscriptions';
 import type { Money, RegionalBasePlanConfig } from '@/lib/google-play/types';
+import { toApiError } from '@/lib/utils/api-error';
+
+type SkippedRegion = { regionCode: string; reason: string };
+
+const NO_EXISTING_PRICE = 'No existing price in this region (bulk update only changes existing prices)';
 
 const bulkOperationSchema = z.object({
   type: z.enum(['fixed', 'percentage', 'round']),
@@ -74,6 +78,8 @@ export async function POST(request: NextRequest) {
         oldPrice: string;
         newPrice: string;
       }>;
+      /** Target regions left unchanged, with the reason */
+      skippedRegions?: SkippedRegion[];
     }> = [];
 
     let stopped = false;
@@ -115,10 +121,14 @@ export async function POST(request: NextRequest) {
             newPrice: string;
           }> = [];
           const newPrices: Record<string, Money> = {};
+          const skippedRegions: SkippedRegion[] = [];
 
           for (const regionCode of targetRegions) {
             const currentPrice = product.prices?.[regionCode];
-            if (!currentPrice) continue;
+            if (!currentPrice) {
+              skippedRegions.push({ regionCode, reason: NO_EXISTING_PRICE });
+              continue;
+            }
 
             const newPrice = calculateNewPrice(currentPrice, operation);
             newPrices[regionCode] = newPrice;
@@ -137,21 +147,43 @@ export async function POST(request: NextRequest) {
             });
           }
 
-          if (Object.keys(newPrices).length > 0) {
-            await updateInAppProductPrices(
-              auth.credentials,
-              auth.packageName,
-              item.id,
-              newPrices
-            );
+          // Nothing to write is a failure, not a successful no-op
+          if (Object.keys(newPrices).length === 0) {
+            results.push({
+              id: item.id,
+              success: false,
+              committed: false,
+              error: 'None of the target regions have an existing price for this product',
+              skippedRegions,
+            });
+            if (stopOnFailure) { stopped = true; }
+            continue;
           }
+
+          await updateInAppProductPrices(
+            auth.credentials,
+            auth.packageName,
+            item.id,
+            newPrices
+          );
 
           results.push({
             id: item.id,
             success: true,
             committed: true,
             changes,
+            ...(skippedRegions.length > 0 ? { skippedRegions } : {}),
           });
+        } else if (item.type === 'subscription' && !item.basePlanId) {
+          // Base plan prices are per base plan; never silently skip the item
+          results.push({
+            id: item.id,
+            success: false,
+            committed: false,
+            error: 'basePlanId is required for subscription items',
+          });
+          if (stopOnFailure) { stopped = true; }
+          continue;
         } else if (item.type === 'subscription' && item.basePlanId) {
           const subscription = await getSubscription(
             auth.credentials,
@@ -193,14 +225,22 @@ export async function POST(request: NextRequest) {
             newPrice: string;
           }> = [];
           const newConfigs: RegionalBasePlanConfig[] = [];
+          const skippedRegions: SkippedRegion[] = [];
 
           for (const regionCode of targetRegions) {
             const currentConfig = basePlan.regionalConfigs?.find(
               (rc) => rc.regionCode === regionCode
             );
-            if (!currentConfig) continue;
+            if (!currentConfig) {
+              skippedRegions.push({ regionCode, reason: NO_EXISTING_PRICE });
+              continue;
+            }
 
-            const newConfig = calculateNewBasePlanPrice(currentConfig, operation);
+            // Same price maths as products (round never raises, no JPY decimals)
+            const newConfig: RegionalBasePlanConfig = {
+              ...currentConfig,
+              price: calculateNewPrice(currentConfig.price, operation),
+            };
             newConfigs.push(newConfig);
 
             const oldAmount =
@@ -221,15 +261,27 @@ export async function POST(request: NextRequest) {
             });
           }
 
-          if (newConfigs.length > 0) {
-            await updateBasePlanPrices(
-              auth.credentials,
-              auth.packageName,
-              item.id,
-              item.basePlanId,
-              newConfigs
-            );
+          // Nothing to write is a failure, not a successful no-op
+          if (newConfigs.length === 0) {
+            results.push({
+              id: item.id,
+              basePlanId: item.basePlanId,
+              success: false,
+              committed: false,
+              error: 'None of the target regions have an existing price for this base plan',
+              skippedRegions,
+            });
+            if (stopOnFailure) { stopped = true; }
+            continue;
           }
+
+          await updateBasePlanPrices(
+            auth.credentials,
+            auth.packageName,
+            item.id,
+            item.basePlanId,
+            newConfigs
+          );
 
           results.push({
             id: item.id,
@@ -237,6 +289,7 @@ export async function POST(request: NextRequest) {
             success: true,
             committed: true,
             changes,
+            ...(skippedRegions.length > 0 ? { skippedRegions } : {}),
           });
         }
       } catch (error) {
@@ -245,7 +298,7 @@ export async function POST(request: NextRequest) {
           basePlanId: item.basePlanId,
           success: false,
           committed: false,
-          error: error instanceof Error ? error.message : 'Unknown error',
+          error: toApiError(error, 'google').message,
         });
         if (stopOnFailure) { stopped = true; }
       }
@@ -255,13 +308,15 @@ export async function POST(request: NextRequest) {
     const failed = results.filter((r) => !r.success).length;
     const committed = results.filter((r) => r.committed).length;
     const skipped = results.filter((r) => !r.success && r.error?.includes('Skipped')).length;
+    const skippedRegions = results.reduce((n, r) => n + (r.skippedRegions?.length ?? 0), 0);
 
     return NextResponse.json({
-      success: failed === 0,
+      success: failed === 0 && successful > 0,
       total: items.length,
       successful,
       failed,
       committed,
+      skippedRegions,
       ...(stopped ? { stoppedEarly: true, skipped } : {}),
       results,
     });
