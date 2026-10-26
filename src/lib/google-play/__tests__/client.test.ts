@@ -180,14 +180,14 @@ describe('googlePlayFetch retries', () => {
     expect(apiCalls).toHaveLength(2);
   });
 
-  it('gives up after maxAttempts and marks the error non-retryable', async () => {
+  it('gives up after maxAttempts leaving retryable to follow the status', async () => {
     const { apiCalls } = mockFetch([
       jsonResponse(503, googleError(503, 'down')),
       jsonResponse(503, googleError(503, 'down')),
     ]);
 
     const promise = googlePlayFetch(credentials, '/test', { retry: { maxAttempts: 2 } });
-    const assertion = expect(promise).rejects.toMatchObject({ code: 503, retryable: false });
+    const assertion = expect(promise).rejects.toMatchObject({ code: 503, retryable: true });
     await settle(promise);
     await assertion;
     expect(apiCalls).toHaveLength(2);

@@ -334,8 +334,9 @@ export async function appleApiRequest<T>(
       error?.detail || `Request failed with status ${status}`
     );
     apiError.details = { errors: errorData?.errors, attempts: attempt + 1, rateLimit };
-    // Retries already spent here; stop callers (e.g. executeWithRateLimit) multiplying them
-    if (attempt > 0 || quotaSpent || retryAfterTooLong) {
+    // Only terminal conditions opt out of outer retries (e.g. executeWithRateLimit);
+    // otherwise retryable follows the status so the caller's retry policy still applies
+    if (quotaSpent || retryAfterTooLong) {
       apiError.retryable = false;
     }
     throw apiError;

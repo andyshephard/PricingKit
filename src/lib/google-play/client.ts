@@ -314,8 +314,9 @@ export async function googlePlayFetch<T>(
       message: errInfo.message || response.statusText || `HTTP ${response.status}`,
       googleStatus: errInfo.status,
       errors: Array.isArray(errInfo.errors) ? errInfo.errors : [],
-      // Retries already spent here; stop callers (e.g. executeWithRateLimit) multiplying them
-      retryable: attempt > 0 || retryAfterTooLong ? false : undefined,
+      // Only a too-long Retry-After is terminal; otherwise retryable follows the
+      // status so a caller's own retry policy (e.g. executeWithRateLimit) still applies
+      retryable: retryAfterTooLong ? false : undefined,
     });
     console.error(
       `[googlePlayFetch] ${method} ${url} → ${response.status}`,

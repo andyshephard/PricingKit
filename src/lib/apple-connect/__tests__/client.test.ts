@@ -10,6 +10,7 @@ import {
 import type { AppleConnectCredentials } from '../types';
 import { ApiError } from '@/lib/utils/api-error';
 import { RequestBudget } from '@/lib/utils/request-budget';
+import { executeWithRateLimit } from '@/lib/utils/rate-limit';
 
 let credentials: AppleConnectCredentials;
 
@@ -184,7 +185,7 @@ describe('appleApiRequest retries', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('gives up after maxAttempts with a non-retryable error', async () => {
+  it('gives up after maxAttempts leaving retryable to follow the status', async () => {
     const { calls } = mockFetch([
       jsonResponse(500, appleError(500, 'INTERNAL', 'oops')),
       jsonResponse(500, appleError(500, 'INTERNAL', 'oops')),
@@ -192,7 +193,8 @@ describe('appleApiRequest retries', () => {
     ]);
 
     const promise = appleApiRequest(credentials, '/apps', { retry: { maxAttempts: 3 } });
-    const assertion = expect(promise).rejects.toMatchObject({ statusCode: 500, retryable: false });
+    // Still retryable so an outer policy (executeWithRateLimit) keeps working
+    const assertion = expect(promise).rejects.toMatchObject({ statusCode: 500, retryable: true });
     await settle(promise);
     await assertion;
     expect(calls).toHaveLength(3);
@@ -219,6 +221,50 @@ describe('appleApiRequest retries', () => {
 
     const promise = appleApiRequest(credentials, '/apps');
     const assertion = expect(promise).rejects.toMatchObject({ statusCode: 429, retryable: false });
+    await settle(promise);
+    await assertion;
+    expect(calls).toHaveLength(1);
+  });
+});
+
+describe('appleApiRequest inside executeWithRateLimit', () => {
+  it.each([
+    [429, 'RATE_LIMIT_EXCEEDED'],
+    [503, 'SERVICE_UNAVAILABLE'],
+  ])('honours the caller maxRetries for a persistent %i', async (status, code) => {
+    // 2 inner attempts x (1 + 2 outer retries) = 6 requests
+    const { calls } = mockFetch(
+      Array.from({ length: 6 }, () => () => jsonResponse(status, appleError(status, code, 'busy')))
+    );
+
+    const promise = executeWithRateLimit(
+      [() => appleApiRequest(credentials, '/apps', { retry: { maxAttempts: 2 } })],
+      { concurrency: 1, maxRetries: 2, retryDelay: 100 }
+    );
+    const assertion = expect(promise).rejects.toMatchObject({
+      name: 'RateLimitError',
+      originalError: { statusCode: status, attempts: 3 },
+    });
+    await settle(promise);
+    await assertion;
+    expect(calls).toHaveLength(6);
+  });
+
+  it('does not retry outside the client once Apple reports 0 remaining', async () => {
+    const { calls } = mockFetch([
+      jsonResponse(429, appleError(429, 'RATE_LIMIT_EXCEEDED', 'Too many'), {
+        'X-Rate-Limit': 'user-hour-lim:3600;user-hour-rem:0;',
+      }),
+    ]);
+
+    const promise = executeWithRateLimit(
+      [() => appleApiRequest(credentials, '/apps')],
+      { concurrency: 1, maxRetries: 5, retryDelay: 100 }
+    );
+    const assertion = expect(promise).rejects.toMatchObject({
+      name: 'RateLimitError',
+      originalError: { statusCode: 429, attempts: 1 },
+    });
     await settle(promise);
     await assertion;
     expect(calls).toHaveLength(1);
