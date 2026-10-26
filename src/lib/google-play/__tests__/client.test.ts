@@ -104,6 +104,31 @@ async function advance(ms: number): Promise<void> {
   for (let i = 0; i < 20; i++) await flush();
 }
 
+/**
+ * Let real async work run (without moving fake time) until the client is
+ * sleeping before its next attempt. Asserts that exactly one timer is pending
+ * and that no further request goes out until `ms` has passed, then fires it.
+ * This proves the backoff really waited instead of retrying straight away.
+ */
+async function expectBackoff(calls: unknown[], ms: number): Promise<void> {
+  for (let i = 0; i < 10_000 && vi.getTimerCount() === 0; i++) await flush();
+  expect(vi.getTimerCount()).toBe(1);
+  const before = calls.length;
+  await advance(ms - 1);
+  expect(calls).toHaveLength(before);
+  expect(vi.getTimerCount()).toBe(1);
+  await advance(1);
+}
+
+/** Let the promise settle, asserting no timer is left pending (no hidden sleep) */
+async function finish(promise: Promise<unknown>): Promise<void> {
+  let done = false;
+  promise.then(() => (done = true), () => (done = true));
+  for (let i = 0; i < 10_000 && !done; i++) await flush();
+  expect(done).toBe(true);
+  expect(vi.getTimerCount()).toBe(0);
+}
+
 beforeAll(async () => {
   credentials = await generateTestCredentials();
 });
@@ -131,7 +156,10 @@ describe('googlePlayFetch retries', () => {
     ]);
 
     const promise = googlePlayFetch<{ ok: boolean }>(credentials, '/test');
-    await settle(promise);
+    // Math.random = 0.5 -> backoff of exactly 1000ms then 2000ms
+    await expectBackoff(apiCalls, 1_000);
+    await expectBackoff(apiCalls, 2_000);
+    await finish(promise);
     await expect(promise).resolves.toEqual({ ok: true });
     expect(apiCalls).toHaveLength(3);
   });
@@ -187,7 +215,8 @@ describe('googlePlayFetch retries', () => {
     ]);
 
     const promise = googlePlayFetch(credentials, '/test');
-    await settle(promise);
+    await expectBackoff(apiCalls, 1_000);
+    await finish(promise);
     await expect(promise).resolves.toEqual({ ok: true });
     expect(apiCalls).toHaveLength(2);
   });
@@ -201,7 +230,8 @@ describe('googlePlayFetch retries', () => {
     });
 
     const promise = googlePlayFetch(credentials, '/test');
-    await settle(promise);
+    await expectBackoff(fetchMock.mock.calls, 1_000);
+    await finish(promise);
     await expect(promise).resolves.toEqual({ ok: true });
     const tokenCalls = fetchMock.mock.calls.filter(([input]) => String(input) === TOKEN_ENDPOINT);
     expect(tokenCalls).toHaveLength(2);
@@ -230,7 +260,9 @@ describe('googlePlayFetch retries', () => {
 
     const promise = googlePlayFetch(credentials, '/test', { retry: { maxAttempts: 2 } });
     const assertion = expect(promise).rejects.toMatchObject({ code: 503, retryable: true });
-    await settle(promise);
+    await expectBackoff(apiCalls, 1_000);
+    // No sleep after the last attempt
+    await finish(promise);
     await assertion;
     expect(apiCalls).toHaveLength(2);
   });
@@ -247,7 +279,8 @@ describe('googlePlayFetch retries', () => {
       retryable: true,
       errors: [{ reason: 'networkError' }],
     });
-    await settle(promise);
+    await expectBackoff(apiCalls, 1_000);
+    await finish(promise);
     await assertion;
     expect(apiCalls).toHaveLength(2);
   });
