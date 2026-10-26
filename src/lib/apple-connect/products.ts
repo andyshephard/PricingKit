@@ -139,25 +139,23 @@ export async function listInAppPurchases(
     // console.log('[Apple] listInAppPurchases - Price schedule map:', Object.fromEntries(allPriceScheduleMap));
     // console.log('[Apple] listInAppPurchases - Base territory map:', Object.fromEntries(allBaseTerritoryMap));
 
+    // A failed price read fails the whole list (as ApiError) rather than
+    // showing the product as if it had no price
     const pricePromises = allProducts.map(async (product) => {
-      try {
-        // Look up the price schedule ID from our map (built from included data)
-        const priceScheduleId = allPriceScheduleMap.get(product.id);
-        if (!priceScheduleId) {
-          // console.log('[Apple] No price schedule found for product', product.id);
-          return;
-        }
-        // Get the base territory for this product (default to USA if not found)
-        const baseTerritory = allBaseTerritoryMap.get(product.id) || 'USA';
-        // console.log('[Apple] Fetching price for product', product.id, 'using schedule', priceScheduleId, 'base territory', baseTerritory);
-        const basePrice = await getProductBasePriceBySchedule(credentials, priceScheduleId, baseTerritory);
-        if (basePrice) {
-          product.prices = { [baseTerritory]: basePrice };
-          product.baseTerritory = baseTerritory;
-          // console.log('[Apple] Got price for product', product.id, ':', basePrice.customerPrice, basePrice.currency);
-        }
-      } catch (error) {
-        console.error('[Apple] Failed to fetch price for product', product.id, error);
+      // Look up the price schedule ID from our map (built from included data)
+      const priceScheduleId = allPriceScheduleMap.get(product.id);
+      if (!priceScheduleId) {
+        // console.log('[Apple] No price schedule found for product', product.id);
+        return;
+      }
+      // Get the base territory for this product (default to USA if not found)
+      const baseTerritory = allBaseTerritoryMap.get(product.id) || 'USA';
+      // console.log('[Apple] Fetching price for product', product.id, 'using schedule', priceScheduleId, 'base territory', baseTerritory);
+      const basePrice = await getProductBasePriceBySchedule(credentials, priceScheduleId, baseTerritory);
+      if (basePrice) {
+        product.prices = { [baseTerritory]: basePrice };
+        product.baseTerritory = baseTerritory;
+        // console.log('[Apple] Got price for product', product.id, ':', basePrice.customerPrice, basePrice.currency);
       }
     });
     await Promise.all(pricePromises);
@@ -167,7 +165,9 @@ export async function listInAppPurchases(
   return allProducts;
 }
 
-// Get base territory price using the price schedule ID directly
+// Get base territory price using the price schedule ID directly.
+// Returns null when there is no price (404 / no data); API failures are
+// thrown as ApiError.
 async function getProductBasePriceBySchedule(
   credentials: AppleConnectCredentials,
   priceScheduleId: string,
@@ -237,8 +237,11 @@ async function getProductBasePriceBySchedule(
 
     return null;
   } catch (error) {
+    if (getErrorStatus(error) === 404) {
+      return null;
+    }
     console.error('[Apple] getProductBasePriceBySchedule error:', error);
-    return null;
+    throw toApiError(error, 'apple');
   }
 }
 

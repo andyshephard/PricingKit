@@ -15,6 +15,7 @@ vi.mock('../client', async (importOriginal) => {
 });
 
 import {
+  listInAppPurchases,
   updateInAppPurchasePrices,
   getInAppPurchase,
   getBaseTerritoryForProduct,
@@ -193,5 +194,69 @@ describe('getAvailablePricePoints', () => {
     await expect(getAvailablePricePoints(credentials, 'USA')).resolves.toEqual([
       { id: 'pp-1', customerPrice: '0.99', proceeds: '0.70' },
     ]);
+  });
+});
+
+describe('listInAppPurchases base prices', () => {
+  const listResponse = {
+    data: [
+      {
+        id: 'iap-1',
+        type: 'inAppPurchases',
+        attributes: { name: 'Coins', productId: 'com.example.coins', inAppPurchaseType: 'CONSUMABLE', state: 'APPROVED' },
+        relationships: {},
+      },
+    ],
+    included: [
+      {
+        id: 'iap-1',
+        type: 'inAppPurchasePriceSchedules',
+        relationships: { baseTerritory: { data: { id: 'GBR' } } },
+      },
+    ],
+    links: {},
+  };
+
+  function mockList(priceResult: () => unknown) {
+    appleApiRequest.mockImplementation(async (_creds: unknown, endpoint: string) => {
+      if (endpoint.endsWith('/manualPrices')) return priceResult();
+      return listResponse;
+    });
+  }
+
+  it('rethrows a failed base price read instead of listing the product without a price', async () => {
+    mockList(() => {
+      throw appleFailure(500);
+    });
+
+    const promise = listInAppPurchases(credentials);
+    await expect(promise).rejects.toBeInstanceOf(ApiError);
+    await expect(promise).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('lists the product without a price when the schedule has none (404)', async () => {
+    mockList(() => {
+      throw appleFailure(404);
+    });
+
+    const products = await listInAppPurchases(credentials);
+    expect(products).toHaveLength(1);
+    expect(products[0].baseTerritory).toBeUndefined();
+  });
+
+  it('reads the base price from the base territory', async () => {
+    mockList(() => ({
+      data: [{ id: 'price-1', type: 'inAppPurchasePrices', attributes: {} }],
+      included: [
+        { id: 'pp-1', type: 'inAppPurchasePricePoints', attributes: { customerPrice: '0.99', proceeds: '0.70' } },
+        { id: 'GBR', type: 'territories', attributes: { currency: 'GBP' } },
+      ],
+    }));
+
+    const products = await listInAppPurchases(credentials);
+    expect(products[0].baseTerritory).toBe('GBR');
+    expect(products[0].prices).toEqual({
+      GBR: { territoryCode: 'GBR', currency: 'GBP', customerPrice: '0.99', proceeds: '0.70', pricePointId: 'pp-1' },
+    });
   });
 });

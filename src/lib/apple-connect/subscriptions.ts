@@ -802,7 +802,7 @@ export async function applySubscriptionPriceChanges(
     ([territoryCode, change]) => () => applyOne(territoryCode, change)
   );
 
-  // Tasks never throw; appleApiRequest already retries 429/5xx itself
+  // Tasks never throw; appleApiRequest retries 429 itself (never 5xx for a create)
   return executeWithRateLimit(tasks, {
     concurrency: options.rateLimit?.concurrency ?? 2,
     delayBetweenBatches: options.rateLimit?.delayBetweenBatches ?? 500,
