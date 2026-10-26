@@ -60,7 +60,55 @@ beforeEach(() => {
 });
 
 describe('POST /api/bulk', () => {
-  it('reports a subscription without basePlanId as a failed item', async () => {
+  const twoPlanSubscription = {
+    productId: 'premium',
+    basePlans: [
+      {
+        basePlanId: 'monthly',
+        regionalConfigs: [{ regionCode: 'US', price: { currencyCode: 'USD', units: '10' } }],
+      },
+      {
+        basePlanId: 'yearly',
+        regionalConfigs: [{ regionCode: 'US', price: { currencyCode: 'USD', units: '100' } }],
+      },
+    ],
+  };
+
+  it('expands a subscription without basePlanId to every base plan', async () => {
+    getSubscription.mockResolvedValue(twoPlanSubscription);
+    updateBasePlanPrices.mockResolvedValue({});
+
+    const response = await POST(
+      bulkRequest({
+        items: [{ type: 'subscription', id: 'premium' }],
+        operation: { type: 'percentage', value: 10 },
+        targetRegions: ['US'],
+      })
+    );
+    const body = await response.json();
+
+    expect(body.success).toBe(true);
+    expect(body.total).toBe(2);
+    expect(body.successful).toBe(2);
+    expect(body.results.map((r: { basePlanId: string }) => r.basePlanId)).toEqual([
+      'monthly',
+      'yearly',
+    ]);
+    expect(getSubscription).toHaveBeenCalledTimes(1);
+    expect(updateBasePlanPrices.mock.calls.map((c) => c[3])).toEqual(['monthly', 'yearly']);
+    expect(updateBasePlanPrices.mock.calls[0][4][0].price).toEqual({
+      currencyCode: 'USD',
+      units: '11',
+      nanos: undefined,
+    });
+  });
+
+  it('reports each expanded base plan separately when one fails', async () => {
+    getSubscription.mockResolvedValue(twoPlanSubscription);
+    updateBasePlanPrices
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({});
+
     const response = await POST(
       bulkRequest({
         items: [{ type: 'subscription', id: 'premium' }],
@@ -71,21 +119,60 @@ describe('POST /api/bulk', () => {
     const body = await response.json();
 
     expect(body.success).toBe(false);
-    expect(body.successful).toBe(0);
     expect(body.failed).toBe(1);
+    expect(body.successful).toBe(1);
+    expect(body.results[0]).toMatchObject({ basePlanId: 'monthly', success: false, committed: false });
+    expect(body.results[1]).toMatchObject({ basePlanId: 'yearly', success: true, committed: true });
+  });
+
+  it('stops expanding base plans after a failure when stopOnFailure is set', async () => {
+    getSubscription.mockResolvedValue(twoPlanSubscription);
+    updateBasePlanPrices.mockRejectedValueOnce(new Error('boom'));
+
+    const response = await POST(
+      bulkRequest({
+        items: [{ type: 'subscription', id: 'premium' }],
+        operation: { type: 'percentage', value: 10 },
+        targetRegions: ['US'],
+        stopOnFailure: true,
+      })
+    );
+    const body = await response.json();
+
+    expect(body.stoppedEarly).toBe(true);
+    expect(updateBasePlanPrices).toHaveBeenCalledTimes(1);
+    expect(body.results[1]).toMatchObject({
+      basePlanId: 'yearly',
+      success: false,
+      error: expect.stringMatching(/Skipped/),
+    });
+  });
+
+  it('fails a subscription without base plans instead of skipping it', async () => {
+    getSubscription.mockResolvedValue({ productId: 'premium', basePlans: [] });
+
+    const response = await POST(
+      bulkRequest({
+        items: [{ type: 'subscription', id: 'premium' }],
+        operation: { type: 'percentage', value: 10 },
+        targetRegions: ['US'],
+      })
+    );
+    const body = await response.json();
+
+    expect(body.success).toBe(false);
     expect(body.results[0]).toMatchObject({
       id: 'premium',
       success: false,
-      committed: false,
-      error: expect.stringMatching(/basePlanId/),
+      error: 'Subscription has no base plans',
     });
-    expect(getSubscription).not.toHaveBeenCalled();
     expect(updateBasePlanPrices).not.toHaveBeenCalled();
   });
 
   it('is not successful overall when any item failed', async () => {
     getInAppProduct.mockResolvedValue(product);
     updateInAppProductPrices.mockResolvedValue(product);
+    getSubscription.mockResolvedValue(null);
 
     const response = await POST(
       bulkRequest({
@@ -102,6 +189,7 @@ describe('POST /api/bulk', () => {
     expect(body.success).toBe(false);
     expect(body.successful).toBe(1);
     expect(body.failed).toBe(1);
+    expect(body.results[1].error).toBe('Subscription not found');
   });
 
   it('reports regions without an existing price as skipped with a reason', async () => {

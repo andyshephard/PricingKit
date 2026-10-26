@@ -112,8 +112,8 @@ export function BulkUpdateModal({
       const items = selectedIds.map((id) => ({
         type,
         id,
-        // No basePlanId is sent, so /api/bulk reports each subscription
-        // as a per-item error until base plans are selectable here
+        // No basePlanId: /api/bulk expands each subscription to all of its
+        // base plans and returns one result per base plan
       }));
 
       const response = await fetch('/api/bulk', {
@@ -138,6 +138,9 @@ export function BulkUpdateModal({
 
       setResults(result.results);
 
+      // Subscription results are per base plan
+      const unit = type === 'product' ? 'item' : 'base plan';
+
       const skippedRegions: number = result.skippedRegions ?? 0;
       const skippedNote = skippedRegions > 0
         ? `, ${skippedRegions} region${skippedRegions !== 1 ? 's' : ''} skipped`
@@ -146,18 +149,18 @@ export function BulkUpdateModal({
       if (result.successful === 0) {
         // Never report "Successfully updated 0 items"
         toast.error(
-          `No items were updated (${result.failed} failed${skippedNote})`
+          `No ${unit}s were updated (${result.failed} failed${skippedNote})`
         );
       } else if (result.failed > 0) {
         toast.warning(
-          `Updated ${result.successful} items, ${result.failed} failed${skippedNote}`
+          `Updated ${result.successful} ${unit}s, ${result.failed} failed${skippedNote}`
         );
         onSuccess();
       } else if (skippedRegions > 0) {
-        toast.warning(`Updated ${result.successful} items${skippedNote}`);
+        toast.warning(`Updated ${result.successful} ${unit}s${skippedNote}`);
         onSuccess();
       } else {
-        toast.success(`Successfully updated ${result.successful} items`);
+        toast.success(`Successfully updated ${result.successful} ${unit}s`);
         onSuccess();
       }
     } catch (error) {
@@ -180,7 +183,9 @@ export function BulkUpdateModal({
           <DialogTitle>Bulk Update Prices</DialogTitle>
           <DialogDescription>
             Update prices for {selectedIds.length} selected{' '}
-            {type === 'product' ? 'products' : 'subscriptions'}
+            {type === 'product'
+              ? 'products'
+              : 'subscriptions (all base plans of each)'}
           </DialogDescription>
         </DialogHeader>
 
