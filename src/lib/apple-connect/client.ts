@@ -204,7 +204,10 @@ export interface AppleApiRequestOptions {
   body?: unknown;
   queryParams?: Record<string, string>;
   apiVersion?: 'v1' | 'v2';
-  /** Backoff settings for 429 / 5xx / network errors (default: 4 attempts) */
+  /**
+   * Backoff settings for 429 / 5xx / network errors (default: 4 attempts).
+   * POST (create) requests only ever retry 429; see appleApiRequest.
+   */
   retry?: RetryOptions;
   /** Optional per-run budget; each attempt consumes one request */
   budget?: RequestBudget;
@@ -220,6 +223,10 @@ export async function appleApiRequest<T>(
 ): Promise<T> {
   const { method = 'GET', body, queryParams, apiVersion = 'v1', budget, onRateLimit } = options;
   const retry = resolveRetryOptions(options.retry);
+  // A POST creates something. After a 5xx, timeout or dropped connection the
+  // create may still have succeeded on Apple's side, so retrying could
+  // duplicate it. Only a 429 (rejected before processing) is safe to retry.
+  const retriesOnlyRateLimits = method === 'POST';
 
   const baseUrl = `https://api.appstoreconnect.apple.com/${apiVersion}`;
   let url = `${baseUrl}${endpoint}`;
@@ -256,7 +263,8 @@ export async function appleApiRequest<T>(
     } catch (networkError) {
       const apiError = toApiError(networkError, 'apple');
       // fetch() rejections are network failures / timeouts: transient
-      const retryable = apiError.retryable || networkError instanceof TypeError;
+      const retryable =
+        !retriesOnlyRateLimits && (apiError.retryable || networkError instanceof TypeError);
       if (!retryable || isLastAttempt) {
         throw new ApiError(apiError.message, {
           status: apiError.status === 500 ? 503 : apiError.status,
@@ -303,8 +311,8 @@ export async function appleApiRequest<T>(
     const quotaSpent = status === 429 && rateLimit?.remaining === 0;
     const retryAfterTooLong =
       retryAfterMs !== undefined && retryAfterMs > retry.maxRetryAfterMs;
-    const shouldRetry =
-      isRetryableStatus(status) && !quotaSpent && !retryAfterTooLong && !isLastAttempt;
+    const statusRetryable = retriesOnlyRateLimits ? status === 429 : isRetryableStatus(status);
+    const shouldRetry = statusRetryable && !quotaSpent && !retryAfterTooLong && !isLastAttempt;
 
     if (shouldRetry) {
       // Wait at least Retry-After; jittered backoff spreads out concurrent retries
@@ -338,7 +346,7 @@ export async function appleApiRequest<T>(
     apiError.details = { errors: errorData?.errors, attempts: attempt + 1, rateLimit };
     // Only terminal conditions opt out of outer retries (e.g. executeWithRateLimit);
     // otherwise retryable follows the status so the caller's retry policy still applies
-    if (quotaSpent || retryAfterTooLong) {
+    if (quotaSpent || retryAfterTooLong || !statusRetryable) {
       apiError.retryable = false;
     }
     throw apiError;
