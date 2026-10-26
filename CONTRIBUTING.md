@@ -99,7 +99,7 @@ Run a single file with `npm test -- src/lib/google-play/__tests__/currency.test.
   with an upgrade note if self-hosters need to do something.
 - Update `README.md` / `CLAUDE.md` when you change commands, environment variables or
   architecture.
-- Don't commit planning or design `.md` files; put that in the PR description.
+- Don't commit planning or design `.md` files (at the repo root or under `docs/`); put that in the PR description.
 - Report security issues privately as described in `SECURITY.md`, not in a public issue or PR.
 
 ## License

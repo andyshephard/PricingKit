@@ -140,5 +140,5 @@ On Cloudflare Workers set these as Worker secrets; for `npm run preview` put the
 TypeScript path alias: `@/*` maps to `src/*`
 
 ## Repo hygiene
-- Do not commit planning/implementation `.md` files to repo root. Plans belong in PR descriptions, not the tree.
+- Do not commit planning/implementation/design `.md` files anywhere in the tree (repo root or `docs/`). Plans belong in PR descriptions, not the tree.
 - Record user-visible behaviour changes in `CHANGELOG.md` under `Unreleased`.
