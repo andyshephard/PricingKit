@@ -25,10 +25,30 @@ describe('isRetryableError', () => {
   });
 });
 
+/**
+ * Assert the task has run `calls` times and a single backoff timer is pending,
+ * that the task is not re-run before `ms` has passed, then fire the timer.
+ */
+async function expectRetryAfter(
+  task: { mock: { calls: unknown[] } },
+  calls: number,
+  ms: number
+): Promise<void> {
+  await vi.advanceTimersByTimeAsync(0);
+  expect(task.mock.calls).toHaveLength(calls);
+  expect(vi.getTimerCount()).toBe(1);
+  await vi.advanceTimersByTimeAsync(ms - 1);
+  expect(task.mock.calls).toHaveLength(calls);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(task.mock.calls).toHaveLength(calls + 1);
+}
+
 describe('executeWithRateLimit', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.spyOn(console, 'log').mockImplementation(() => {});
+    // retryDelay * 2^attempt * (0.5 + 0.5) -> exactly 10ms, then 20ms
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
   });
 
   afterEach(() => {
@@ -44,7 +64,8 @@ describe('executeWithRateLimit', () => {
       .mockResolvedValueOnce('ok');
 
     const promise = executeWithRateLimit([task], { retryDelay: 10 });
-    await vi.runAllTimersAsync();
+    await expectRetryAfter(task, 1, 10);
+    await expectRetryAfter(task, 2, 20);
     await expect(promise).resolves.toEqual(['ok']);
     expect(task).toHaveBeenCalledTimes(3);
   });
@@ -93,7 +114,7 @@ describe('executeWithRateLimit', () => {
       .mockResolvedValueOnce('ok');
 
     const promise = executeWithRateLimit([task], { retryDelay: 10 });
-    await vi.runAllTimersAsync();
+    await expectRetryAfter(task, 1, 10);
     await expect(promise).resolves.toEqual(['ok']);
     expect(task).toHaveBeenCalledTimes(2);
   });

@@ -71,11 +71,45 @@ async function settle(promise: Promise<unknown>): Promise<void> {
   }
 }
 
+/**
+ * Let real async work run (without moving fake time) until `calls` reaches
+ * `count`. Credential hashing/signing may run on Node's thread pool, so a
+ * fixed number of flushes is not enough under load.
+ */
+async function untilCalls(calls: unknown[], count: number): Promise<void> {
+  for (let i = 0; i < 10_000 && calls.length < count; i++) await flush();
+}
+
 /** Advance fake timers by ms, letting real async work run first */
 async function advance(ms: number): Promise<void> {
   for (let i = 0; i < 20; i++) await flush();
   await vi.advanceTimersByTimeAsync(ms);
   for (let i = 0; i < 20; i++) await flush();
+}
+
+/**
+ * Let real async work run (without moving fake time) until the client is
+ * sleeping before its next attempt. Asserts that exactly one timer is pending
+ * and that no further request goes out until `ms` has passed, then fires it.
+ * This proves the backoff really waited instead of retrying straight away.
+ */
+async function expectBackoff(calls: unknown[], ms: number): Promise<void> {
+  for (let i = 0; i < 10_000 && vi.getTimerCount() === 0; i++) await flush();
+  expect(vi.getTimerCount()).toBe(1);
+  const before = calls.length;
+  await advance(ms - 1);
+  expect(calls).toHaveLength(before);
+  expect(vi.getTimerCount()).toBe(1);
+  await advance(1);
+}
+
+/** Let the promise settle, asserting no timer is left pending (no hidden sleep) */
+async function finish(promise: Promise<unknown>): Promise<void> {
+  let done = false;
+  promise.then(() => (done = true), () => (done = true));
+  for (let i = 0; i < 10_000 && !done; i++) await flush();
+  expect(done).toBe(true);
+  expect(vi.getTimerCount()).toBe(0);
 }
 
 beforeAll(async () => {
@@ -123,9 +157,11 @@ describe('appleApiRequest retries', () => {
     // Sign the JWT up front so timing only covers the API calls
     await generateJWT(credentials);
     const promise = appleApiRequest(credentials, '/apps');
+    await untilCalls(calls, 1);
     await advance(4_900);
     expect(calls).toHaveLength(1);
     await advance(200);
+    await untilCalls(calls, 2);
     expect(calls).toHaveLength(2);
     await expect(promise).resolves.toEqual({ data: [] });
   });
@@ -140,13 +176,16 @@ describe('appleApiRequest retries', () => {
     await generateJWT(credentials);
     const promise = appleApiRequest(credentials, '/apps');
     // Math.random = 0.5 -> delays of exactly 1000ms then 2000ms
+    await untilCalls(calls, 1);
     await advance(999);
     expect(calls).toHaveLength(1);
     await advance(1);
+    await untilCalls(calls, 2);
     expect(calls).toHaveLength(2);
     await advance(1_999);
     expect(calls).toHaveLength(2);
     await advance(1);
+    await untilCalls(calls, 3);
     expect(calls).toHaveLength(3);
     await expect(promise).resolves.toEqual({ data: [] });
   });
@@ -159,7 +198,10 @@ describe('appleApiRequest retries', () => {
     ]);
 
     const promise = appleApiRequest(credentials, '/apps/1');
-    await settle(promise);
+    // Math.random = 0.5 -> backoff of exactly 1000ms then 2000ms
+    await expectBackoff(calls, 1_000);
+    await expectBackoff(calls, 2_000);
+    await finish(promise);
     await expect(promise).resolves.toEqual({ data: { id: '1' } });
     expect(calls).toHaveLength(3);
   });
@@ -196,7 +238,10 @@ describe('appleApiRequest retries', () => {
     const promise = appleApiRequest(credentials, '/apps', { retry: { maxAttempts: 3 } });
     // Still retryable so an outer policy (executeWithRateLimit) keeps working
     const assertion = expect(promise).rejects.toMatchObject({ statusCode: 500, retryable: true });
-    await settle(promise);
+    await expectBackoff(calls, 1_000);
+    await expectBackoff(calls, 2_000);
+    // No sleep after the last attempt
+    await finish(promise);
     await assertion;
     expect(calls).toHaveLength(3);
   });
@@ -225,6 +270,85 @@ describe('appleApiRequest retries', () => {
     await settle(promise);
     await assertion;
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe('appleApiRequest POST (create) retries', () => {
+  it.each([500, 502, 503, 504])('does not retry a %i on POST and marks it not retryable', async (status) => {
+    const { calls } = mockFetch([
+      jsonResponse(status, appleError(status, 'UNEXPECTED_ERROR', 'down')),
+      jsonResponse(201, { data: { id: 'dup' } }),
+    ]);
+
+    const promise = appleApiRequest(credentials, '/subscriptionPrices', { method: 'POST', body: {} });
+    const assertion = expect(promise).rejects.toMatchObject({ statusCode: status, retryable: false });
+    await finish(promise);
+    await assertion;
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each([
+    ['network failure', () => new TypeError('fetch failed')],
+    ['timeout', () => new DOMException('The operation was aborted due to timeout', 'TimeoutError')],
+  ])('does not retry a POST after a %s', async (_label, makeError) => {
+    const { calls } = mockFetch([
+      () => {
+        throw makeError();
+      },
+      jsonResponse(201, { data: { id: 'dup' } }),
+    ]);
+
+    const promise = appleApiRequest(credentials, '/subscriptionPrices', { method: 'POST', body: {} });
+    const assertion = expect(promise).rejects.toMatchObject({ retryable: false });
+    await finish(promise);
+    await assertion;
+    expect(calls).toHaveLength(1);
+  });
+
+  it('retries a POST on 429 after the backoff', async () => {
+    const { calls } = mockFetch([
+      jsonResponse(429, appleError(429, 'RATE_LIMIT_EXCEEDED', 'Too many')),
+      jsonResponse(201, { data: { id: 'created' } }),
+    ]);
+
+    await generateJWT(credentials);
+    const promise = appleApiRequest(credentials, '/subscriptionPrices', { method: 'POST', body: {} });
+    await expectBackoff(calls, 1_000);
+    await finish(promise);
+    await expect(promise).resolves.toEqual({ data: { id: 'created' } });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('a POST 5xx is not retried by executeWithRateLimit either', async () => {
+    const { calls } = mockFetch([
+      jsonResponse(503, appleError(503, 'SERVICE_UNAVAILABLE', 'busy')),
+      jsonResponse(201, { data: { id: 'dup' } }),
+    ]);
+
+    const promise = executeWithRateLimit(
+      [() => appleApiRequest(credentials, '/subscriptionPrices', { method: 'POST', body: {} })],
+      { concurrency: 1, maxRetries: 3, retryDelay: 100 }
+    );
+    const assertion = expect(promise).rejects.toMatchObject({
+      name: 'RateLimitError',
+      originalError: { statusCode: 503, attempts: 1 },
+    });
+    await finish(promise);
+    await assertion;
+    expect(calls).toHaveLength(1);
+  });
+
+  it('still retries 5xx for GET and DELETE', async () => {
+    const { calls } = mockFetch([
+      jsonResponse(503, appleError(503, 'UNAVAILABLE', 'down')),
+      jsonResponse(204, null),
+    ]);
+
+    const promise = appleApiRequest(credentials, '/subscriptionPrices/1', { method: 'DELETE' });
+    await expectBackoff(calls, 1_000);
+    await finish(promise);
+    await expect(promise).resolves.toEqual({});
+    expect(calls).toHaveLength(2);
   });
 });
 
@@ -272,7 +396,8 @@ describe('appleApiRequest inside executeWithRateLimit', () => {
       code: 'NETWORK_ERROR',
       retryable: true,
     });
-    await settle(inner);
+    await expectBackoff(calls, 1_000);
+    await finish(inner);
     await innerAssertion;
     expect(calls).toHaveLength(2);
 
@@ -378,7 +503,8 @@ describe('appleApiRequest rate-limit tracking and budget', () => {
 
     const promise = appleApiRequest(credentials, '/apps', { budget });
     const assertion = expect(promise).rejects.toMatchObject({ code: 'BUDGET_EXCEEDED' });
-    await settle(promise);
+    await expectBackoff(fetchMock.mock.calls, 1_000);
+    await finish(promise);
     await assertion;
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
