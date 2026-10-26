@@ -1,9 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getAppleAuthFromCookies } from '../auth/route';
-import {
-  listInAppPurchases,
-  AppleApiError,
-} from '@/lib/apple-connect';
+import { listInAppPurchases } from '@/lib/apple-connect';
+import { appleErrorResponse } from '../_lib/error-response';
 
 export async function GET() {
   try {
@@ -25,28 +23,6 @@ export async function GET() {
   } catch (error) {
     console.error('Error fetching Apple products:', error);
 
-    if (error instanceof AppleApiError) {
-      if (error.statusCode === 401) {
-        return NextResponse.json(
-          { error: 'Session expired. Please reconnect.' },
-          { status: 401 }
-        );
-      }
-      if (error.statusCode === 403) {
-        return NextResponse.json(
-          { error: 'Access denied. The API key may not have sufficient permissions.' },
-          { status: 403 }
-        );
-      }
-      return NextResponse.json(
-        { error: error.detail || 'Failed to fetch products' },
-        { status: error.statusCode }
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'Failed to fetch products' },
-      { status: 500 }
-    );
+    return appleErrorResponse(error, 'Failed to fetch products');
   }
 }

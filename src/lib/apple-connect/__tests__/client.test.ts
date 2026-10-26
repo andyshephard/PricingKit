@@ -4,6 +4,7 @@ import {
   AppleApiError,
   clearTokenCache,
   generateJWT,
+  getAppIdForBundleId,
   getAppleRateLimitInfo,
   parseAppleRateLimitHeader,
 } from '../client';
@@ -380,5 +381,39 @@ describe('appleApiRequest rate-limit tracking and budget', () => {
     await settle(promise);
     await assertion;
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('getAppIdForBundleId', () => {
+  it('returns the exact bundle ID match', async () => {
+    mockFetch([
+      jsonResponse(200, {
+        data: [
+          { id: '1', attributes: { bundleId: 'com.example.test.extra', name: 'Other' } },
+          { id: '2', attributes: { bundleId: 'com.example.test', name: 'Test' } },
+        ],
+      }),
+    ]);
+
+    await expect(getAppIdForBundleId(credentials)).resolves.toBe('2');
+  });
+
+  it('returns null when no app has the bundle ID', async () => {
+    mockFetch([jsonResponse(200, { data: [] })]);
+
+    await expect(getAppIdForBundleId(credentials)).resolves.toBeNull();
+  });
+
+  it('throws an ApiError on an API failure instead of returning null', async () => {
+    mockFetch([jsonResponse(403, appleError(403, 'FORBIDDEN_ERROR', 'Not allowed'))]);
+
+    const promise = getAppIdForBundleId(credentials);
+    const assertion = expect(promise).rejects.toSatisfy((err: unknown) => {
+      expect(err).toBeInstanceOf(ApiError);
+      expect((err as ApiError).status).toBe(403);
+      return true;
+    });
+    await settle(promise);
+    await assertion;
   });
 });

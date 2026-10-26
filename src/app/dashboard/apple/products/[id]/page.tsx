@@ -47,7 +47,7 @@ export default function AppleProductDetailPage({
   const { id } = use(params);
   const decodedId = decodeURIComponent(id);
 
-  const { data, isLoading, error, refetch, isRefetching } = useQuery<{ product: InAppProduct & { _appleProduct?: RawAppleProduct } }>({
+  const { data, isLoading, error, refetch, isRefetching } = useQuery<{ product: InAppProduct & { _appleProduct?: RawAppleProduct } } | null>({
     queryKey: ['products', 'apple', decodedId],
     queryFn: async () => {
       const response = await fetch(`/api/apple/products/${encodeURIComponent(decodedId)}`);
@@ -56,6 +56,10 @@ export default function AppleProductDetailPage({
           throw new Error('401: Unauthorized');
         }
         const error = await response.json();
+        // A genuine 404 is "not found", not a failed load (an unknown app is an error)
+        if (response.status === 404 && error.code !== 'APP_NOT_FOUND') {
+          return null;
+        }
         throw new Error(error.error || 'Failed to fetch product');
       }
       const data = await response.json();
@@ -196,7 +200,15 @@ export default function AppleProductDetailPage({
         ) : (
           <Card>
             <CardContent className="py-12 text-center">
-              <p className="text-muted-foreground">Product not found</p>
+              {/* Distinguish a failed load from a genuinely missing product */}
+              <p className={error ? 'text-destructive' : 'text-muted-foreground'}>
+                {error ? `Could not load product: ${error.message}` : 'Product not found'}
+              </p>
+              {error && (
+                <Button variant="outline" className="mt-4 mr-2" onClick={() => refetch()}>
+                  Retry
+                </Button>
+              )}
               <Button variant="outline" className="mt-4" asChild>
                 <Link href="/dashboard/apple/products">Back to Products</Link>
               </Button>

@@ -8,6 +8,7 @@ import type {
 import { appleApiRequest, getAppIdForBundleId } from './client';
 import { UNSUPPORTED_IAP_TERRITORIES } from './territories';
 import { getAvailablePricePoints, findClosestPricePoint } from './products';
+import { ApiError } from '../utils/api-error';
 
 // Get the app's price schedule ID and base territory
 export async function getAppPriceSchedule(
@@ -15,7 +16,11 @@ export async function getAppPriceSchedule(
 ): Promise<{ scheduleId: string; baseTerritory: string } | null> {
   const appId = await getAppIdForBundleId(credentials);
   if (!appId) {
-    throw new Error(`App with Bundle ID "${credentials.bundleId}" not found`);
+    throw new ApiError(`App with Bundle ID "${credentials.bundleId}" not found`, {
+      status: 404,
+      code: 'APP_NOT_FOUND',
+      platform: 'apple',
+    });
   }
 
   try {
@@ -215,7 +220,11 @@ export async function updateAppPriceSchedule(
 ): Promise<void> {
   const appId = await getAppIdForBundleId(credentials);
   if (!appId) {
-    throw new Error(`App with Bundle ID "${credentials.bundleId}" not found`);
+    throw new ApiError(`App with Bundle ID "${credentials.bundleId}" not found`, {
+      status: 404,
+      code: 'APP_NOT_FOUND',
+      platform: 'apple',
+    });
   }
 
   // Filter out unsupported territories
@@ -225,7 +234,11 @@ export async function updateAppPriceSchedule(
 
   const basePrice = supportedPrices.find((p) => p.territoryId === baseTerritoryId);
   if (!basePrice) {
-    throw new Error(`Base territory ${baseTerritoryId} not found in prices`);
+    throw new ApiError(`Base territory ${baseTerritoryId} not found in prices`, {
+      status: 422,
+      code: 'MISSING_BASE_TERRITORY_PRICE',
+      platform: 'apple',
+    });
   }
 
   const included = supportedPrices.map((price, index) => ({

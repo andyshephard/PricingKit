@@ -486,7 +486,8 @@ export async function getAppIdForBundleId(
     // console.log('[Apple] getAppIdForBundleId - No apps found for bundleId:', credentials.bundleId);
     return null;
   } catch (error) {
+    // null means "no app with this bundle ID"; API failures are thrown
     console.error('[Apple] getAppIdForBundleId - Error:', error);
-    return null;
+    throw toApiError(error, 'apple');
   }
 }
