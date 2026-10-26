@@ -70,7 +70,7 @@ CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm test`, `npm run typecheck` a
 
 **No database** - stateless architecture:
 - Session credentials stored encrypted (AES-256-GCM, key derived from `ENCRYPTION_KEY`) in HTTP-only cookies (24-hour expiry). Sessions are cookie-only; nothing is written server-side.
-- `ENCRYPTION_KEY` is required everywhere except `next dev`. Without it, creating or reading a session throws `MissingEncryptionKeyError`, and login is refused before any store call. Only under `next dev` (`NODE_ENV=development`) is a plaintext base64 cookie allowed.
+- `ENCRYPTION_KEY` is required everywhere except `next dev`. Without it (outside `next dev`), creating a session throws `MissingEncryptionKeyError` and reading a session cookie returns null (treated as signed out); login checks `canStoreSessions()` before any store call. Only under `next dev` (`NODE_ENV=development`) is a plaintext base64 cookie allowed.
 - Short-lived store tokens (Apple JWTs, Google access tokens) are cached in memory in a 50-entry LRU keyed by a SHA-256 of the full credential, so users of a shared instance never share a token.
 - Exchange rates: in-memory cache with a 6-hour TTL; stale data is served if the API fails. On Node the client also tries `.exchange-rates.json` in the working directory. Cloudflare Workers has no filesystem, so that step silently no-ops and only the per-isolate memory cache applies.
 - Client auth state persisted to localStorage via Zustand
