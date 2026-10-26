@@ -112,8 +112,9 @@ export class MissingEncryptionKeyError extends Error {
 
 /**
  * Plaintext (base64) session cookies are only permitted under `next dev`.
- * Every other environment (production, test, preview builds, unset NODE_ENV)
- * fails closed and requires ENCRYPTION_KEY.
+ * `next build` inlines NODE_ENV as 'production', so built servers always fail
+ * closed; checking for 'development' (rather than !== 'production') also
+ * covers code run outside Next, such as tests and scripts.
  */
 export function isPlaintextSessionAllowed(): boolean {
   return process.env.NODE_ENV === 'development';
