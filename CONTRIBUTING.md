@@ -5,7 +5,7 @@ correctness is high and the rules below about tests and store access are strict.
 
 ## Setup
 
-1. Install Node 22 or later (`.nvmrc` pins 22; `nvm use` picks it up).
+1. Install Node 22 or later (`.nvmrc` pins 22.23.3; `nvm use` picks it up).
 2. Install dependencies:
 
    ```bash
