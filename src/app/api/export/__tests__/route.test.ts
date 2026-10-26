@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { NextRequest } from 'next/server';
 
 const mocks = vi.hoisted(() => ({
@@ -46,6 +48,27 @@ describe('/api/export', () => {
   it('only exposes GET', () => {
     const handlers = Object.keys(route).filter((k) => /^[A-Z]+$/.test(k));
     expect(handlers).toEqual(['GET']);
+  });
+
+  it('imports only read functions from the store clients', () => {
+    const source = readFileSync(join(__dirname, '../route.ts'), 'utf8');
+    const imported = [
+      ...source.matchAll(/import\s*\{([^}]*)\}\s*from\s*'@\/lib\/(?:google-play|apple-connect)[^']*'/g),
+    ]
+      .flatMap((match) => match[1].split(','))
+      .map((name) => name.trim().split(/\s+as\s+/)[0])
+      .filter(Boolean)
+      .sort();
+    expect(imported).toEqual([
+      'getBaseTerritoryForProduct',
+      'getInAppProductRaw',
+      'getInAppPurchase',
+      'getInAppPurchasePrices',
+      'getSubscription',
+      'getSubscription',
+      'getSubscriptionById',
+      'getSubscriptionPrices',
+    ]);
   });
 
   it('rejects invalid queries', async () => {
