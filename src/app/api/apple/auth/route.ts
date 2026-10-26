@@ -8,7 +8,11 @@ import {
   testAppleConnection,
 } from '@/lib/apple-connect/client';
 import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
-import { MissingEncryptionKeyError } from '@/lib/encryption';
+import {
+  MissingEncryptionKeyError,
+  MISSING_ENCRYPTION_KEY_MESSAGE,
+  canStoreSessions,
+} from '@/lib/encryption';
 
 const SESSION_COOKIE = 'apple_session';
 const BUNDLE_ID_COOKIE = 'apple_bundle_id';
@@ -46,6 +50,13 @@ export async function POST(request: NextRequest) {
         { error: 'Invalid credentials format. Please check your .p8 key file.' },
         { status: 400 }
       );
+    }
+
+    // Fail closed before contacting Apple: without ENCRYPTION_KEY (outside
+    // `next dev`) the session could not be stored anyway.
+    if (!canStoreSessions()) {
+      console.error(MISSING_ENCRYPTION_KEY_MESSAGE);
+      return NextResponse.json({ error: MISSING_ENCRYPTION_KEY_MESSAGE }, { status: 500 });
     }
 
     const testResult = await testAppleConnection(credentials);

@@ -8,7 +8,11 @@ import {
   googlePlayFetch,
 } from '@/lib/google-play/client';
 import type { ServiceAccountCredentials } from '@/lib/google-play/types';
-import { MissingEncryptionKeyError } from '@/lib/encryption';
+import {
+  MissingEncryptionKeyError,
+  MISSING_ENCRYPTION_KEY_MESSAGE,
+  canStoreSessions,
+} from '@/lib/encryption';
 
 interface ProbeListResp<T> {
   subscriptions?: T[];
@@ -46,6 +50,13 @@ export async function POST(request: NextRequest) {
         { error: 'Invalid service account JSON structure' },
         { status: 400 }
       );
+    }
+
+    // Fail closed before contacting Google: without ENCRYPTION_KEY (outside
+    // `next dev`) the session could not be stored anyway.
+    if (!canStoreSessions()) {
+      console.error(MISSING_ENCRYPTION_KEY_MESSAGE);
+      return NextResponse.json({ error: MISSING_ENCRYPTION_KEY_MESSAGE }, { status: 500 });
     }
 
     // Test the connection by trying to list subscriptions (uses the newer monetization API)

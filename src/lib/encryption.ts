@@ -118,3 +118,12 @@ export class MissingEncryptionKeyError extends Error {
 export function isPlaintextSessionAllowed(): boolean {
   return process.env.NODE_ENV === 'development';
 }
+
+/**
+ * Whether a new session can be stored at all. Login routes check this before
+ * contacting the store, so a missing ENCRYPTION_KEY is reported with any
+ * credentials and no upstream call is made.
+ */
+export function canStoreSessions(): boolean {
+  return isEncryptionAvailable() || isPlaintextSessionAllowed();
+}

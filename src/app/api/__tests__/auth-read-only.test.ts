@@ -9,6 +9,7 @@ vi.mock('next/headers', () => ({
 
 import { POST as authPOST } from '../auth/route';
 import { POST as activeAppPOST } from '../active-app/route';
+import { POST as appleAuthPOST } from '../apple/auth/route';
 import { createSession, clearGoogleAccessTokenCache } from '@/lib/google-play/client';
 import type { ServiceAccountCredentials } from '@/lib/google-play/types';
 
@@ -134,19 +135,46 @@ describe('login and app switch never write to the store', () => {
     expect(body.error).toBe('Failed to authenticate. Please try again.');
   });
 
-  it('POST /api/auth explains a missing ENCRYPTION_KEY outside next dev', async () => {
+  it.each(['production', 'test'])(
+    'POST /api/auth fails closed on a missing ENCRYPTION_KEY (NODE_ENV=%s) before calling Google',
+    async (nodeEnv) => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.stubEnv('ENCRYPTION_KEY', '');
+      vi.stubEnv('NODE_ENV', nodeEnv);
+      // A placeholder key: the check must not depend on the credentials working.
+      const placeholder = { ...credentials, private_key: '-----BEGIN PRIVATE KEY-----\nnot-a-key\n-----END PRIVATE KEY-----\n' };
+      const req = new NextRequest('http://localhost/api/auth', {
+        method: 'POST',
+        body: JSON.stringify({ credentials: placeholder, packageName: 'com.example.app' }),
+      });
+      const res = await authPOST(req);
+      const body = await res.json();
+
+      expect(res.status).toBe(500);
+      expect(body.error).toMatch(/ENCRYPTION_KEY/);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(cookieStore.jar.has('gplay_session')).toBe(false);
+    }
+  );
+
+  it('POST /api/apple/auth fails closed on a missing ENCRYPTION_KEY before calling Apple', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.stubEnv('ENCRYPTION_KEY', '');
     vi.stubEnv('NODE_ENV', 'production');
-    const req = new NextRequest('http://localhost/api/auth', {
+    const req = new NextRequest('http://localhost/api/apple/auth', {
       method: 'POST',
-      body: JSON.stringify({ credentials, packageName: 'com.example.app' }),
+      body: JSON.stringify({
+        privateKey: '-----BEGIN PRIVATE KEY-----\nnot-a-key\n-----END PRIVATE KEY-----',
+        keyId: 'KEYID12345',
+        issuerId: '00000000-0000-0000-0000-000000000000',
+      }),
     });
-    const res = await authPOST(req);
+    const res = await appleAuthPOST(req);
     const body = await res.json();
 
     expect(res.status).toBe(500);
     expect(body.error).toMatch(/ENCRYPTION_KEY/);
-    expect(cookieStore.jar.has('gplay_session')).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(cookieStore.jar.has('apple_session')).toBe(false);
   });
 });
