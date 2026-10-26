@@ -247,6 +247,7 @@ describe('applySubscriptionPriceChanges', () => {
 
     // Exactly one create, no delete and no retry
     expect(calls.map((c) => c.method)).toEqual(['POST']);
+    expect(pricePointOf(calls[0])).toBe('new-pp-fr');
     expect(outcomes[0]).toMatchObject({
       territoryCode: 'FR',
       status: 'failed',
