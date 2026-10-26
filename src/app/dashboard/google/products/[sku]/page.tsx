@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Header } from '@/components/layout';
 import { PricingEditor } from '@/components/products/pricing-editor';
+import { ExportPricesButton } from '@/components/pricing/export-prices-button';
 import { formatMoney } from '@/lib/google-play/types';
 import type { ProductResponse } from '@/types/api';
 
@@ -75,6 +76,9 @@ export default function GoogleProductDetailPage({
               </>
             )}
           </div>
+          {product && (
+            <ExportPricesButton platform="google" type="inapp" id={product.sku || decodedSku} />
+          )}
         </div>
 
         {isLoading ? (

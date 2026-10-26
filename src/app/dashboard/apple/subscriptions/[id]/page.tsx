@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Header } from '@/components/layout';
 import { AppleSubscriptionPricingEditor } from '@/components/subscriptions/apple-subscription-pricing-editor';
+import { ExportPricesButton } from '@/components/pricing/export-prices-button';
 import { formatMoney, parseMoney } from '@/lib/google-play/types';
 import type { AppleProductPrice } from '@/lib/apple-connect/types';
 
@@ -143,6 +144,13 @@ export default function AppleSubscriptionDetailPage({
               </>
             )}
           </div>
+          {subscription && (
+            <ExportPricesButton
+              platform="apple"
+              type="subscription"
+              id={subscription.productId || decodedId}
+            />
+          )}
         </div>
 
         {isLoading ? (

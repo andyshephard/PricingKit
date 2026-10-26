@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Header } from '@/components/layout';
 import { PricingEditor } from '@/components/products/pricing-editor';
+import { ExportPricesButton } from '@/components/pricing/export-prices-button';
 import { formatMoney, parseMoney, type InAppProduct } from '@/lib/google-play/types';
 import type { RawAppleProduct } from '@/types/api';
 
@@ -127,6 +128,9 @@ export default function AppleProductDetailPage({
               </>
             )}
           </div>
+          {product && (
+            <ExportPricesButton platform="apple" type="inapp" id={appleProduct?.productId || decodedId} />
+          )}
         </div>
 
         {isLoading ? (
