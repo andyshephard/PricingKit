@@ -162,6 +162,15 @@ export async function PATCH(
       );
     }
 
+    // Google rejected the change (e.g. a region it requires, or one with
+    // existing subscribers). Pass its reason through rather than a generic 500.
+    if (err.code === 400 || err.code === 409 || err.code === 412) {
+      return NextResponse.json(
+        { error: err.message || 'Failed to update subscription' },
+        { status: err.code }
+      );
+    }
+
     return NextResponse.json(
       { error: err.message || 'Failed to update subscription' },
       { status: 500 }
@@ -243,6 +252,15 @@ export async function DELETE(
       return NextResponse.json(
         { error: 'Subscription or region not found' },
         { status: 404 }
+      );
+    }
+
+    // Google rejected the change (e.g. a region it requires, or one with
+    // existing subscribers). Pass its reason through rather than a generic 500.
+    if (err.code === 400 || err.code === 409 || err.code === 412) {
+      return NextResponse.json(
+        { error: err.message || 'Failed to delete region price' },
+        { status: err.code }
       );
     }
 

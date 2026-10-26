@@ -233,6 +233,15 @@ export async function DELETE(
       );
     }
 
+    // Google rejected the change (e.g. a region it requires, or one with
+    // existing subscribers). Pass its reason through rather than a generic 500.
+    if (err.code === 400 || err.code === 409 || err.code === 412) {
+      return NextResponse.json(
+        { error: err.message || 'Failed to delete region price' },
+        { status: err.code }
+      );
+    }
+
     return NextResponse.json(
       { error: err.message || 'Failed to delete region price' },
       { status: 500 }
