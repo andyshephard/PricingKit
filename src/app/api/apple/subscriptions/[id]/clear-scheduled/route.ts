@@ -120,8 +120,14 @@ export async function POST(
         const deleted = results.filter(r => r.deleted);
         const skipped = results.filter(r => !r.deleted);
 
-        // Fetch updated prices to confirm
-        const updatedPricesResult = await getSubscriptionPrices(credentials, subscriptionId);
+        // Fetch updated prices to confirm (deletes are done; a failed refresh isn't a failed clear)
+        let remainingScheduled: number | undefined;
+        try {
+          const updatedPricesResult = await getSubscriptionPrices(credentials, subscriptionId);
+          remainingScheduled = Object.keys(updatedPricesResult.scheduled).length;
+        } catch (error) {
+          console.error('Error refreshing prices after clearing scheduled prices:', error);
+        }
 
         const message = skipped.length > 0
           ? `Cleared ${deleted.length} scheduled price${deleted.length !== 1 ? 's' : ''}, ${skipped.length} skipped (no longer deletable)`
@@ -136,7 +142,7 @@ export async function POST(
             territory: r.territory,
             reason: 'reason' in r ? r.reason : undefined,
           })),
-          remainingScheduled: Object.keys(updatedPricesResult.scheduled).length,
+          remainingScheduled,
         });
       } catch (error) {
         console.error('Error clearing scheduled prices:', error);

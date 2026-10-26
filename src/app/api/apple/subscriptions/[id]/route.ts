@@ -186,17 +186,26 @@ export async function PATCH(
         const failed = outcomes.filter((o) => o.status === 'failed');
         const warnings = outcomes.filter((o) => o.warning);
 
-        // Fetch updated subscription by its ID
-        const updatedSubscription = await getSubscriptionById(credentials, subscriptionId);
-        if (updatedSubscription) {
-          const updatedPricesResult = await getSubscriptionPrices(
-            credentials,
-            updatedSubscription.id
-          );
-          updatedSubscription.prices = updatedPricesResult.current;
-          updatedSubscription.scheduledPrices = Object.keys(updatedPricesResult.scheduled).length > 0
-            ? updatedPricesResult.scheduled
-            : undefined;
+        // Fetch updated subscription by its ID. The writes are already done, so a
+        // failed refresh is reported alongside the outcomes rather than as a failure
+        let updatedSubscription: Awaited<ReturnType<typeof getSubscriptionById>> = null;
+        let refreshError: string | undefined;
+        try {
+          updatedSubscription = await getSubscriptionById(credentials, subscriptionId);
+          if (updatedSubscription) {
+            const updatedPricesResult = await getSubscriptionPrices(
+              credentials,
+              updatedSubscription.id
+            );
+            updatedSubscription.prices = updatedPricesResult.current;
+            updatedSubscription.scheduledPrices = Object.keys(updatedPricesResult.scheduled).length > 0
+              ? updatedPricesResult.scheduled
+              : undefined;
+          }
+        } catch (error) {
+          console.error('Error refreshing Apple subscription after update:', error);
+          updatedSubscription = null;
+          refreshError = getAppleErrorMessage(error, 'Could not reload prices after the update');
         }
 
         writer.done({
@@ -206,6 +215,7 @@ export async function PATCH(
           warningCount: warnings.length,
           results: outcomes,
           subscription: updatedSubscription,
+          ...(refreshError ? { refreshError } : {}),
         });
       } catch (error) {
         console.error('Error updating Apple subscription:', error);
