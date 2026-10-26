@@ -286,7 +286,6 @@ export interface AppleTerritoryPriceOutcome {
   territoryCode: string;
   status: 'created' | 'replaced' | 'failed';
   error?: string;
-  restored?: boolean;
   warning?: string;
 }
 

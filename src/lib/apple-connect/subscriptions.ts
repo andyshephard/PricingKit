@@ -663,11 +663,13 @@ export interface SubscriptionPriceChange {
   startDate?: string;
 }
 
-/** The scheduled price a change replaced, kept so it can be restored */
+/** The scheduled price a change would replace, as it was before the change */
 export interface ScheduledPriceSnapshot {
   subscriptionPriceId: string;
   pricePointId: string;
   startDate?: string;
+  customerPrice?: string;
+  currency?: string;
 }
 
 export interface TerritoryPriceOutcome {
@@ -675,14 +677,12 @@ export interface TerritoryPriceOutcome {
   /**
    * created  - new price added, nothing replaced
    * replaced - new price added and the previous scheduled price removed
-   * failed   - new price not added (see `restored` when a previous one existed)
+   * failed   - new price not added; any previous scheduled price is untouched
    */
   status: 'created' | 'replaced' | 'failed';
   error?: string;
   errorStatus?: number;
   previousScheduled?: ScheduledPriceSnapshot;
-  /** For failures after the previous scheduled price was removed: whether it was put back */
-  restored?: boolean;
   /** New price exists but something non-fatal went wrong (e.g. old scheduled price left in place) */
   warning?: string;
 }
@@ -696,6 +696,14 @@ function describeError(error: unknown): { message: string; status?: number } {
   };
 }
 
+function describeScheduled(previous: ScheduledPriceSnapshot): string {
+  const amount =
+    previous.customerPrice !== undefined
+      ? `${previous.customerPrice}${previous.currency ? ` ${previous.currency}` : ''}`
+      : `price point ${previous.pricePointId}`;
+  return `${amount}${previous.startDate ? ` from ${previous.startDate}` : ''}`;
+}
+
 /**
  * Apply subscription price changes per territory without ever deleting an
  * existing scheduled price before its replacement exists.
@@ -703,9 +711,11 @@ function describeError(error: unknown): { message: string; status?: number } {
  * For each territory:
  * 1. Create the new price first. If that works, delete the old scheduled
  *    price (if any) - a failed delete is reported as a warning, not a failure.
- * 2. If Apple rejects the create with 409 (only one scheduled price per
- *    territory), delete the old scheduled price, retry the create, and if
- *    the retry fails re-create the old scheduled price from its snapshot.
+ * 2. If the create fails, nothing is deleted. Apple answers ordinary
+ *    validation errors with 409 too and documents no error code specific to
+ *    "a scheduled price already exists", so a 409 is never treated as a
+ *    conflict to resolve by deleting. When a scheduled price exists the
+ *    failure says so, and the user can clear it (Clear scheduled) and retry.
  *
  * Never throws for per-territory failures; every territory gets an outcome.
  */
@@ -744,6 +754,8 @@ export async function applySubscriptionPriceChanges(
             subscriptionPriceId: existing.subscriptionPriceId,
             pricePointId: existing.pricePointId,
             startDate: existing.startDate,
+            customerPrice: existing.customerPrice,
+            currency: existing.currency,
           }
         : undefined;
 
@@ -751,64 +763,18 @@ export async function applySubscriptionPriceChanges(
       await create();
     } catch (createError) {
       const createFailure = describeError(createError);
-      if (!previous || createFailure.status !== 409) {
-        // Nothing was deleted, so the previous scheduled price (if any) is untouched
-        return {
-          territoryCode,
-          status: 'failed',
-          error: createFailure.message,
-          errorStatus: createFailure.status,
-          ...(previous ? { previousScheduled: previous } : {}),
-        };
-      }
-
-      // Conflict with the existing scheduled price: swap it out, restoring on failure
-      try {
-        await deleteSubscriptionPrice(credentials, previous.subscriptionPriceId);
-      } catch (deleteError) {
-        const deleteFailure = describeError(deleteError);
-        return {
-          territoryCode,
-          status: 'failed',
-          error: `${createFailure.message} (existing scheduled price could not be removed: ${deleteFailure.message})`,
-          errorStatus: createFailure.status,
-          previousScheduled: previous,
-        };
-      }
-
-      try {
-        await create();
-        return { territoryCode, status: 'replaced', previousScheduled: previous };
-      } catch (retryError) {
-        const retryFailure = describeError(retryError);
-        let restored = false;
-        try {
-          await updateSubscriptionPrice(
-            credentials,
-            subscriptionId,
-            previous.pricePointId,
-            territoryCode,
-            previous.startDate,
-            preserveCurrentPrice
-          );
-          restored = true;
-        } catch (restoreError) {
-          console.error(
-            `[Apple] Failed to restore scheduled price for ${territoryCode}:`,
-            restoreError
-          );
-        }
-        return {
-          territoryCode,
-          status: 'failed',
-          error: restored
-            ? `${retryFailure.message} (previous scheduled price restored)`
-            : `${retryFailure.message} (previous scheduled price could NOT be restored)`,
-          errorStatus: retryFailure.status,
-          previousScheduled: previous,
-          restored,
-        };
-      }
+      // Nothing was deleted, so the previous scheduled price (if any) is untouched
+      const error =
+        previous && createFailure.status === 409
+          ? `${createFailure.message} (a scheduled price already exists for ${territoryCode}: ${describeScheduled(previous)}. If this is the conflict, clear the scheduled price first, then apply again.)`
+          : createFailure.message;
+      return {
+        territoryCode,
+        status: 'failed',
+        error,
+        errorStatus: createFailure.status,
+        ...(previous ? { previousScheduled: previous } : {}),
+      };
     }
 
     if (!previous) {

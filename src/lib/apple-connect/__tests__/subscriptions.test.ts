@@ -229,17 +229,10 @@ describe('applySubscriptionPriceChanges', () => {
     expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
   });
 
-  it('restores the old scheduled price when the replacement fails after a conflict', async () => {
-    let posts = 0;
+  it('never deletes anything on a 409, and names the scheduled price to clear', async () => {
     const calls = recordCalls((call) => {
       if (call.method === 'POST') {
-        posts++;
-        if (posts === 1) {
-          throw new AppleApiError(409, 'ENTITY_ERROR', 'Conflict', 'A scheduled price already exists');
-        }
-        if (posts === 2) {
-          throw new AppleApiError(422, 'ENTITY_ERROR', 'Invalid', 'Price point rejected');
-        }
+        throw new AppleApiError(409, 'ENTITY_ERROR.ATTRIBUTE.INVALID', 'Invalid', 'Some validation error');
       }
       return {};
     });
@@ -252,25 +245,29 @@ describe('applySubscriptionPriceChanges', () => {
       noDelay
     );
 
-    expect(outcomes[0]).toMatchObject({ status: 'failed', restored: true, errorStatus: 422 });
-    expect(calls.map((c) => c.method)).toEqual(['POST', 'DELETE', 'POST', 'POST']);
-
-    // The last POST re-creates the original scheduled price
-    const restore = calls[3];
-    expect(pricePointOf(restore)).toBe('old-pp-fr');
-    expect(territoryOf(restore)).toBe('FRA');
-    expect(
-      (restore.body as { data: { attributes: { startDate: string } } }).data.attributes.startDate
-    ).toBe('2099-01-01');
+    // Exactly one create, no delete and no retry
+    expect(calls.map((c) => c.method)).toEqual(['POST']);
+    expect(outcomes[0]).toMatchObject({
+      territoryCode: 'FR',
+      status: 'failed',
+      errorStatus: 409,
+      previousScheduled: {
+        subscriptionPriceId: 'old-price-fr',
+        pricePointId: 'old-pp-fr',
+        startDate: '2099-01-01',
+        customerPrice: '4.99',
+        currency: 'EUR',
+      },
+    });
+    expect(outcomes[0].error).toMatch(/^Some validation error/);
+    expect(outcomes[0].error).toMatch(/4\.99 EUR from 2099-01-01/);
+    expect(outcomes[0].error).toMatch(/clear the scheduled price first/);
   });
 
-  it('reports when the old scheduled price could not be restored', async () => {
-    let posts = 0;
-    recordCalls((call) => {
+  it('reports a plain 409 when no scheduled price exists', async () => {
+    const calls = recordCalls((call) => {
       if (call.method === 'POST') {
-        posts++;
-        if (posts === 1) throw new AppleApiError(409, 'ENTITY_ERROR', 'Conflict', 'Exists');
-        throw new AppleApiError(500, 'UNEXPECTED_ERROR', 'Server error', 'Down');
+        throw new AppleApiError(409, 'ENTITY_ERROR', 'Conflict', 'Rejected');
       }
       return {};
     });
@@ -279,32 +276,14 @@ describe('applySubscriptionPriceChanges', () => {
       credentials,
       'sub-1',
       { FR: { pricePointId: 'new-pp-fr', startDate: '2099-02-01' } },
-      { FR: scheduledFR },
+      {},
       noDelay
     );
 
-    expect(outcomes[0]).toMatchObject({ status: 'failed', restored: false });
-    expect(outcomes[0].error).toMatch(/could NOT be restored/);
-  });
-
-  it('replaces after a conflict when the retry succeeds', async () => {
-    let posts = 0;
-    recordCalls((call) => {
-      if (call.method === 'POST' && ++posts === 1) {
-        throw new AppleApiError(409, 'ENTITY_ERROR', 'Conflict', 'Exists');
-      }
-      return {};
-    });
-
-    const outcomes = await applySubscriptionPriceChanges(
-      credentials,
-      'sub-1',
-      { FR: { pricePointId: 'new-pp-fr', startDate: '2099-02-01' } },
-      { FR: scheduledFR },
-      noDelay
-    );
-
-    expect(outcomes[0]).toMatchObject({ status: 'replaced' });
+    expect(calls.map((c) => c.method)).toEqual(['POST']);
+    expect(outcomes).toEqual([
+      { territoryCode: 'FR', status: 'failed', error: 'Rejected', errorStatus: 409 },
+    ]);
   });
 
   it('keeps the old price and warns when it cannot be deleted after a successful create', async () => {

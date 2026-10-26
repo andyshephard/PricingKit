@@ -171,7 +171,7 @@ export async function PATCH(
 
     (async () => {
       try {
-        // Creates first, deletes only after the replacement exists (restores on failure)
+        // Creates first, deletes only after the replacement exists; a failed create deletes nothing
         const outcomes = await applySubscriptionPriceChanges(
           credentials,
           subscriptionId,
