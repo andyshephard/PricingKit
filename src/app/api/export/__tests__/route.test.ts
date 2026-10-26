@@ -189,4 +189,53 @@ describe('/api/export', () => {
     const res = await route.GET(request('platform=apple&type=subscription&id=com.example.app.pro'));
     expect(res.status).toBe(502);
   });
+
+  describe('Apple read failures', () => {
+    // Same shape as the shared ApiError: a numeric `status` on an Error.
+    class StoreError extends Error {
+      constructor(message: string, public status: number) {
+        super(message);
+      }
+    }
+
+    beforeEach(() => {
+      mocks.getAppleAuthFromCookies.mockResolvedValue(appleAuth);
+      mocks.getInAppPurchase.mockResolvedValue({ id: '123', productId: 'com.example.app.coins' });
+      mocks.getBaseTerritoryForProduct.mockResolvedValue('USA');
+      mocks.getAppleSubscription.mockResolvedValue({ id: '1', productId: 'com.example.app.pro' });
+    });
+
+    it.each([401, 403, 404, 429, 503])('maps a thrown %i to the same status', async (status) => {
+      mocks.getInAppPurchasePrices.mockRejectedValue(new StoreError('boom', status));
+      const iap = await route.GET(request('platform=apple&type=inapp&id=com.example.app.coins'));
+      expect(iap.status).toBe(status);
+      expect(await iap.json()).toEqual({ error: 'Failed to export prices' });
+
+      mocks.getAppleSubscriptionPrices.mockRejectedValue(new StoreError('boom', status));
+      const sub = await route.GET(request('platform=apple&type=subscription&id=com.example.app.pro'));
+      expect(sub.status).toBe(status);
+    });
+
+    it('maps a thrown lookup error and an AppleApiError statusCode', async () => {
+      mocks.getAppleSubscription.mockRejectedValue(new StoreError('rate limited', 429));
+      const sub = await route.GET(request('platform=apple&type=subscription&id=com.example.app.pro'));
+      expect(sub.status).toBe(429);
+
+      mocks.getInAppPurchase.mockRejectedValue(Object.assign(new Error('forbidden'), { statusCode: 403 }));
+      const iap = await route.GET(request('platform=apple&type=inapp&id=com.example.app.coins'));
+      expect(iap.status).toBe(403);
+    });
+
+    it('returns 500 for errors without a status', async () => {
+      mocks.getAppleSubscriptionPrices.mockRejectedValue(new Error('network down'));
+      const res = await route.GET(request('platform=apple&type=subscription&id=com.example.app.pro'));
+      expect(res.status).toBe(500);
+    });
+
+    it('still refuses an empty subscription price read', async () => {
+      mocks.getAppleSubscriptionPrices.mockResolvedValue({ current: {}, scheduled: {} });
+      const res = await route.GET(request('platform=apple&type=subscription&id=com.example.app.pro'));
+      expect(res.status).toBe(502);
+    });
+  });
 });

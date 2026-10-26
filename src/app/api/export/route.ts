@@ -71,6 +71,10 @@ class ExportHttpError extends Error {
   }
 }
 
+// Reads the HTTP status from any store error shape: `statusCode`
+// (AppleApiError), numeric `status` (normalised ApiError) or numeric `code`
+// (Google). Duck-typed so it does not depend on which error class the store
+// clients throw.
 function errorStatus(error: unknown): number | undefined {
   if (!error || typeof error !== 'object') return undefined;
   const e = error as { statusCode?: unknown; status?: unknown; code?: unknown };
@@ -113,9 +117,10 @@ async function buildGoogleExport(query: ExportQuery): Promise<PriceExport | Resp
   return data;
 }
 
-// The Apple price readers return an empty result instead of throwing on API
-// errors, so an empty price list is treated as a failed read: an empty
-// "backup" is worse than no backup.
+// A store read failure may surface either as a thrown error (mapped to its
+// status in GET) or, for readers that swallow API errors, as an empty price
+// list. Both are treated as a failed read: an empty "backup" is worse than no
+// backup.
 const APPLE_EMPTY_PRICES_ERROR =
   'App Store Connect returned no prices for this product. Nothing was exported; try again.';
 
@@ -202,10 +207,9 @@ export async function GET(request: NextRequest) {
     }
 
     console.error('Price export error:', error);
-    const status = errorStatus(error);
-    if (status === 401 || status === 403 || status === 404 || status === 429) {
-      return NextResponse.json({ error: 'Failed to export prices' }, { status });
-    }
-    return NextResponse.json({ error: 'Failed to export prices' }, { status: 500 });
+    // Store errors keep their status (401/403/404/429/5xx) so the client can
+    // tell auth, missing-product and rate-limit failures apart.
+    const status = errorStatus(error) ?? 500;
+    return NextResponse.json({ error: 'Failed to export prices' }, { status });
   }
 }
