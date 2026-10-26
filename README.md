@@ -9,9 +9,10 @@ Free, open-source regional pricing tool for the App Store and Google Play. Set P
 - **Multi-platform support** - Manage pricing for both Google Play and Apple App Store from one interface
 - **Regional pricing** - View and edit in-app product pricing by region/territory
 - **Subscription management** - Manage subscription base plan pricing
-- **Bulk updates** - Update prices across multiple products/regions at once
-- **Currency conversion** - Automatic exchange rate lookups
-- **Multiple pricing strategies** - PPP (World Bank), Big Mac Index, Netflix Index, or custom multipliers for regional pricing
+- **Bulk updates** - Update prices across multiple products/regions at once, with skipped items and regions reported
+- **Price export** - Download a product's or subscription's current prices as CSV or JSON before you change them
+- **Currency conversion** - Automatic exchange rate lookups; regions without a rate are flagged and never priced
+- **Multiple pricing strategies** - PPP (World Bank), Big Mac Index or Netflix Index for regional pricing
 - **Public Index Checker** - Compare regional prices across strategies at `/index-checker` (no auth required)
 - **Search & filter** - Find products by SKU/product ID or name
 
@@ -50,11 +51,28 @@ npm run build
 npm start
 ```
 
-### Tests
+A production server refuses sign-in until `ENCRYPTION_KEY` is set (see [Environment Variables](#environment-variables)). Only `npm run dev` works without it.
+
+### Deploying to Cloudflare Workers
+
+The app is built for Cloudflare Workers with [OpenNext](https://opennext.js.org/cloudflare):
 
 ```bash
-npm test
+npm run preview   # build and run locally on the Workers runtime (reads .dev.vars)
+npm run deploy    # build and deploy with wrangler
 ```
+
+Set `ENCRYPTION_KEY` (and optionally `OPEN_EXCHANGE_RATES_APP_ID`) as Worker secrets, e.g. `npx wrangler secret put ENCRYPTION_KEY`. Workers have no filesystem, so exchange rates are cached in memory only; on Node they are also cached in `.exchange-rates.json`.
+
+### Checks
+
+```bash
+npm test            # Vitest
+npm run typecheck   # tsc --noEmit
+npm run lint        # ESLint
+```
+
+CI runs all three on every pull request. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and testing conventions, and [CHANGELOG.md](CHANGELOG.md) for behaviour changes.
 
 ## Tech Stack
 
@@ -62,8 +80,9 @@ npm test
 - **Styling**: Tailwind CSS 4 + shadcn/ui
 - **State**: Zustand + TanStack Query
 - **Forms**: React Hook Form + Zod
-- **Google Play API**: googleapis
-- **Apple App Store Connect API**: Custom JWT client
+- **Google Play API**: Custom `fetch` client (service-account JWT signed with Web Crypto)
+- **Apple App Store Connect API**: Custom `fetch` client (ES256 JWT)
+- **Hosting**: Node (`npm start`) or Cloudflare Workers via OpenNext
 
 ## Project Structure
 
@@ -77,13 +96,17 @@ src/
 ├── components/
 │   ├── ui/               # shadcn/ui components
 │   ├── layout/           # Layout components
+│   ├── pricing/          # Shared pricing components (bulk update, export)
 │   ├── products/         # Product components
 │   └── subscriptions/    # Subscription components
 ├── lib/
 │   ├── google-play/      # Google Play API integration
 │   ├── apple-connect/    # Apple App Store Connect API integration
 │   ├── exchange-rates/   # Currency conversion
-│   └── conversion-indexes/ # PPP, Big Mac, Netflix indexes + exchange rate fallbacks
+│   ├── world-bank/       # Live World Bank PPP data
+│   ├── conversion-indexes/ # PPP, Big Mac, Netflix indexes + exchange rate fallbacks
+│   ├── export/           # Price export (JSON/CSV) transforms
+│   └── utils/            # ApiError, retry/backoff, request budget, rate limiting
 ├── hooks/                # React Query hooks
 └── store/                # Zustand stores
 ```
@@ -93,7 +116,8 @@ src/
 Create a `.env.local` file (optional):
 
 ```env
-# Custom encryption key for credential storage (recommended for production)
+# Encrypts credentials in the session cookie. Required everywhere except `next dev`
+# (generate with: openssl rand -base64 32)
 ENCRYPTION_KEY=your-secure-random-string
 
 # Open Exchange Rates API key (for currency conversion)
