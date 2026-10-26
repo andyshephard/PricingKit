@@ -250,6 +250,60 @@ describe('appleApiRequest inside executeWithRateLimit', () => {
     expect(calls).toHaveLength(6);
   });
 
+  it('retries a persistent network error after the client gives up', async () => {
+    const networkFailure = () => {
+      throw new TypeError('fetch failed');
+    };
+    // Direct call: 2 failed attempts. Then executeWithRateLimit: 2 failed inner
+    // attempts, one outer retry, and success on its first inner attempt
+    const { calls } = mockFetch([
+      networkFailure,
+      networkFailure,
+      networkFailure,
+      networkFailure,
+      networkFailure,
+      jsonResponse(200, { data: [] }),
+    ]);
+
+    const inner = appleApiRequest(credentials, '/apps', { retry: { maxAttempts: 2 } });
+    const innerAssertion = expect(inner).rejects.toMatchObject({
+      status: 503,
+      code: 'NETWORK_ERROR',
+      retryable: true,
+    });
+    await settle(inner);
+    await innerAssertion;
+    expect(calls).toHaveLength(2);
+
+    const promise = executeWithRateLimit(
+      [() => appleApiRequest(credentials, '/apps', { retry: { maxAttempts: 2 } })],
+      { concurrency: 1, maxRetries: 1, retryDelay: 100 }
+    );
+    await settle(promise);
+    await expect(promise).resolves.toEqual([{ data: [] }]);
+    expect(calls).toHaveLength(6);
+  });
+
+  it('does not retry a non-transient fetch failure', async () => {
+    const { calls } = mockFetch([
+      () => {
+        throw new Error('unexpected');
+      },
+    ]);
+
+    const promise = executeWithRateLimit(
+      [() => appleApiRequest(credentials, '/apps')],
+      { concurrency: 1, maxRetries: 5, retryDelay: 100 }
+    );
+    const assertion = expect(promise).rejects.toMatchObject({
+      name: 'RateLimitError',
+      originalError: { status: 503, retryable: false },
+    });
+    await settle(promise);
+    await assertion;
+    expect(calls).toHaveLength(1);
+  });
+
   it('does not retry outside the client once Apple reports 0 remaining', async () => {
     const { calls } = mockFetch([
       jsonResponse(429, appleError(429, 'RATE_LIMIT_EXCEEDED', 'Too many'), {

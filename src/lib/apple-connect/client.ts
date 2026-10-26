@@ -262,7 +262,9 @@ export async function appleApiRequest<T>(
           status: apiError.status === 500 ? 503 : apiError.status,
           code: apiError.code === 'UNKNOWN_ERROR' ? 'NETWORK_ERROR' : apiError.code,
           platform: 'apple',
-          retryable: false,
+          // Non-transient failures are terminal; a transient one that ran out of
+          // attempts follows its 503/504 status so an outer retry policy still applies
+          retryable: retryable ? undefined : false,
           details: { attempts: attempt + 1 },
           cause: networkError,
         });

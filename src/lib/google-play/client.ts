@@ -263,7 +263,9 @@ export async function googlePlayFetch<T>(
           code: normalised.status === 500 ? 503 : normalised.status,
           message: normalised.message,
           errors: [{ reason: 'networkError', message: normalised.message }],
-          retryable: false,
+          // Non-transient failures are terminal; a transient one that ran out of
+          // attempts follows its 503/504 status so an outer retry policy still applies
+          retryable: retryable ? undefined : false,
           cause: networkError,
         });
       }

@@ -8,6 +8,7 @@ import {
 import type { ServiceAccountCredentials } from '../types';
 import { ApiError } from '@/lib/utils/api-error';
 import { RequestBudget } from '@/lib/utils/request-budget';
+import { executeWithRateLimit } from '@/lib/utils/rate-limit';
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 
@@ -221,6 +222,44 @@ describe('googlePlayFetch retries', () => {
     await settle(promise);
     await assertion;
     expect(apiCalls).toHaveLength(2);
+  });
+
+  it('leaves a persistent network error retryable so an outer policy can retry it', async () => {
+    const networkFailure = () => {
+      throw new TypeError('fetch failed');
+    };
+    const { apiCalls } = mockFetch([networkFailure, networkFailure]);
+
+    const promise = googlePlayFetch(credentials, '/test', { retry: { maxAttempts: 2 } });
+    const assertion = expect(promise).rejects.toMatchObject({
+      code: 503,
+      retryable: true,
+      errors: [{ reason: 'networkError' }],
+    });
+    await settle(promise);
+    await assertion;
+    expect(apiCalls).toHaveLength(2);
+  });
+
+  it('retries a persistent network error from executeWithRateLimit', async () => {
+    const networkFailure = () => {
+      throw new TypeError('fetch failed');
+    };
+    // First run: 2 failed inner attempts. Outer retry: 1 failure, then success (4 requests)
+    const { apiCalls } = mockFetch([
+      networkFailure,
+      networkFailure,
+      networkFailure,
+      jsonResponse(200, { ok: true }),
+    ]);
+
+    const promise = executeWithRateLimit(
+      [() => googlePlayFetch(credentials, '/test', { retry: { maxAttempts: 2 } })],
+      { concurrency: 1, maxRetries: 1, retryDelay: 100 }
+    );
+    await settle(promise);
+    await expect(promise).resolves.toEqual([{ ok: true }]);
+    expect(apiCalls).toHaveLength(4);
   });
 
   it('throws BUDGET_EXCEEDED before sending when the budget is spent', async () => {
