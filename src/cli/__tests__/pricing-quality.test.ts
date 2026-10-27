@@ -91,6 +91,25 @@ describe('existing subscribers in plans and diff', () => {
   });
 });
 
+describe('plan schema versions', () => {
+  it('a version 1 plan (no planner notes) keeps its confirm hash and still applies', async () => {
+    writeSpec([{ product, targets: { type: 'fixed', prices: { US: '29.99' } } }]);
+    expect((await plan()).code).toBe(2);
+    const v2 = readPlan();
+    expect(v2.schemaVersion).toBe(2);
+    const { priceChanges: _notes, dataFreshness: _data, ...rest } = v2;
+    writeFileSync(join(tmp.dir, 'v1.json'), JSON.stringify({ ...rest, schemaVersion: 1 }));
+    const diff = JSON.parse((await run(['diff', 'v1.json', '--json'], { cwd: tmp.dir })).stdout);
+    const hash = JSON.parse((await run(['diff', 'plan.json', '--json'], { cwd: tmp.dir })).stdout).changeSetHash;
+    expect(diff.changeSetHash).toBe(hash);
+    expect((await run(['apply', 'v1.json', '--confirm', hash, '--allow-base-prices'], { env: appleEnv, cwd: tmp.dir })).code).toBe(0);
+    writeFileSync(join(tmp.dir, 'v9.json'), JSON.stringify({ ...rest, schemaVersion: 9 }));
+    const newer = await run(['diff', 'v9.json', '--json'], { cwd: tmp.dir });
+    expect(newer.code).toBe(1);
+    expect(JSON.parse(newer.stdout).error.message).toMatch(/written by a newer PricingKit .*; upgrade PricingKit/);
+  });
+});
+
 describe('proceeds targets', () => {
   it('App Store: the price point whose proceeds are nearest, noted on the op', async () => {
     // The fake's proceeds are 70% of the price: 29.99 -> 20.99

@@ -24,7 +24,15 @@ import {
   type ProductRef,
 } from './model';
 
-export const CHANGESET_SCHEMA_VERSION = 1 as const;
+/**
+ * Version written by this build. 2 adds the planner notes priceChanges and
+ * dataFreshness (Phase 8); everything else is as in 1. The plan hash covers
+ * app + ops only, so a v1 plan keeps its hash when read by this build.
+ */
+export const CHANGESET_SCHEMA_VERSION = 2 as const;
+/** Versions this build reads */
+export const CHANGESET_SCHEMA_VERSIONS_READ = [1, 2] as const;
+export type ChangeSetSchemaVersion = (typeof CHANGESET_SCHEMA_VERSIONS_READ)[number];
 export const CHANGESET_KIND = 'pricingkit.changeset' as const;
 
 /** Base-price op kinds the Phase 1 executor applies */
@@ -148,7 +156,7 @@ export interface ManualAction {
 }
 
 export interface ChangeSet {
-  schemaVersion: typeof CHANGESET_SCHEMA_VERSION;
+  schemaVersion: ChangeSetSchemaVersion;
   kind: typeof CHANGESET_KIND;
   id: string;
   createdAt: string;
@@ -250,7 +258,7 @@ const skipSchema = z
 
 export const changeSetSchema = z
   .object({
-    schemaVersion: z.literal(CHANGESET_SCHEMA_VERSION),
+    schemaVersion: z.union([z.literal(1), z.literal(2)]),
     kind: z.literal(CHANGESET_KIND),
     id: z.string().min(1),
     createdAt: z.string().min(1),
@@ -405,6 +413,13 @@ export function parseChangeSet(input: string | unknown): ChangeSet {
       // JSON.parse messages quote the input, which may be anything (even a secret); never pass them on
       throw new ChangeSetValidationError(['not valid JSON']);
     }
+  }
+  // A plan from a newer PricingKit may hold things this build can't check: say so plainly
+  const version = raw && typeof raw === 'object' ? (raw as { kind?: unknown; schemaVersion?: unknown }) : undefined;
+  if (version?.kind === CHANGESET_KIND && typeof version.schemaVersion === 'number' && version.schemaVersion > CHANGESET_SCHEMA_VERSION) {
+    throw new ChangeSetValidationError([
+      `schemaVersion ${version.schemaVersion}: this plan was written by a newer PricingKit (this one reads versions ${CHANGESET_SCHEMA_VERSIONS_READ.join(' and ')}); upgrade PricingKit`,
+    ]);
   }
   const result = changeSetSchema.safeParse(raw);
   if (!result.success) {

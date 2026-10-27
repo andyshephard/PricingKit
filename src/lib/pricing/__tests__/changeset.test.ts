@@ -234,3 +234,20 @@ describe('invertOp', () => {
     expect([twice.kind, twice.before, twice.after, twice.idempotencyKey]).toEqual([setGB.kind, setGB.before, setGB.after, setGB.idempotencyKey]);
   });
 });
+
+describe('ChangeSet schema versions', () => {
+  it('writes version 2, reads 1 and 2 with the same hash, and refuses newer ones with a clear message', () => {
+    const plan = applePlan();
+    expect(plan.schemaVersion).toBe(2);
+    const v1 = { ...JSON.parse(serializeChangeSet(plan)), schemaVersion: 1 };
+    const readV1 = parseChangeSet(JSON.stringify(v1));
+    expect(readV1.schemaVersion).toBe(1);
+    // The confirm hash covers app + ops only: unchanged across versions
+    expect(changeSetHash(readV1)).toBe(changeSetHash(plan));
+    expect(changeSetHash(parseChangeSet(serializeChangeSet(plan)))).toBe(changeSetHash(plan));
+
+    expect(() => parseChangeSet(JSON.stringify({ ...v1, schemaVersion: 3 }))).toThrow(/written by a newer PricingKit .*; upgrade PricingKit/);
+    expect(() => parseChangeSet(JSON.stringify({ ...v1, schemaVersion: 0 }))).toThrow(ChangeSetValidationError);
+    expect(() => parseChangeSet(JSON.stringify({ ...v1, schemaVersion: '2' }))).toThrow(ChangeSetValidationError);
+  });
+});
