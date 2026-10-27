@@ -488,6 +488,10 @@ receive, net of VAT/tax and the store's commission, instead of the customer pric
 (`percentOfCurrent` keeps meaning the customer price).
 - App Store: each territory snaps to the price point whose `proceeds` (as App Store Connect reports
   it for the subscription's price points) is nearest the target; `snap` applies to proceeds.
+  **Unconfirmed:** that figure is Apple's per-price-point proceeds, which may not reflect your
+  rate. It may not include the App Small Business Program's 15%, or the lower rate on a
+  subscription's second year (price points also report `proceedsYear2`, which PricingKit doesn't
+  use). Check a few territories against App Store Connect before relying on proceeds targets.
 - Google Play: Play reports tax but not its fee, so PricingKit asks Play's price conversion for
   `target / (1 - commission)` as the tax-exclusive price. `"commission"` defaults to `"0.15"` (Play's
   rate for subscriptions, and for the first US$1M a year of one-time products in the 15% tier); set
@@ -495,6 +499,13 @@ receive, net of VAT/tax and the store's commission, instead of the customer pric
 
 Plans record per op the proceeds before and after (Apple) or the estimated proceeds and Play's tax
 (`priceChanges` in the plan file), and `pricingkit diff` shows Proceeds and Tax columns.
+
+These are **planner notes, not covered by the plan hash**: anyone can edit them without changing
+the hash you confirm. `pricingkit diff` marks them as such. It recomputes the existing-subscriber
+class of every immediate price change from the op itself (before, after, `preserveCurrentPrice`),
+shows that value, and prints a WARNING where the stored note disagrees. Scheduled changes show the
+stored class marked "(unverified)", because the op doesn't hold the current price. Plans that
+carry notes are schema version 2; PricingKit reads versions 1 and 2, with the same hash for both.
 
 ```json
 { "product": { "platform": "google", "type": "subscription", "productId": "pro", "basePlanId": "annual" },
@@ -521,7 +532,9 @@ encoded are listed in `src/lib/pricing/price-increase.ts`):
   annual subscriptions; local amounts per storefront from Apple's table). PricingKit can't read
   the price history: give `"consent": { "lastIncreaseAt": "2026-03-01" }` (or per territory),
   otherwise no recent increase is assumed and the plan says so. Give `"billingPeriod": "P1Y"` for
-  annual subscriptions, otherwise the lower non-annual threshold is used.
+  annual subscriptions, otherwise the lower non-annual threshold is used. A `lastIncreaseAt`
+  PricingKit can't use (spec dates must be real days), or one after the change takes effect,
+  counts as needing consent (Play: opt-in).
 - Google Play: a base plan price change applies to new purchases; existing subscribers stay on
   their price in a legacy cohort until it is migrated (PricingKit doesn't migrate cohorts yet).
   `ifMigrated` says what a migration would need: decreases need no approval; an increase can be an

@@ -14,7 +14,7 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 4. **Clients of `/api/bulk`** should read the per-result `success`, `error` and `skippedRegions` fields. The top-level `success` is now `false` when nothing was written. A subscription item sent without a `basePlanId` now produces one result per base plan (each carrying its `basePlanId`), so `total` and `results` count base plans for subscriptions, not request items.
 5. **Optional `TRUSTED_CLIENT_IP_HEADER`.** Set it to `cf-connecting-ip` on Cloudflare (or the header your own proxy sets) to rate-limit anonymous Open Exchange Rates key tests per client. Without it they share one per-instance limit.
 6. **Forks importing the pricing maths** should change `@/lib/google-play/currency` to `@/lib/pricing` and `@/lib/conversion-indexes/*` to `@/lib/pricing/indexes/*`. The functions are unchanged.
-7. **Session cookies migrate by themselves.** Cookies from before the HKDF change are still read and re-encrypted on their next API request; nobody is signed out. Rolling back to an older build would not read the new cookies (users sign in again). Make sure `ENCRYPTION_KEY` is a random secret, not a short passphrase.
+7. **Session cookies migrate by themselves.** Cookies from before the HKDF change are still read and re-encrypted on their next API request; nobody is signed out. Rolling back to an older build would not read the new cookies (users sign in again). Make sure `ENCRYPTION_KEY` is a random secret, not a short passphrase. **The legacy (PBKDF2) cookie read path will be removed two releases after the first tagged release that includes this change.** By then every cookie has been migrated or has expired (they last 24 hours), so nobody notices unless a deployment skips both releases.
 8. Nothing else needs configuring. There is no database and no session file.
 
 ### Added
@@ -68,7 +68,9 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 ### Changed
 
 - Strategy plans now warn when the built-in data they use is stale; the fallback exchange rates (2026-02-01) already are by the default 45-day limit. Give `exchangeRates` with `exchangeRatesAsOf` in the spec, or raise `freshness.maxAgeDays`. From 2028, PPP strategy plans skip territories unless the PPP snapshot is refreshed, `pppStaleness.maxAgeYears` is raised, or the inflate policy is used.
-- Plans of base prices carry two new planner-note fields, `priceChanges` and `dataFreshness` (not part of the plan hash). Older PricingKit builds refuse plan files that contain them.
+- **Plan files are schema version 2.** They can carry two new planner-note fields, `priceChanges` and `dataFreshness`, which are not covered by the plan hash. PricingKit reads versions 1 and 2; a v1 plan keeps its confirm hash. A plan from a newer version is refused with "written by a newer PricingKit; upgrade". Older builds refuse v2 plans.
+- `pricingkit diff` labels proceeds, tax, existing-subscriber, consent and reference-data output as planner notes not covered by the plan hash. It recomputes each immediate change's existing-subscriber class from the op, and prints a WARNING when the stored note disagrees.
+- Spec dates must be real days (2026-02-30 is refused). A `consent.lastIncreaseAt` that can't be used, or that falls after the change takes effect, counts as needing consent instead of being ignored.
 - The Apple "Preserve existing subscriber prices" copy now says it applies to increases; decreases always reach existing subscribers.
 
 - **Undo plans now revert base-price ops that failed after being sent**, since an App Store create that answered 5xx may have taken effect; if it didn't, applying the revert skips it as already at target. The executor now checks a `confirm` hash whenever one is passed, not only for offer plans.

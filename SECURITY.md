@@ -57,4 +57,6 @@ with only the permissions PricingKit needs, and revoke it when you are done.
 reach a third party apart from Apple and Google. This is the recommended setup for
 production accounts. Set `ENCRYPTION_KEY` to a long random value (for example
 `openssl rand -base64 32`), serve over HTTPS, and keep it secret. Rotating it signs every
-user out.
+user out: there is one key and no key ID, so cookies made under the old key no longer decrypt
+and are treated as signed out. Rotate it (set a new random value and restart or redeploy) when
+it may have leaked, or when a copied session cookie must stop working before its 24 hours are up.

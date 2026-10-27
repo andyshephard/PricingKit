@@ -334,7 +334,9 @@ export class AppleAdapter implements PlatformAdapter {
         result.unresolved[territory] = `${territory} is priced in ${currency}, target is ${target.currency}`;
         continue;
       }
-      // Proceeds targets snap on each price point's proceeds (what the developer receives), not its customer price
+      // Proceeds targets snap on each price point's proceeds (what the developer receives), not its customer price.
+      // UNCONFIRMED: Apple's per-point `proceeds` may not reflect the Small Business Program rate or the
+      // lower year-2 subscription rate (price points also report proceedsYear2, not used here).
       const byProceeds = options.measure === 'proceeds';
       const candidates = byProceeds
         ? ladder.filter((p) => isDecimalString(p.proceeds)).map((p) => ({ ...p, customerPrice: normalizeDecimal(p.proceeds), price: normalizeDecimal(p.customerPrice) }))
