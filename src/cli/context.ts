@@ -8,7 +8,7 @@ import { lstat, open, readFile, rename, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { AppleAdapter } from '@/lib/adapters/apple';
 import { PlayAdapter } from '@/lib/adapters/play';
-import type { ProductPriceState, ProductRef, ResolveOptions, ResolveResult, ResolveTarget } from '@/lib/pricing';
+import type { AppRef, ProductPriceState, ProductRef, ResolveOptions, ResolveResult, ResolveTarget } from '@/lib/pricing';
 import type { RequestBudget } from '@/lib/utils/request-budget';
 import type { Flags } from './args';
 import { appleCredentialsFromEnv, googleCredentialsFromEnv } from './credentials';
@@ -104,15 +104,23 @@ export const writeOutputFileAtomic = writeOutputFile;
 
 /**
  * Optional pins: PRICINGKIT_EXPECT_BUNDLE_ID / PRICINGKIT_EXPECT_PACKAGE name
- * the only app this environment may touch (e.g. a CI job for one app). Any
- * other app, from a flag, a spec, a rules file or a plan, is refused before
- * credentials are loaded or anything is sent.
+ * the only apps this environment may touch (e.g. a CI job for one app, or a
+ * workspace's apps). Each takes one ID or a comma-separated list. Any other
+ * app, from a flag, a spec, a rules file, a workspace or a plan, is refused
+ * before credentials are loaded or anything is sent. A pin for one store
+ * says nothing about the other: set both to pin a workspace with apps on both.
  */
+export function expectedApps(value: string | undefined): string[] | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  return [...new Set(value.split(',').map((v) => v.trim()).filter(Boolean))];
+}
+
 export function assertExpectedApp(ctx: Pick<CommandContext, 'env'>, app: { bundleId: string } | { packageName: string }): void {
-  const [variable, expected, actual] =
+  const [variable, raw, actual] =
     'bundleId' in app ? ['PRICINGKIT_EXPECT_BUNDLE_ID', ctx.env.PRICINGKIT_EXPECT_BUNDLE_ID, app.bundleId] : ['PRICINGKIT_EXPECT_PACKAGE', ctx.env.PRICINGKIT_EXPECT_PACKAGE, app.packageName];
-  if (expected !== undefined && expected.trim() !== '' && expected.trim() !== actual) {
-    throw new CliError(`${actual} is not the app ${variable} allows (${expected.trim()}); nothing was read or sent`, 'APP_NOT_EXPECTED');
+  const expected = expectedApps(raw);
+  if (expected !== undefined && !expected.includes(actual)) {
+    throw new CliError(`${actual} is not ${expected.length === 1 ? 'the app' : 'one of the apps'} ${variable} allows (${expected.join(', ')}); nothing was read or sent`, 'APP_NOT_EXPECTED');
   }
 }
 
@@ -126,6 +134,16 @@ export async function playAdapter(ctx: CommandContext, packageName: string): Pro
   assertExpectedApp(ctx, { packageName });
   const credentials = await googleCredentialsFromEnv(ctx.env, ctx.redactor);
   return new PlayAdapter({ credentials, packageName, budget: ctx.budget });
+}
+
+/**
+ * The adapter for one app, built for that app only: credentials are per
+ * store (one App Store Connect key, one service account), and the adapter
+ * carries the app it was made for, so it refuses a plan or product of any
+ * other app (verifyApp / verifyProduct).
+ */
+export async function adapterForApp(ctx: CommandContext, app: AppRef): Promise<AppleAdapter | PlayAdapter> {
+  return 'bundleId' in app ? appleAdapter(ctx, app.bundleId) : playAdapter(ctx, app.packageName);
 }
 
 /**

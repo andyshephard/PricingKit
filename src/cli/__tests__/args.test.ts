@@ -35,7 +35,7 @@ describe('parseCliArgs', () => {
   });
 
   it('has exactly one write command, apply, and it needs --confirm', () => {
-    expect(COMMANDS).toEqual(['export', 'plan', 'diff', 'offers', 'offer', 'drift', 'apply', 'undo']);
+    expect(COMMANDS).toEqual(['export', 'plan', 'diff', 'offers', 'offer', 'drift', 'parity', 'apply', 'undo']);
     expect(parseCliArgs(['apply', 'plan.json', '--confirm', 'abc'])).toMatchObject({ command: 'apply', positionals: ['plan.json'], flags: { confirm: 'abc' } });
   });
 

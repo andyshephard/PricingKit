@@ -19,6 +19,7 @@ import { CliError, EXIT_CHANGES, EXIT_ERROR, EXIT_OK, UsageError, type ExitCode 
 import { describeCounts, money, table } from '../format';
 import { productFromFlags } from './export';
 import { appleOnly, parseOfferKind } from './offers';
+import { driftWorkspaceCommand } from './workspace';
 
 const BASES = ['perPeriod', 'totalOverDuration'] as const;
 const SNAPS = ['nearest', 'floor', 'ceil'] as const;
@@ -91,6 +92,12 @@ export function formatDriftReport(report: OfferDriftReport | PlayOfferDriftRepor
 }
 
 export async function driftCommand(ctx: CommandContext): Promise<CommandResult> {
+  const workspacePath = stringFlag(ctx.flags, 'workspace');
+  if (workspacePath) {
+    const extra = ['rules', 'bundle-id', 'package-name', ...SINGLE_OFFER_FLAGS].filter((f) => ctx.flags[f] !== undefined);
+    if (extra.length > 0) throw new UsageError(`--workspace checks every app's rules file; drop ${extra.map((f) => `--${f}`).join(', ')}`);
+    return driftWorkspaceCommand(ctx, workspacePath);
+  }
   const rulesPath = stringFlag(ctx.flags, 'rules');
   if (rulesPath) return rulesDriftCommand(ctx, rulesPath);
   const app = appSelection(ctx.flags)!;

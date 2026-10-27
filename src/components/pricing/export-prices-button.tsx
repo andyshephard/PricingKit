@@ -13,7 +13,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 
-type ExportFormat = 'csv' | 'json';
+type ExportFormat = 'csv' | 'json' | 'prices-csv';
 
 interface ExportPricesButtonProps {
   platform: 'google' | 'apple';
@@ -26,6 +26,8 @@ interface ExportPricesButtonProps {
 const FORMATS: { format: ExportFormat; label: string }[] = [
   { format: 'csv', label: 'CSV' },
   { format: 'json', label: 'JSON' },
+  // The pricingkit.prices CSV: edit it and plan it with the CLI (pricesFile)
+  { format: 'prices-csv', label: 'CSV for import (CLI)' },
 ];
 
 function filenameFromDisposition(header: string | null): string | null {
@@ -51,7 +53,7 @@ export function ExportPricesButton({ platform, type, id, basePlanIds }: ExportPr
 
       const blob = await response.blob();
       const filename =
-        filenameFromDisposition(response.headers.get('Content-Disposition')) ?? `prices.${format}`;
+        filenameFromDisposition(response.headers.get('Content-Disposition')) ?? `prices.${format === 'json' ? 'json' : 'csv'}`;
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;

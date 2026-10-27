@@ -9,6 +9,7 @@ import { stringFlag } from '../args';
 import { readInputFile, writeOutputFileAtomic, type CommandContext, type CommandResult } from '../context';
 import { CliError, EXIT_CHANGES, EXIT_OK, UsageError } from '../errors';
 import { formatPlanSummary, summarizeChangeSet } from './diff';
+import { undoWorkspaceCommand } from './workspace';
 
 /** Default undo plan file, next to the plan: plans/x.json -> plans/x.undo.json */
 export function defaultUndoFile(planPath: string): string {
@@ -16,6 +17,8 @@ export function defaultUndoFile(planPath: string): string {
 }
 
 export async function undoCommand(ctx: CommandContext): Promise<CommandResult> {
+  const workspacePlan = stringFlag(ctx.flags, 'workspace-plan');
+  if (workspacePlan) return undoWorkspaceCommand(ctx, workspacePlan);
   if (ctx.positionals.length !== 2) throw new UsageError('Give the plan and its run log: pricingkit undo <plan.json> <run.json> [--out <undo.json>]');
   const [planPath, runPath] = ctx.positionals;
   const out = stringFlag(ctx.flags, 'out') ?? defaultUndoFile(planPath);

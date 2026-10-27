@@ -22,6 +22,7 @@ import {
   priceExportToJson,
   type PriceExport,
 } from '@/lib/export';
+import { priceExportToPricesCsv } from '@/lib/pricing/prices-csv';
 import {
   appleInternalIdSchema,
   appleProductIdSchema,
@@ -29,7 +30,8 @@ import {
   googlePlaySkuSchema,
 } from '@/lib/validation';
 
-// GET /api/export?platform=google|apple&type=inapp|subscription&id=...&basePlanId=...&format=json|csv
+// GET /api/export?platform=google|apple&type=inapp|subscription&id=...&basePlanId=...&format=json|csv|prices-csv
+// prices-csv: the pricingkit.prices CSV the CLI imports as fixed targets (pricesFile)
 // Read-only snapshot of current prices. This route only exports GET and only
 // calls store read functions; it never writes to a store.
 
@@ -39,7 +41,7 @@ const querySchema = z
     type: z.enum(['inapp', 'subscription']),
     id: z.string().min(1),
     basePlanId: googlePlayBasePlanIdSchema.optional(),
-    format: z.enum(['json', 'csv']).default('json'),
+    format: z.enum(['json', 'csv', 'prices-csv']).default('json'),
   })
   .superRefine((query, ctx) => {
     if (query.platform === 'google') {
@@ -204,14 +206,14 @@ export async function GET(request: NextRequest) {
       query.platform === 'google' ? await buildGoogleExport(query) : await buildAppleExport(query);
     if (result instanceof Response) return result;
 
-    const body = query.format === 'csv' ? priceExportToCsv(result) : priceExportToJson(result);
-    const filename = buildExportFilename(result, query.format);
+    const body = query.format === 'csv' ? priceExportToCsv(result) : query.format === 'prices-csv' ? priceExportToPricesCsv(result) : priceExportToJson(result);
+    const filename = query.format === 'prices-csv' ? buildExportFilename(result, 'csv').replace(/\.csv$/, '.prices.csv') : buildExportFilename(result, query.format);
 
     return new Response(body, {
       status: 200,
       headers: {
         'Content-Type':
-          query.format === 'csv' ? 'text/csv; charset=utf-8' : 'application/json; charset=utf-8',
+          query.format === 'json' ? 'application/json; charset=utf-8' : 'text/csv; charset=utf-8',
         'Content-Disposition': `attachment; filename="${filename}"`,
         'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff',

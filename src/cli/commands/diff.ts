@@ -29,6 +29,7 @@ import { stringFlag } from '../args';
 import { readInputFile, type CommandContext, type CommandResult } from '../context';
 import { CliError, EXIT_CHANGES, EXIT_OK, UsageError } from '../errors';
 import { countBy, describeCounts, percentChange, priceCell, table } from '../format';
+import { diffManyCommand, diffWorkspaceCommand } from './workspace';
 
 export const PLAN_SUMMARY_KIND = 'pricingkit.planSummary' as const;
 export const PLAN_SUMMARY_SCHEMA_VERSION = 1 as const;
@@ -410,9 +411,14 @@ function proceedsCell(op: PlanSummary['products'][number]['ops'][number]): strin
 }
 
 export async function diffCommand(ctx: CommandContext): Promise<CommandResult> {
+  const workspacePlan = stringFlag(ctx.flags, 'workspace-plan');
   const fromFlag = stringFlag(ctx.flags, 'plan');
+  if (workspacePlan) {
+    if (fromFlag || ctx.positionals.length > 0) throw new UsageError('Give either plan files or --workspace-plan, not both');
+    return diffWorkspaceCommand(ctx, workspacePlan);
+  }
   if (fromFlag && ctx.positionals.length > 0) throw new UsageError('Give the plan file once: as an argument or with --plan');
-  if (ctx.positionals.length > 1) throw new UsageError('diff takes one plan file');
+  if (ctx.positionals.length > 1) return diffManyCommand(ctx, ctx.positionals);
   const path = fromFlag ?? ctx.positionals[0];
   if (!path) throw new UsageError('Give a plan file: pricingkit diff <plan.json>');
 

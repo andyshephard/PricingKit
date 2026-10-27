@@ -23,6 +23,7 @@ import { exportCommand } from './commands/export';
 import { offerCommand } from './commands/offer';
 import { offersCommand } from './commands/offers';
 import { planCommand } from './commands/plan';
+import { parityCommand } from './commands/parity';
 
 export { EXIT_CHANGES, EXIT_ERROR, EXIT_OK } from './errors';
 
@@ -33,6 +34,7 @@ const HANDLERS: Record<CommandName, (ctx: CommandContext) => Promise<CommandResu
   offers: offersCommand,
   offer: offerCommand,
   drift: driftCommand,
+  parity: parityCommand,
   apply: applyCommand,
   undo: undoCommand,
 };

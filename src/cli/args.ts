@@ -4,7 +4,7 @@
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { UsageError } from './errors';
 
-export const COMMANDS = ['export', 'plan', 'diff', 'offers', 'offer', 'drift', 'apply', 'undo'] as const;
+export const COMMANDS = ['export', 'plan', 'diff', 'offers', 'offer', 'drift', 'parity', 'apply', 'undo'] as const;
 export type CommandName = (typeof COMMANDS)[number];
 
 type OptionSpec = NonNullable<ParseArgsConfig['options']>;
@@ -21,7 +21,17 @@ const APP: OptionSpec = {
 };
 
 const OPTIONS: Record<CommandName, OptionSpec> = {
-  export: { ...COMMON, ...APP, subscription: { type: 'string' }, 'base-plan': { type: 'string' }, 'in-app': { type: 'string' }, out: { type: 'string', short: 'o' } },
+  export: {
+    ...COMMON,
+    ...APP,
+    subscription: { type: 'string' },
+    'base-plan': { type: 'string' },
+    'in-app': { type: 'string' },
+    out: { type: 'string', short: 'o' },
+    format: { type: 'string' },
+    offers: { type: 'boolean' },
+    workspace: { type: 'string' },
+  },
   plan: {
     ...COMMON,
     ...APP,
@@ -31,8 +41,10 @@ const OPTIONS: Record<CommandName, OptionSpec> = {
     out: { type: 'string', short: 'o' },
     'state-out': { type: 'string' },
     force: { type: 'boolean' },
+    workspace: { type: 'string' },
+    'out-dir': { type: 'string' },
   },
-  diff: { ...COMMON, plan: { type: 'string' } },
+  diff: { ...COMMON, plan: { type: 'string' }, 'workspace-plan': { type: 'string' } },
   offers: { ...COMMON, ...APP, subscription: { type: 'string' }, 'base-plan': { type: 'string' }, kind: { type: 'string' } },
   offer: {
     ...COMMON,
@@ -59,7 +71,9 @@ const OPTIONS: Record<CommandName, OptionSpec> = {
     snap: { type: 'string' },
     threshold: { type: 'string' },
     territories: { type: 'string' },
+    workspace: { type: 'string' },
   },
+  parity: { ...COMMON, workspace: { type: 'string' }, mapping: { type: 'string' } },
   apply: {
     ...COMMON,
     plan: { type: 'string' },
@@ -69,8 +83,10 @@ const OPTIONS: Record<CommandName, OptionSpec> = {
     force: { type: 'boolean' },
     'force-delete': { type: 'boolean' },
     'allow-base-prices': { type: 'boolean' },
+    'workspace-plan': { type: 'string' },
+    'resume-runs': { type: 'boolean' },
   },
-  undo: { ...COMMON, out: { type: 'string', short: 'o' }, force: { type: 'boolean' } },
+  undo: { ...COMMON, out: { type: 'string', short: 'o' }, force: { type: 'boolean' }, 'workspace-plan': { type: 'string' } },
 };
 
 const ALLOWS_POSITIONAL: Partial<Record<CommandName, true>> = { diff: true, offer: true, apply: true, undo: true };
@@ -187,7 +203,9 @@ Commands:
   offer    Plan deactivating, activating or deleting one existing offer (writes a plan file
            for "apply"); App Store and Google Play
   drift    Check offers against their rules (one offer, or every offer in a rules file with
-           --rules); App Store and Google Play
+           --rules, or every app of a workspace with --workspace); App Store and Google Play
+  parity   Compare the App Store and Google Play prices of each subscription a workspace maps
+           across the stores, territory by territory (read-only)
   apply    Apply a reviewed plan, App Store or Google Play (needs --confirm <plan hash>; base
            prices also need --allow-base-prices); saves the run log
   undo     Turn a plan and its run log into an undo plan (offline), to review and apply
@@ -206,8 +224,15 @@ Credentials come only from environment variables:
   App Store Connect: ASC_KEY_ID, ASC_ISSUER_ID, and one of ASC_PRIVATE_KEY (the .p8 contents),
                      ASC_PRIVATE_KEY_HEX (the same, hex-encoded) or ASC_PRIVATE_KEY_PATH
   Google Play:       GOOGLE_APPLICATION_CREDENTIALS (key file path) or GOOGLE_SERVICE_ACCOUNT_JSON (key JSON)
-Optional pins: PRICINGKIT_EXPECT_BUNDLE_ID / PRICINGKIT_EXPECT_PACKAGE refuse any other app
-(from a flag, spec, rules file or plan) before anything is read.
+Optional pins: PRICINGKIT_EXPECT_BUNDLE_ID / PRICINGKIT_EXPECT_PACKAGE (one ID or a
+comma-separated list) refuse any other app (from a flag, spec, rules file, workspace or plan)
+before anything is read.
+
+Workspaces (pricingkit.workspace): one file listing several apps, App Store and Google
+Play, each with its spec, rules and offer plan spec, plus parity mappings between an App
+Store subscription and a Google Play base plan. "plan --workspace" writes one plan per app
+and a workspace plan index; diff, apply and undo take --workspace-plan <index>; drift and
+export take --workspace. A plan never holds ops for two apps.
 
 Spec and rules files are JSON, or YAML when named .yaml or .yml (numbers keep
 the digits written; tags and several documents per file are refused).
@@ -220,6 +245,8 @@ export const COMMAND_HELP: Record<CommandName, string> = {
   pricingkit export --package-name <name> --subscription <product id> --base-plan <id> [--out <file>]
   pricingkit export --bundle-id <id> --in-app <product id> [--out <file>]
   pricingkit export --package-name <name> --in-app <product id> [--out <file>]
+  pricingkit export ... --format csv [--offers] [--out <file.csv>]
+  pricingkit export --workspace <workspace file> [--format json|csv] [--offers] [--out <file>]
 
 Reads the current (and scheduled) price in every territory and prints it as a
 pricingkit.state snapshot (with --json) or a table. --out also writes the JSON
@@ -231,11 +258,23 @@ schedule's base territory) or a Google Play one-time product (its first
 purchase option). Plans and apply still cover subscriptions and one-time
 products only, not App Store in-app purchases.
 
+--format csv prints a pricingkit.prices CSV instead (first line
+"# pricingkit.prices v1", then the columns app, platform, product, base_plan,
+offer_kind, offer_key, territory, currency, price, proceeds; one row per
+territory with a current price). --offers adds the subscription's offers:
+every App Store offer, and Google Play offers with a single phase priced per
+region. Edit the prices and use the file as "pricesFile" in a spec (fixed
+targets) or an offer plan spec (fixed pricing); exporting and importing
+unchanged plans no changes.
+--workspace exports every product the workspace names, app by app, each read
+through its own app's credentials after checking it belongs to that app.
+
 ${SHARED_HELP}`,
   plan: `Usage:
   pricingkit plan --spec <spec.json> [--out <plan.json>] [--state-out <state.json>] [--force]
   pricingkit plan --rules <rules.json> [--spec <base spec.json>] [--scheduled-base hold|now]
                   [--out <plan.json>] [--force]
+  pricingkit plan --workspace <workspace file> [--out-dir <dir>] [--scheduled-base hold|now] [--force]
 
 The spec is a pricingkit.spec (base prices: fixed prices, a percent of each
 territory's current price, or a strategy target spreading one base price by
@@ -283,16 +322,42 @@ them now, against the scheduled prices, with a warning.
 --allow-base-prices: base prices first, then the offers derived from them.
 Exit code 2 when the plan has ops or manual actions.
 
+Fixed prices can come from a pricingkit.prices CSV (see "pricingkit help
+export"): targets { "type": "fixed", "pricesFile": "prices.csv" } in a spec,
+or pricing { "type": "fixed", "pricesFile": "offers.csv" } in an offer plan
+spec. The rows naming that product (and offer) are used. The file is read like
+multipliersFile: relative to the spec, inside the working directory, a regular
+file, at most 5 MB; errors name the line and column, never a cell. The plan
+lists every row that wasn't planned exactly as written (snapped to another
+valid price, or not imported and why), also as plan warnings.
+
+With --workspace (a pricingkit.workspace file), plans every app of the
+workspace: one plan file per app (<app id>.json: its spec and rules, like
+--spec with --rules) and one per offer plan spec (<app id>.offers.json), each
+an ordinary plan for one app with its own hash, plus a workspace plan index
+(workspace-plan.json) in --out-dir (default pricingkit-plans; existing files
+are replaced only with --force). Parity mappings with a target add that target
+to both apps' specs (each store snaps it separately); the output ends with the
+parity report on the planned prices. Review with
+"pricingkit diff --workspace-plan <dir>/workspace-plan.json"; apply with
+"pricingkit apply --workspace-plan <index> --confirm <workspace plan hash>".
+
 ${SHARED_HELP}`,
   diff: `Usage:
   pricingkit diff <plan.json>
   pricingkit diff --plan <plan.json>
+  pricingkit diff <plan.json> <plan.json> ...
+  pricingkit diff --workspace-plan <workspace-plan.json>
 
 Summarises a plan file: ops per product and territory with before, after and
 change, skipped territories by reason, and warnings. A plan with base prices
 and offers shows them in two groups, base prices first (the order apply
 uses), and lists offers that need manual action. Sends no store requests.
 Exit code 2 when the plan has ops or manual actions.
+Several plan files are shown one after the other, each under its app, after a
+line saying how many apps they change. --workspace-plan shows every plan of a
+workspace plan (checking each still has the hash it was planned with), its
+parity report and the workspace plan hash "apply --workspace-plan" needs.
 
 ${SHARED_HELP}`,
   offers: `Usage:
@@ -343,6 +408,7 @@ Exit code 2 when a plan was written.
 ${SHARED_HELP}`,
   drift: `Usage:
   pricingkit drift --rules <rules.json>
+  pricingkit drift --workspace <workspace file>
   pricingkit drift --bundle-id <id> --subscription <subscription id>
                    --kind <kind> --offer <offer id or key> --percent <n>
                    [--basis perPeriod|totalOverDuration] [--snap nearest|floor|ceil]
@@ -375,11 +441,31 @@ free trial), otherwise 0. The text report starts with DRIFT, NOT CHECKED or
 In sync and lists offers that couldn't be checked right below, with drift too.
 A rules file for a Google Play app (packageName) checks its Play offers.
 
+With --workspace, checks the rules file of every app in the workspace, each
+through its own app's adapter, and prints one pricingkit.workspaceDrift report
+(exit codes as for --rules, across all apps).
+
+${SHARED_HELP}`,
+  parity: `Usage:
+  pricingkit parity --workspace <workspace file> [--mapping <id>]
+
+For each parity mapping in the workspace (an App Store subscription and a
+Google Play base plan), reads both products' current prices, each through its
+own app's adapter, and compares them territory by territory: same, within the
+mapping's threshold (default 0.05, as a fraction of the lower price), gap
+(above the threshold), not comparable (different currencies), or priced on
+one store only. Read-only. Prints a pricingkit.parity report with --json.
+"plan --workspace" reports the same on the planned prices.
+
+Exit code 2 when any territory has a gap above its threshold, otherwise 0.
+
 ${SHARED_HELP}`,
   apply: `Usage:
   pricingkit apply <plan.json> --confirm <plan hash> [--run-out <run.json>] [--force]
   pricingkit apply <plan.json> --confirm <plan hash> --resume <run.json>
                    [--force-delete] [--allow-base-prices]
+  pricingkit apply --workspace-plan <workspace-plan.json> --confirm <workspace plan hash>
+                   [--resume-runs] [--force] [--force-delete] [--allow-base-prices]
 
 Applies a plan made by "pricingkit plan" (or "undo", or "offer"),
 App Store or Google Play: the app comes from the plan.
@@ -399,11 +485,21 @@ never replaced unless you pass --force (or resume it in place); resume a
 failed or interrupted run with --resume. Deleting an offer needs --force-delete: App Store
 Connect doesn't report redemptions, and a deleted Play offer (drafts only) is gone for good.
 
+With --workspace-plan, applies every plan of a workspace plan in order (app
+by app, base prices before offers), each through an adapter for its own app
+with its own run log next to it (<plan>.run.json). --confirm is the workspace
+plan hash; every plan file must still have the hash the index records, and
+every app must pass the PRICINGKIT_EXPECT_* pins, before anything is read. It
+stops at the first plan that doesn't complete; later plans are not started.
+--resume-runs continues from the run logs (completed plans are skipped);
+--force replaces existing run logs.
+
 Exit code 0 when every op is done, 1 otherwise (the log says which).
 
 ${SHARED_HELP}`,
   undo: `Usage:
   pricingkit undo <plan.json> <run.json> [--out <undo.json>] [--force]
+  pricingkit undo --workspace-plan <workspace-plan.json> [--force]
 
 Builds the plan that undoes what the run changed (newest first, from each
 op's "before"), writes it (default <plan>.undo.json next to the plan, never replaced unless
@@ -413,6 +509,9 @@ needs no credentials. Works for runs from the CLI and from the web app (save
 the plan and the run log from its offer dialog). Apply the undo plan like any
 other: pricingkit apply <undo.json> --confirm <hash>, with --force-delete when
 it deletes offers.
+With --workspace-plan, builds an undo plan for every plan that has a run log
+(<plan>.undo.json, newest first) and a workspace undo index
+(workspace-plan.undo.json) to apply with "apply --workspace-plan".
 
 Exit code 2 when there is something to undo, 0 otherwise.
 
