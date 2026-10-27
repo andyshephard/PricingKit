@@ -15,6 +15,7 @@ import { COMMAND_HELP, MAIN_HELP, parseCliArgs, type CommandName } from './args'
 import type { CommandContext, CommandResult } from './context';
 import { CliError, EXIT_ERROR, EXIT_OK, UsageError, type ExitCode } from './errors';
 import { Redactor } from './redact';
+import { escapeJsonForTerminal, escapeTerminal } from './format';
 import { applyCommand } from './commands/apply';
 import { diffCommand } from './commands/diff';
 import { undoCommand } from './commands/undo';
@@ -118,8 +119,11 @@ function errorJson(error: unknown): { error: { message: string; code?: string | 
 /** Run the CLI. Never throws; returns the exit code. */
 export async function runCli(argv: string[], io: CliIO): Promise<ExitCode> {
   const redactor = new Redactor();
-  const out = (text: string) => io.stdout(redactor.redact(text));
-  const err = (text: string) => io.stderr(redactor.redact(text));
+  // Redacted first (the patterns need the raw text), then made safe to print:
+  // text from plans, stores and files never reaches the terminal as control sequences
+  const out = (text: string) => io.stdout(escapeTerminal(redactor.redact(text)));
+  const outJson = (value: unknown) => io.stdout(escapeJsonForTerminal(redactor.redact(`${JSON.stringify(value, null, 2)}\n`)));
+  const err = (text: string) => io.stderr(escapeTerminal(redactor.redact(text)));
   const wantsJson = argv.includes('--json');
 
   return withConsoleOnStderr(err, () => withTokensRedacted(redactor, async () => {
@@ -146,12 +150,13 @@ export async function runCli(argv: string[], io: CliIO): Promise<ExitCode> {
         now: io.now ?? (() => new Date()),
       };
       const result = await HANDLERS[args.command](ctx);
-      out(args.json ? `${JSON.stringify(result.json, null, 2)}\n` : `${result.text}\n`);
+      if (args.json) outJson(result.json);
+      else out(`${result.text}\n`);
       if (budget.used > 0) err(`${budget.used} of ${budget.limit} store requests used\n`);
       return result.exitCode;
     } catch (error) {
       const message = errorMessage(error).trim();
-      if (wantsJson) out(`${JSON.stringify(errorJson(error), null, 2)}\n`);
+      if (wantsJson) outJson(errorJson(error));
       const status = error instanceof CliError ? undefined : getErrorStatus(error);
       err(`error: ${message}${status ? ` (HTTP ${status})` : ''}\n`);
       if (error instanceof UsageError) err('Run "pricingkit --help" for usage.\n');

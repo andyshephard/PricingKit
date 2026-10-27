@@ -2,6 +2,35 @@
 
 import { compareDecimal, divideDecimal, isZeroDecimal, subtractDecimal, type Decimal, type PriceValue } from '@/lib/pricing';
 
+// Text a plan, a store or a file supplies (warnings, notes, offer keys, error
+// messages) is printed as data, never as terminal control: an escape sequence
+// in a plan could otherwise clear the screen or rewrite lines, so "diff"
+// would show something other than what the hash confirms.
+//
+// Escaped, as visible \xNN / \uNNNN: C0 controls except newline and tab
+// (ESC starts every ANSI CSI and OSC sequence; a CR not followed by a newline
+// rewrites a line, while CRLF, as in CSV output, is left alone), DEL, the
+// C1 controls (U+009B is a one-byte CSI, U+009D an OSC), and the Unicode
+// line separators and bidirectional overrides that reorder what is shown.
+// eslint-disable-next-line no-control-regex
+const TERMINAL_UNSAFE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]|\r(?!\n)/g;
+
+export function escapeTerminal(text: string): string {
+  return text.replace(TERMINAL_UNSAFE, (c) => {
+    const code = c.charCodeAt(0);
+    return code <= 0xff ? `\\x${code.toString(16).toUpperCase().padStart(2, '0')}` : `\\u${code.toString(16).toUpperCase().padStart(4, '0')}`;
+  });
+}
+
+// JSON.stringify escapes C0 controls but leaves DEL, C1 and the Unicode
+// separators/overrides raw; inside a JSON string \uNNNN is equivalent.
+const JSON_UNSAFE = /[\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+
+/** JSON text with every terminal-unsafe character as a \uNNNN escape (same JSON value) */
+export function escapeJsonForTerminal(json: string): string {
+  return json.replace(JSON_UNSAFE, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
 /** Align rows into columns separated by two spaces. */
 export function table(rows: string[][], indent = '  '): string {
   if (rows.length === 0) return '';
