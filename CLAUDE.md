@@ -76,6 +76,7 @@ CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm test`, `npm run typecheck` a
   session.ts            # Cookie names (__Host- in production), read/write/clear helpers, readSessionCookie, hasAuthenticatedSession()
   token-cache.ts        # LRU cache for Apple JWTs / Google access tokens
   security-headers.ts   # Response headers and CSP for every route (next.config.ts): no 'unsafe-eval' outside next dev, base-uri 'none', form-action 'self'
+/src/instrumentation-client.ts  # Browser start-up: zod jitless, so zod 4's `new Function` probe never trips the CSP (keep it)
   request-guard.ts      # rejectCrossSite + readJsonBody for every non-GET route
 
 /src/cli/               # pricingkit CLI: args, commands/, credentials (env only), redact, spec-file (YAML), mcp (MCP server); `apply` is its only write
