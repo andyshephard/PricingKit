@@ -150,8 +150,7 @@ export default function DashboardLayout({
   return (
     <div className="flex min-h-screen flex-col bg-background md:h-screen md:flex-row md:overflow-hidden">
       <Sidebar />
-      {/* On phones, let the page header (search, refresh, logout) wrap instead of overflowing. */}
-      <main className="flex min-w-0 flex-1 flex-col md:overflow-auto max-md:[&>div>div>header]:h-auto max-md:[&>div>div>header]:flex-wrap max-md:[&>div>div>header]:gap-2 max-md:[&>div>div>header]:px-4 max-md:[&>div>div>header]:py-2 max-md:[&>div>div>header_input]:w-full max-md:[&>div>div>header>div]:ml-0 max-md:[&>div>div>header>div]:w-full max-md:[&>div>div>header>div>div:first-child]:flex-1">
+      <main className="flex min-w-0 flex-1 flex-col md:overflow-auto">
         <div className="flex-1">{children}</div>
         <Footer />
       </main>
