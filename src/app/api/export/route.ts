@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getAppleAuthFromCookies, getGoogleAuthFromCookies } from '@/middleware/auth';
+import { APP_MISMATCH, assertSubscriptionInApp } from '@/lib/apple-connect/ownership';
 import { getInAppProductRaw } from '@/lib/google-play/products';
 import { getSubscription as getGoogleSubscription } from '@/lib/google-play/subscriptions';
 import {
@@ -173,6 +174,16 @@ async function buildAppleExport(query: ExportQuery): Promise<PriceExport | Respo
     });
   }
 
+  if (/^\d+$/.test(query.id)) {
+    // API keys reach every app of a team: a numeric ID could be another app's
+    // subscription, which would be exported under this app's bundle ID
+    try {
+      await assertSubscriptionInApp(auth.credentials, query.id);
+    } catch (error) {
+      if ((error as { code?: unknown }).code === APP_MISMATCH) throw new ExportHttpError(409, 'This subscription belongs to another app');
+      throw error;
+    }
+  }
   const subscription = /^\d+$/.test(query.id)
     ? await getAppleSubscriptionById(auth.credentials, query.id)
     : await getAppleSubscription(auth.credentials, query.id);

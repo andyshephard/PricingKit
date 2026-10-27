@@ -1,6 +1,7 @@
 import { googlePlayFetch } from './client';
 import { convertRegionPrices } from './pricing';
 import { ApiError } from '../utils/api-error';
+import { assertExpectedPrices } from './expected-prices';
 import type { RequestContext } from '../utils/request-budget';
 import type {
   ServiceAccountCredentials,
@@ -8,6 +9,7 @@ import type {
   BasePlan,
   RegionalBasePlanConfig,
   RegionsVersion,
+  Money,
 } from './types';
 
 interface GoogleApiSubscription extends Subscription {
@@ -29,6 +31,8 @@ interface SubscriptionUpdateRequestBody {
 export interface RegionsVersionOptions {
   /** The version to send (e.g. the one recorded in a reviewed plan) */
   regionsVersion?: string;
+  /** updateBasePlanPrices: write only if these regions still have exactly these prices (else PRICE_CHANGED) */
+  expected?: Record<string, Money>;
 }
 
 /**
@@ -196,6 +200,7 @@ export async function updateBasePlanPrices(
   if (!basePlan) {
     throw new Error(`Base plan ${basePlanId} not found in subscription ${productId}`);
   }
+  assertExpectedPrices(Object.fromEntries((basePlan.regionalConfigs || []).map((c) => [c.regionCode, c.price])), options.expected);
 
   // Change only the regions the caller passed in. Existing regions keep their
   // position, availability and any other fields; regions not in the request

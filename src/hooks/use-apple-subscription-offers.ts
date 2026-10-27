@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { AppleOfferKind, ApplyRun, ChangeSet, OfferDriftReport, OfferPlanEntry, OpStatus, StoreOffer } from '@/lib/pricing';
+import type { ApplyRun, ChangeSet, OfferPlanEntry, OpStatus, StoreOffer } from '@/lib/pricing';
 
 async function getJson<T>(url: string, fallback: string): Promise<T> {
   const response = await fetch(url);
@@ -18,27 +18,6 @@ export function useAppleSubscriptionOffers(subscriptionId: string | undefined) {
     queryFn: () => getJson(`/api/apple/subscriptions/${encodeURIComponent(subscriptionId!)}/offers`, 'Failed to fetch offers'),
     enabled: !!subscriptionId,
     // A failed read is not retried: a 429 or a spent request budget only gets worse by retrying
-    retry: false,
-  });
-}
-
-export interface OfferDriftQuery {
-  kind: AppleOfferKind;
-  offer: string;
-  percent: string;
-  basis: 'perPeriod' | 'totalOverDuration';
-  snap: 'nearest' | 'floor' | 'ceil';
-}
-
-/** Drift of one offer against a percent-of-current rule. Runs only when `query` is set. */
-export function useAppleOfferDrift(subscriptionId: string | undefined, query: OfferDriftQuery | null) {
-  return useQuery<{ report: OfferDriftReport }>({
-    queryKey: ['apple', 'offer-drift', subscriptionId, query],
-    queryFn: () => {
-      const params = new URLSearchParams({ ...query! });
-      return getJson(`/api/apple/subscriptions/${encodeURIComponent(subscriptionId!)}/offers/drift?${params}`, 'Failed to check offer');
-    },
-    enabled: !!subscriptionId && !!query,
     retry: false,
   });
 }
@@ -83,7 +62,6 @@ export function useApplyAppleOfferPlan(subscriptionId: string) {
     mutationFn: (body) => postJson(`/api/apple/subscriptions/${encodeURIComponent(subscriptionId)}/offers/apply`, body, 'Failed to apply the offer plan'),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['apple', 'subscription-offers', subscriptionId] });
-      queryClient.invalidateQueries({ queryKey: ['apple', 'offer-drift', subscriptionId] });
     },
   });
 }

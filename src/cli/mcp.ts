@@ -1,10 +1,12 @@
 // pricingkit mcp: a Model Context Protocol server over stdio, so an agent can
-// read offers, check drift, make plans and summarise them with the same
+// read offers, make plans and summarise them with the same
 // commands a person runs. Agents can plan; humans apply.
 //
-// - Tools: offers, drift, plan, diff (each runs the CLI command in-process
+// - Tools: offers, plan, diff (each runs the CLI command in-process
 //   with --json) and apply_command, which only reads a plan file and returns
-//   the exact `pricingkit apply` command a person must run. Nothing here can
+//   the start of the `pricingkit apply` command, without --confirm or the
+//   opt-in flags: the person gets the hash from their own diff and adds the
+//   flags knowingly. Nothing here can
 //   write to a store: there is no apply tool, and the CLI's apply command is
 //   never invoked (src/cli/__tests__/mcp.test.ts checks both).
 // - Arguments are typed: each tool builds the argv itself, values can't start
@@ -18,12 +20,13 @@
 // - Hand-rolled JSON-RPC 2.0 over newline-delimited stdio (MCP's stdio
 //   transport): no SDK dependency. Calls run one at a time.
 
-import { lstat, readFile, realpath } from 'node:fs/promises';
+import { lstat, readFile, realpath, stat as statFile } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import { assertRunMatches, changeSetHash, isOfferOp, parseChangeSet, parseRun, parseStateSnapshot } from '@/lib/pricing';
+import { assertRunMatches, isOfferOp, parseChangeSet, parseRun, parseStateSnapshot } from '@/lib/pricing';
 import packageJson from '../../package.json';
 import { runCli, type CliIO } from './main';
+import { Redactor } from './redact';
 
 const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
@@ -78,46 +81,9 @@ export const TOOLS: Tool[] = [
     argv: (a) => ['offers', ...appFlags(a), '--subscription', String(a.subscription), ...opt('--base-plan', a.basePlan), ...opt('--kind', a.kind)],
   },
   {
-    name: 'drift',
-    description:
-      'Check offers against their rules: every offer in a rules file (rules), or one offer (app, subscription, offer and percent or relativeDiscount). Read-only. exitCode 2 = drift found, 0 = in sync, 1 = error.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        rules: str('Path of a pricingkit.offerRules file (JSON or YAML), relative to the working directory'),
-        ...APP_PROPS,
-        subscription: str('Subscription (single-offer check)'),
-        basePlan: str('Google Play base plan ID (single-offer check)'),
-        kind: str('App Store offer kind (single-offer check)', { enum: ['apple.intro', 'apple.promo', 'apple.offerCode', 'apple.winBack'] }),
-        offer: str('Offer key or ID (single-offer check)'),
-        percent: str('Percent of each territory price, e.g. "50"'),
-        relativeDiscount: str('Google Play: relative discount fraction, e.g. "0.5"'),
-        basis: str('perPeriod or totalOverDuration', { enum: ['perPeriod', 'totalOverDuration'] }),
-        threshold: str('Deviation threshold, 0..1'),
-        territories: str('Comma-separated territories to check, e.g. "GB,US"'),
-      },
-      additionalProperties: false,
-    },
-    paths: [read('rules', SPEC_EXT)],
-    argv: (a) => [
-      'drift',
-      ...opt('--rules', a.rules),
-      ...appFlags(a),
-      ...opt('--subscription', a.subscription),
-      ...opt('--base-plan', a.basePlan),
-      ...opt('--kind', a.kind),
-      ...opt('--offer', a.offer),
-      ...opt('--percent', a.percent),
-      ...opt('--relative-discount', a.relativeDiscount),
-      ...opt('--basis', a.basis),
-      ...opt('--threshold', a.threshold),
-      ...opt('--territories', a.territories),
-    ],
-  },
-  {
     name: 'plan',
     description:
-      'Make a plan (dry run: only reads from the store) from a spec (base prices or offers) and/or an offer rules file, and write it to `out`. Returns the plan and its hash. Applying it is for a person: use apply_command.',
+      'Make a plan (dry run: only reads from the store) from a spec (base prices or offers) and/or an offer rules file, and write it to `out`. Returns the plan, without its confirm hash. Applying it is for a person: use apply_command.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -135,7 +101,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'diff',
-    description: 'Summarise a plan file: ops per product and territory, skipped territories, warnings, manual actions and the plan hash. Offline: no store requests.',
+    description: 'Summarise a plan file: ops per product and territory, skipped territories, warnings and manual actions (not the confirm hash: the person applying it runs pricingkit diff themselves). Offline: no store requests.',
     inputSchema: { type: 'object', properties: { plan: str('Path of the plan file') }, required: ['plan'], additionalProperties: false },
     paths: [read('plan')],
     argv: (a) => ['diff', String(a.plan)],
@@ -143,7 +109,7 @@ export const TOOLS: Tool[] = [
   {
     name: 'apply_command',
     description:
-      'Returns the exact `pricingkit apply` command a person must run, after reviewing the plan, to apply a plan file (with the flags it needs: --allow-base-prices for base prices, --force-delete for deletes). Never applies anything and sends no store requests: agents plan, humans apply.',
+      'Returns the start of the `pricingkit apply` command for a plan file, for a person to finish and run: without --confirm (they get the hash by running `pricingkit diff` on the plan themselves) and without the opt-in flags (the result names the ones the plan needs and why, for the person to add). Never applies anything and sends no store requests: agents plan, humans apply.',
     inputSchema: {
       type: 'object',
       properties: { plan: str('Path of the plan file'), resume: str('Path of a run log to resume') },
@@ -180,6 +146,9 @@ async function realpathOrUndefined(path: string): Promise<string | undefined> {
   }
 }
 
+/** Largest file a tool reads: a plan, run log, spec or rules file */
+export const MAX_TOOL_FILE_BYTES = 16 * 1024 * 1024;
+
 /** Throws ToolInputError unless `value` is a safe path inside cwd for this use */
 async function checkPath(arg: PathArg, value: string, cwd: string): Promise<void> {
   const fail = (why: string) => new ToolInputError(`${arg.key} must be a file inside the working directory (${why})`);
@@ -196,12 +165,21 @@ async function checkPath(arg: PathArg, value: string, cwd: string): Promise<void
     if (real !== undefined && !inside(root, real)) throw fail('it resolves outside, through a link');
     const parent = await realpathOrUndefined(dirname(target));
     if (parent !== undefined && parent !== root && !inside(root, parent)) throw fail('its folder resolves outside');
+    if (real !== undefined) {
+      // A FIFO or device would block the server; a huge file would exhaust its memory
+      const info = await statFile(real).catch(() => undefined);
+      if (!info?.isFile()) throw new ToolInputError(`${arg.key}: ${value} is not a regular file`);
+      if (info.size > MAX_TOOL_FILE_BYTES) throw new ToolInputError(`${arg.key}: ${value} is larger than ${MAX_TOOL_FILE_BYTES / 1024 / 1024} MB`);
+    }
     return;
   }
+  // Written files never go into dot-folders (.github/, .vscode/, ...) or dot-files, where
+  // tools pick up configuration and workflows
+  if (segments.some((s) => s.startsWith('.'))) throw fail('no folders or files starting with "."');
   const parent = await realpathOrUndefined(dirname(target));
   if (parent === undefined) throw fail('its folder does not exist');
   if (parent !== root && !inside(root, parent)) throw fail('its folder resolves outside, through a link');
-  if (parent.split(sep).includes('.git')) throw fail('nothing under .git/');
+  if (parent !== root && relative(root, parent).split(sep).some((s) => s.startsWith('.'))) throw fail('no folders starting with "."');
   let stat;
   try {
     stat = await lstat(target);
@@ -238,9 +216,9 @@ async function checkArgs(tool: Tool, args: Args, cwd: string): Promise<void> {
   }
 }
 
-/** POSIX shell quoting: safe words as they are, anything else in single quotes */
+/** POSIX shell quoting: safe words as they are, anything else in single quotes (also a leading "=", which zsh expands to a command's path) */
 export function shellQuote(word: string): string {
-  return /^[A-Za-z0-9._/:=@%+-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
+  return /^[A-Za-z0-9._/:@%+-][A-Za-z0-9._/:=@%+-]*$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
 }
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
@@ -276,31 +254,68 @@ async function commandForPlan(args: Args, cwd: string): Promise<ToolResult> {
       throw error instanceof ToolInputError ? error : new ToolInputError(`resume: ${(error as Error).message}`);
     }
   }
-  const hash = changeSetHash(changeSet);
+  // Deliberately incomplete: no --confirm hash and no opt-in flags. The person applying the plan
+  // gets the hash from their own `pricingkit diff` and adds the flags knowingly; an agent can't
+  // hand over a ready-to-paste command that skips the review.
   const baseOps = changeSet.ops.filter((op) => !isOfferOp(op)).length;
   const deletes = changeSet.ops.filter((op) => isOfferOp(op) && op.kind === 'deleteOffer').length;
-  const argv = [
-    'pricingkit',
-    'apply',
-    planPath,
-    '--confirm',
-    hash,
-    ...(resumePath !== undefined ? ['--resume', resumePath] : []),
-    ...(baseOps > 0 ? ['--allow-base-prices'] : []),
-    ...(deletes > 0 ? ['--force-delete'] : []),
-  ];
+  const argv = ['pricingkit', 'apply', planPath, ...(resumePath !== undefined ? ['--resume', resumePath] : [])];
   const command = argv.map(shellQuote).join(' ');
+  const requiredFlags = [
+    ...(baseOps > 0 ? [{ flag: '--allow-base-prices', reason: `the plan changes base prices (${baseOps} ${baseOps === 1 ? 'op' : 'ops'}); add it only if you mean to change them` }] : []),
+    ...(deletes > 0
+      ? [{ flag: '--force-delete', reason: `the plan deletes ${deletes} ${deletes === 1 ? 'offer' : 'offers'}; the store can't tell whether anyone redeemed them, and a deleted offer can't be restored` }]
+      : []),
+  ];
   const notes = [
-    'A person must review the plan (pricingkit diff) and run this command themselves; this server cannot apply plans.',
+    `This server cannot apply plans. A person reviews the plan by running "pricingkit diff ${shellQuote(planPath)}" themselves, then runs this command with --confirm <the hash that diff prints>${requiredFlags.length ? ' and the flags below' : ''}.`,
     ...(changeSet.ops.length === 0 ? ['The plan has no ops: applying it changes nothing.'] : []),
     ...(resumeNote ? [resumeNote] : []),
-    ...(baseOps > 0 ? [`--allow-base-prices: the plan changes base prices (${baseOps} ops).`] : []),
-    ...(deletes > 0 ? [`--force-delete: the plan deletes ${deletes} offer(s), which the store can't check for redemptions or can't undo.`] : []),
+    ...requiredFlags.map((f) => `${f.flag} is needed: ${f.reason}.`),
+    'Pin the app the server may work on with PRICINGKIT_EXPECT_BUNDLE_ID / PRICINGKIT_EXPECT_PACKAGE in its environment.',
   ];
   return {
-    content: [{ type: 'text', text: `${command}\n\n${notes.join('\n')}` }],
-    structuredContent: { command, argv, hash, ops: changeSet.ops.length, notes },
+    content: [{ type: 'text', text: `${command} --confirm <hash from pricingkit diff>\n\n${notes.join('\n')}` }],
+    structuredContent: { command, argv, needsConfirm: true, requiredFlags, ops: changeSet.ops.length, notes },
   };
+}
+
+/**
+ * The message of an unexpected error, safe to send: scrubbed of the
+ * credentials in the server's environment and of key/token shapes, and short.
+ */
+export function internalErrorMessage(error: unknown, env: Record<string, string | undefined>): string {
+  const redactor = new Redactor();
+  for (const name of ['ASC_KEY_ID', 'ASC_ISSUER_ID', 'ASC_PRIVATE_KEY', 'ASC_PRIVATE_KEY_HEX', 'GOOGLE_SERVICE_ACCOUNT_JSON']) redactor.add(env[name]);
+  try {
+    const json = env.GOOGLE_SERVICE_ACCOUNT_JSON ? (JSON.parse(env.GOOGLE_SERVICE_ACCOUNT_JSON) as Record<string, unknown>) : {};
+    for (const key of ['private_key', 'private_key_id', 'client_email']) if (typeof json[key] === 'string') redactor.add(json[key] as string);
+  } catch {
+    // not JSON: the whole value is already registered
+  }
+  const message = error instanceof Error ? error.message : 'Internal error';
+  const clean = redactor.redact(message);
+  return clean.length > 300 ? `${clean.slice(0, 300)}...` : clean;
+}
+
+// No tool output carries a confirm hash: the person applying a plan gets it
+// from their own `pricingkit diff`, so an agent can't hand over a complete
+// apply command (or one for a plan nobody reviewed).
+const HASH_KEYS = new Set(['hash', 'changeSetHash', 'workspacePlanHash']);
+const HASH_NOTE = 'run "pricingkit diff" yourself for the plan hash';
+
+/** A copy of a tool's JSON result without confirm-hash fields */
+export function stripHashes(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripHashes);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([k]) => !HASH_KEYS.has(k)).map(([k, v]) => [k, stripHashes(v)]));
+  }
+  return value;
+}
+
+/** Text with anything shaped like a confirm hash (32 hex digits) replaced */
+function withoutHashes(text: string): string {
+  return text.replace(/\b[0-9a-f]{32}\b/g, `[${HASH_NOTE}]`);
 }
 
 export class McpServer {
@@ -332,14 +347,16 @@ export class McpServer {
       ...(this.options.now ? { now: this.options.now } : {}),
     };
     const exitCode = await runCli(argv, io);
-    let result: unknown = stdout;
+    let result: unknown = withoutHashes(stdout);
     try {
-      result = JSON.parse(stdout);
+      result = stripHashes(JSON.parse(stdout));
     } catch {
       // keep the text
     }
+    const text = typeof result === 'string' ? result.trim() : JSON.stringify(result, null, 2);
+    const errText = withoutHashes(stderr).trim();
     return {
-      content: [{ type: 'text', text: `${stdout.trim()}${stderr.trim() ? `\n\n[stderr]\n${stderr.trim()}` : ''}\n\n[exit code ${exitCode}]` }],
+      content: [{ type: 'text', text: `${text}${errText ? `\n\n[stderr]\n${errText}` : ''}\n\n[exit code ${exitCode}]` }],
       structuredContent: { exitCode, result },
       ...(exitCode === 1 ? { isError: true } : {}),
     };
@@ -365,7 +382,7 @@ export class McpServer {
             protocolVersion: PROTOCOL_VERSIONS.includes(wanted) ? wanted : PROTOCOL_VERSIONS[0],
             capabilities: { tools: { listChanged: false } },
             serverInfo: { name: 'pricingkit', version: packageJson.version },
-            instructions: 'Read store prices and offers, check drift and make plans. Applying a plan is for a person: apply_command returns the command to run.',
+            instructions: 'Read store prices and offers and make plans. Applying a plan is for a person: apply_command returns the start of the command, which they complete with the hash from their own pricingkit diff.',
           },
         });
       }
@@ -391,7 +408,7 @@ export class McpServer {
           return reply({ result: await run });
         } catch (error) {
           if (error instanceof ToolInputError) return reply({ result: { content: [{ type: 'text', text: error.message }], isError: true } });
-          return reply({ error: { code: -32603, message: error instanceof Error ? error.message : 'Internal error' } });
+          return reply({ error: { code: -32603, message: internalErrorMessage(error, this.options.env) } });
         }
       }
       default:
@@ -435,7 +452,7 @@ export async function serveMcp(options: McpServerOptions & { input: NodeJS.Reada
       const response = await server.handle(message);
       if (response) send(response);
     } catch (error) {
-      send({ jsonrpc: '2.0', id: null, error: { code: -32603, message: error instanceof Error ? error.message : 'Internal error' } });
+      send({ jsonrpc: '2.0', id: null, error: { code: -32603, message: internalErrorMessage(error, options.env) } });
     }
   };
 

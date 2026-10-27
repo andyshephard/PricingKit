@@ -38,12 +38,20 @@ import {
 } from '@/components/ui/form';
 import { GOOGLE_PLAY_REGIONS } from '@/lib/google-play/types';
 
-const bulkUpdateFormSchema = z.object({
-  operationType: z.enum(['percentage', 'fixed', 'round']),
-  value: z.number().optional(),
-  roundTo: z.number().min(0).max(0.99).optional(),
-  targetRegions: z.array(z.string()).min(1, 'Select at least one region'),
-});
+const bulkUpdateFormSchema = z
+  .object({
+    operationType: z.enum(['percentage', 'fixed', 'round']),
+    value: z.number().optional(),
+    currency: z.string().optional(),
+    roundTo: z.number().min(0).max(0.99).optional(),
+    targetRegions: z.array(z.string()).min(1, 'Select at least one region'),
+  })
+  .superRefine((data, ctx) => {
+    if (data.operationType === 'fixed') {
+      if (data.value === undefined || data.value < 0) ctx.addIssue({ code: 'custom', path: ['value'], message: 'Enter a price of 0 or more' });
+      if (!/^[A-Z]{3}$/.test(data.currency ?? '')) ctx.addIssue({ code: 'custom', path: ['currency'], message: 'Enter a currency code, e.g. USD' });
+    }
+  });
 
 type BulkUpdateFormData = z.infer<typeof bulkUpdateFormSchema>;
 
@@ -58,6 +66,22 @@ interface BulkUpdateResult {
     newPrice: string;
   }>;
   skippedRegions?: Array<{ regionCode: string; reason: string }>;
+}
+
+interface BulkRequestBody {
+  items: Array<{ type: 'product' | 'subscription'; id: string }>;
+  operation: { type: BulkUpdateFormData['operationType']; value?: number; currency?: string; roundTo?: number };
+  targetRegions: string[];
+}
+
+/** The preview's current prices, which the update is confirmed against: a region whose price changed since is left alone */
+function expectedPricesFrom(preview: BulkUpdateResult[]): Record<string, Record<string, string>> {
+  const expected: Record<string, Record<string, string>> = {};
+  for (const r of preview) {
+    if (!r.success || !r.changes?.length) continue;
+    expected[r.basePlanId ? `${r.id}/${r.basePlanId}` : r.id] = Object.fromEntries(r.changes.map((c) => [c.regionCode, c.oldPrice]));
+  }
+  return expected;
 }
 
 interface BulkUpdateModalProps {
@@ -77,12 +101,15 @@ export function BulkUpdateModal({
 }: BulkUpdateModalProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [results, setResults] = useState<BulkUpdateResult[] | null>(null);
+  // Step 1 result: what the update would do (nothing written yet), and the request it came from
+  const [preview, setPreview] = useState<{ request: BulkRequestBody; results: BulkUpdateResult[] } | null>(null);
 
   const form = useForm<BulkUpdateFormData>({
     resolver: zodResolver(bulkUpdateFormSchema),
     defaultValues: {
       operationType: 'percentage',
       value: 10,
+      currency: 'USD',
       roundTo: 0.99,
       targetRegions: [],
     },
@@ -104,38 +131,51 @@ export function BulkUpdateModal({
     }
   };
 
-  const handleSubmit = async (data: BulkUpdateFormData) => {
+  const postBulk = async (body: BulkRequestBody & { dryRun?: boolean; expectedPrices?: Record<string, Record<string, string>> }) => {
+    const response = await fetch('/api/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Bulk update failed');
+    return result;
+  };
+
+  // Step 1: preview. Nothing is written.
+  const handlePreview = async (data: BulkUpdateFormData) => {
     setIsSubmitting(true);
     setResults(null);
-
+    setPreview(null);
     try {
-      const items = selectedIds.map((id) => ({
-        type,
-        id,
+      const request: BulkRequestBody = {
         // No basePlanId: /api/bulk expands each subscription to all of its
         // base plans and returns one result per base plan
-      }));
+        items: selectedIds.map((id) => ({ type, id })),
+        operation: {
+          type: data.operationType,
+          value: data.operationType === 'round' ? undefined : data.value,
+          currency: data.operationType === 'fixed' ? data.currency?.trim().toUpperCase() : undefined,
+          roundTo: data.operationType === 'round' ? data.roundTo : undefined,
+        },
+        targetRegions: data.targetRegions,
+      };
+      const result = await postBulk({ ...request, dryRun: true });
+      setPreview({ request, results: result.results });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Preview failed');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
-      const response = await fetch('/api/bulk', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items,
-          operation: {
-            type: data.operationType,
-            value: data.operationType === 'round' ? undefined : data.value,
-            roundTo: data.operationType === 'round' ? data.roundTo : undefined,
-          },
-          targetRegions: data.targetRegions,
-        }),
-      });
-
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.error || 'Bulk update failed');
-      }
-
+  // Step 2: apply what the preview showed, confirmed against its current prices
+  const handleApply = async () => {
+    if (!preview) return;
+    setIsSubmitting(true);
+    try {
+      const result = await postBulk({ ...preview.request, expectedPrices: expectedPricesFrom(preview.results) });
+      setPreview(null);
       setResults(result.results);
 
       // Subscription results are per base plan
@@ -170,8 +210,12 @@ export function BulkUpdateModal({
     }
   };
 
+  const previewChanges = preview?.results.reduce((n, r) => n + (r.success ? r.changes?.length ?? 0 : 0), 0) ?? 0;
+  const shown = results ?? preview?.results ?? null;
+
   const handleClose = () => {
     setResults(null);
+    setPreview(null);
     form.reset();
     onOpenChange(false);
   };
@@ -189,21 +233,29 @@ export function BulkUpdateModal({
           </DialogDescription>
         </DialogHeader>
 
-        {results ? (
+        {shown ? (
           <div className="flex-1 overflow-hidden">
+            {preview && (
+              <p className="mb-2 text-sm text-muted-foreground">
+                Preview: nothing has changed yet. {previewChanges} region price{previewChanges === 1 ? '' : 's'} will change. Each is applied only if
+                its price is still the one shown here.
+              </p>
+            )}
             <ScrollArea className="h-[400px] pr-4">
               <div className="space-y-3">
-                {results.map((result, index) => (
+                {shown.map((result, index) => (
                   <div
                     key={`${result.id}-${result.basePlanId || index}`}
                     className={`p-3 rounded-lg border ${
-                      result.success
+                      result.success && !preview
                         ? 'bg-green-50 border-green-200 dark:bg-green-950/20 dark:border-green-900'
                         : 'bg-red-50 border-red-200 dark:bg-red-950/20 dark:border-red-900'
                     }`}
                   >
                     <div className="flex items-center gap-2 mb-2">
-                      {result.success ? (
+                      {preview ? (
+                        result.success ? <CheckCircle2 className="h-4 w-4 text-muted-foreground" /> : <XCircle className="h-4 w-4 text-red-600" />
+                      ) : result.success ? (
                         <CheckCircle2 className="h-4 w-4 text-green-600" />
                       ) : (
                         <XCircle className="h-4 w-4 text-red-600" />
@@ -258,7 +310,7 @@ export function BulkUpdateModal({
         ) : (
           <Form {...form}>
             <form
-              onSubmit={form.handleSubmit(handleSubmit)}
+              onSubmit={form.handleSubmit(handlePreview)}
               className="space-y-4"
             >
               <FormField
@@ -288,7 +340,7 @@ export function BulkUpdateModal({
                       {operationType === 'percentage' &&
                         'Increase or decrease prices by a percentage'}
                       {operationType === 'fixed' &&
-                        'Set all selected prices to a fixed value'}
+                        'Set the selected prices billed in one currency to a fixed value'}
                       {operationType === 'round' &&
                         'Round prices down to the nearest whole number plus decimal'}
                     </FormDescription>
@@ -343,8 +395,25 @@ export function BulkUpdateModal({
                         />
                       </FormControl>
                       <FormDescription>
-                        All selected prices will be set to this value
+                        Regions billed in this currency get this price; others are left alone
                       </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+
+              {operationType === 'fixed' && (
+                <FormField
+                  control={form.control}
+                  name="currency"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Currency</FormLabel>
+                      <FormControl>
+                        <Input {...field} value={field.value ?? ''} onChange={(e) => field.onChange(e.target.value.toUpperCase())} maxLength={3} className="w-24 font-mono" />
+                      </FormControl>
+                      <FormDescription>ISO 4217 code, e.g. USD. A fixed price is never converted to other currencies.</FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -454,22 +523,38 @@ export function BulkUpdateModal({
         <DialogFooter>
           {results ? (
             <Button onClick={handleClose}>Close</Button>
+          ) : preview ? (
+            <>
+              <Button variant="outline" onClick={() => setPreview(null)} disabled={isSubmitting}>
+                Back
+              </Button>
+              <Button onClick={handleApply} disabled={isSubmitting || previewChanges === 0}>
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Applying...
+                  </>
+                ) : (
+                  `Apply ${previewChanges} change${previewChanges === 1 ? '' : 's'}`
+                )}
+              </Button>
+            </>
           ) : (
             <>
               <Button variant="outline" onClick={handleClose}>
                 Cancel
               </Button>
               <Button
-                onClick={form.handleSubmit(handleSubmit)}
+                onClick={form.handleSubmit(handlePreview)}
                 disabled={isSubmitting}
               >
                 {isSubmitting ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Updating...
+                    Previewing...
                   </>
                 ) : (
-                  'Apply Changes'
+                  'Preview changes'
                 )}
               </Button>
             </>

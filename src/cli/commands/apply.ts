@@ -17,6 +17,7 @@ import {
   parseRun,
   serializeRun,
   summarizeRun,
+  appLabel,
   type ApplyRun,
   type AppRef,
   type ChangeSet,
@@ -24,6 +25,8 @@ import {
 import { stringFlag } from '../args';
 import { adapterForApp, appleAdapter, assertExpectedApp, playAdapter, readInputFile, writeOutputFileAtomic, type CommandContext, type CommandResult } from '../context';
 import { CliError, EXIT_ERROR, EXIT_OK, UsageError } from '../errors';
+import { redactJsonValue } from '../redact';
+import { countBy, describeCounts } from '../format';
 import { header, readWorkspacePlan } from './workspace';
 
 /**
@@ -44,6 +47,36 @@ export function defaultRunFile(planPath: string): string {
  */
 export const BASE_PRICE_NOTE =
   "App Store base prices rely on two behaviours not yet confirmed on a test app: that an immediate price replaces the territory's older entries, and that a second scheduled price can be created before the old one is deleted. Try a base-price plan on a test app first.";
+
+/** What a plan will do, for the person confirming it at a terminal */
+export function applySummary(changeSet: ChangeSet): string[] {
+  const baseOps = changeSet.ops.filter((op) => !isOfferOp(op));
+  const deletes = changeSet.ops.filter((op) => isOfferOp(op) && op.kind === 'deleteOffer').length;
+  const moves = baseOps.filter((op) => op.platform === 'apple' && op.options?.preserveCurrentPrice === false && op.after).map((op) => op.target.territory);
+  return [
+    `Plan ${changeSet.id} for ${appLabel(changeSet.app)}: ${changeSet.ops.length} ${changeSet.ops.length === 1 ? 'op' : 'ops'}${changeSet.ops.length ? ` (${describeCounts(countBy(changeSet.ops, (op) => op.kind))})` : ''}`,
+    ...(baseOps.length > 0 ? [`  Base prices: ${baseOps.length} ${baseOps.length === 1 ? 'op' : 'ops'}`] : []),
+    ...(deletes > 0 ? [`  Deletes ${deletes} ${deletes === 1 ? 'offer' : 'offers'}`] : []),
+    ...(moves.length > 0 ? [`  MOVES EXISTING SUBSCRIBERS to the new price (preserveCurrentPrice: false): ${[...new Set(moves)].sort().join(', ')}`] : []),
+  ];
+}
+
+/**
+ * At a terminal: always show the summary and require the expected answer
+ * typed back, before any credential is loaded; --yes is refused there (it is
+ * for CI, where an agent's relayed command can't skip the person's review).
+ * Elsewhere (CI, pipes) nothing is asked.
+ */
+async function confirmAtTerminal(ctx: CommandContext, lines: string[], expected: string, what: string): Promise<void> {
+  if (!ctx.ask) return;
+  if (ctx.flags.yes === true) {
+    throw new UsageError('--yes is for non-interactive runs (CI). At a terminal, apply always shows what the plan does and asks you to confirm; run it without --yes.');
+  }
+  const answer = await ctx.ask(lines, `Type ${what} to apply, anything else cancels: `);
+  if (answer?.trim() !== expected) throw new CliError('Not applied: the confirmation typed did not match. Nothing was read or sent.', 'NOT_CONFIRMED');
+}
+
+const appIdOf = (app: AppRef) => ('bundleId' in app ? app.bundleId : app.packageName);
 
 export async function applyCommand(ctx: CommandContext): Promise<CommandResult> {
   const workspacePlan = stringFlag(ctx.flags, 'workspace-plan');
@@ -93,6 +126,8 @@ export async function applyCommand(ctx: CommandContext): Promise<CommandResult> 
     }
   }
 
+  await confirmAtTerminal(ctx, applySummary(changeSet), appIdOf(changeSet.app), `the app's ${'bundleId' in changeSet.app ? 'bundle ID' : 'package name'} (${appIdOf(changeSet.app)})`);
+
   // The adapter is for the plan's own app; the executor checks the plan against it again (APP_MISMATCH)
   const adapter = 'bundleId' in changeSet.app ? await appleAdapter(ctx, changeSet.app.bundleId) : await playAdapter(ctx, changeSet.app.packageName);
   let saved = '';
@@ -106,7 +141,8 @@ export async function applyCommand(ctx: CommandContext): Promise<CommandResult> 
     ...(ctx.flags['force-delete'] === true ? { force: { deleteOffers: true } } : {}),
     // Saved before and after every write: a crash leaves a log that can be resumed
     onUpdate: async (snapshot) => {
-      saved = await writeOutputFileAtomic(ctx, runOut, serializeRun(snapshot));
+      // Store error messages end up in the log: scrubbed like everything printed, string by string
+      saved = await writeOutputFileAtomic(ctx, runOut, serializeRun(redactJsonValue(snapshot, ctx.redactor)));
     },
     now: () => ctx.now().toISOString(),
   });
@@ -185,6 +221,14 @@ async function applyWorkspaceCommand(ctx: CommandContext, indexPath: string): Pr
     throw new UsageError(`Run logs already exist (${blocked.join(', ')}). Resume them with --resume-runs, or pass --force to start over and replace them`);
   }
 
+  const appIds = [...new Set(withOps.map((p) => JSON.stringify(p.changeSet.app)))];
+  await confirmAtTerminal(
+    ctx,
+    [`Workspace plan ${indexPath}: ${withOps.length} plans for ${appIds.length} ${appIds.length === 1 ? 'app' : 'apps'}`, ...withOps.flatMap((p) => applySummary(p.changeSet))],
+    String(appIds.length),
+    `the number of apps (${appIds.length})`
+  );
+
   const text: string[] = [`Workspace plan ${indexPath}: ${withOps.length} of ${plans.length} plans have changes`];
   const runs: Array<{ file: string; appId: string; app: AppRef; status: string; run?: ApplyRun }> = [];
   let stopped = false;
@@ -218,7 +262,7 @@ async function applyWorkspaceCommand(ctx: CommandContext, indexPath: string): Pr
       ...(earlier ? { run: earlier } : {}),
       ...(ctx.flags['force-delete'] === true ? { force: { deleteOffers: true } } : {}),
       onUpdate: async (snapshot) => {
-        saved = await writeOutputFileAtomic(ctx, runPath, serializeRun(snapshot));
+        saved = await writeOutputFileAtomic(ctx, runPath, serializeRun(redactJsonValue(snapshot, ctx.redactor)));
       },
       now: () => ctx.now().toISOString(),
     });

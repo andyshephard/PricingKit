@@ -1,12 +1,4 @@
 import type { ServiceAccountCredentials } from './types';
-import {
-  encrypt,
-  decrypt,
-  isEncryptionAvailable,
-  isPlaintextSessionAllowed,
-  MissingEncryptionKeyError,
-  MISSING_ENCRYPTION_KEY_MESSAGE,
-} from '../encryption';
 import { TokenCache, hashCredentialFields } from '../token-cache';
 import { ApiError, getErrorStatus, isRetryableStatus, toApiError } from '../utils/api-error';
 import type { RequestBudget } from '../utils/request-budget';
@@ -53,7 +45,77 @@ function base64UrlEncodeBytes(bytes: ArrayBuffer): string {
     .replace(/=/g, '');
 }
 
+/** Service account keys PricingKit accepts: RSA of 2048 to 4096 bits (Google issues 2048) */
+export const MIN_RSA_KEY_BITS = 2048;
+export const MAX_RSA_KEY_BITS = 4096;
+const RSA_ENCRYPTION_OID = [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01];
+
+/** One DER TLV: the content's start and end, and where the next one starts */
+function derItem(der: Uint8Array, pos: number, tag: number): { start: number; end: number } {
+  if (der[pos] !== tag) throw new Error('unexpected DER tag');
+  let len = der[pos + 1];
+  let start = pos + 2;
+  if (len === undefined) throw new Error('truncated DER');
+  if (len & 0x80) {
+    const n = len & 0x7f;
+    if (n === 0 || n > 3) throw new Error('unsupported DER length');
+    len = 0;
+    for (let i = 0; i < n; i++) len = (len << 8) | der[start + i];
+    start += n;
+  }
+  const end = start + len;
+  if (end > der.length) throw new Error('truncated DER');
+  return { start, end };
+}
+
+/**
+ * The modulus size in bits of a PKCS#8 RSA private key in PEM, read from its
+ * DER without importing it (importing a huge key costs real CPU), or null
+ * when it isn't one.
+ */
+export function rsaPrivateKeyBits(pem: string): number | null {
+  if (typeof pem !== 'string' || pem.length > 8192) return null;
+  const match = /-----BEGIN PRIVATE KEY-----([\s\S]+?)-----END PRIVATE KEY-----/.exec(pem);
+  if (!match) return null;
+  const body = match[1].replace(/\s/g, '');
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(body)) return null;
+  const der = new Uint8Array(Buffer.from(body, 'base64'));
+  try {
+    const outer = derItem(der, 0, 0x30);
+    const version = derItem(der, outer.start, 0x02);
+    const algorithm = derItem(der, version.end, 0x30);
+    const oid = derItem(der, algorithm.start, 0x06);
+    const oidBytes = der.subarray(oid.start, oid.end);
+    if (oidBytes.length !== RSA_ENCRYPTION_OID.length || RSA_ENCRYPTION_OID.some((b, i) => oidBytes[i] !== b)) return null;
+    const octets = derItem(der, algorithm.end, 0x04);
+    const rsaKey = derItem(der, octets.start, 0x30);
+    const rsaVersion = derItem(der, rsaKey.start, 0x02);
+    const modulus = derItem(der, rsaVersion.end, 0x02);
+    let first = modulus.start;
+    while (first < modulus.end && der[first] === 0) first++;
+    if (first === modulus.end) return null;
+    return (modulus.end - first - 1) * 8 + (32 - Math.clz32(der[first]));
+  } catch {
+    return null;
+  }
+}
+
+/** True for an RSA key PricingKit will import (2048 to 4096 bits) */
+export function isAcceptedServiceAccountKey(pem: string): boolean {
+  const bits = rsaPrivateKeyBits(pem);
+  return bits !== null && bits >= MIN_RSA_KEY_BITS && bits <= MAX_RSA_KEY_BITS;
+}
+
 async function importPrivateKey(pemKey: string): Promise<CryptoKey> {
+  // Checked before importing: Web Crypto spends time proportional to the key size
+  if (!isAcceptedServiceAccountKey(pemKey)) {
+    throw new GooglePlayApiError({
+      code: 400,
+      message: 'The service account key must be an RSA private key of 2048 to 4096 bits',
+      errors: [{ reason: 'unsupportedKey' }],
+      retryable: false,
+    });
+  }
   const pemBody = pemKey
     .replace(/-----BEGIN PRIVATE KEY-----/, '')
     .replace(/-----END PRIVATE KEY-----/, '')
@@ -389,38 +451,3 @@ export function validateServiceAccountJson(json: unknown): json is ServiceAccoun
   return true;
 }
 
-// Cookie-based encrypted session management
-// Credentials are encrypted and stored directly in the cookie (no server-side state)
-
-export async function createSession(credentials: ServiceAccountCredentials): Promise<string> {
-  if (isEncryptionAvailable()) {
-    return await encrypt(JSON.stringify(credentials));
-  } else if (isPlaintextSessionAllowed()) {
-    console.warn('Warning: ENCRYPTION_KEY not set. Credentials stored in plaintext cookie (next dev only).');
-    return Buffer.from(JSON.stringify(credentials)).toString('base64');
-  } else {
-    throw new MissingEncryptionKeyError();
-  }
-}
-
-export async function getSessionCredentials(cookieValue: string): Promise<ServiceAccountCredentials | null> {
-  try {
-    if (isEncryptionAvailable()) {
-      const decrypted = await decrypt(cookieValue);
-      return JSON.parse(decrypted) as ServiceAccountCredentials;
-    } else if (isPlaintextSessionAllowed()) {
-      const decoded = Buffer.from(cookieValue, 'base64').toString('utf-8');
-      return JSON.parse(decoded) as ServiceAccountCredentials;
-    } else {
-      console.error(MISSING_ENCRYPTION_KEY_MESSAGE);
-      return null;
-    }
-  } catch (error) {
-    console.error('Error decrypting session credentials:', error);
-    return null;
-  }
-}
-
-export async function deleteSession(): Promise<void> {
-  // No-op: cookie deletion is handled by the auth route
-}

@@ -339,3 +339,33 @@ describe('deleteRegionPrice (one-time products)', () => {
     ).rejects.toBe(googleError);
   });
 });
+
+describe('writing only if the price is still the expected one', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+  });
+
+  it('base plan: refuses with PRICE_CHANGED when the fresh read differs, sending no PATCH', async () => {
+    serve(subscriptionFixture());
+    const newUs = { regionCode: 'US', price: { currencyCode: 'USD', units: '10' } } as never;
+    await expect(
+      updateBasePlanPrices(credentials, 'com.example.app', 'premium', 'monthly', [newUs], {}, { expected: { US: { currencyCode: 'USD', units: '9', nanos: 980000000 } } })
+    ).rejects.toMatchObject({ status: 409, code: 'PRICE_CHANGED' });
+    expect(fetchMock.mock.calls.some((c) => (c as Call)[2]?.method === 'PATCH')).toBe(false);
+    // The previewed price still there: written
+    await updateBasePlanPrices(credentials, 'com.example.app', 'premium', 'monthly', [newUs], {}, { expected: { US: { currencyCode: 'USD', units: '9', nanos: 990000000 } } });
+    expect(patchCall().body.basePlans[0].regionalConfigs.find((r) => r.regionCode === 'US')?.price).toEqual({ currencyCode: 'USD', units: '10' });
+  });
+
+  it('one-time product: refuses with PRICE_CHANGED when a region lost its price or changed', async () => {
+    serve({
+      packageName: 'com.example.app',
+      productId: 'coins',
+      purchaseOptions: [{ purchaseOptionId: 'default', regionalPricingAndAvailabilityConfigs: [{ regionCode: 'US', availability: 'AVAILABLE', price: { currencyCode: 'USD', units: '12' } }] }],
+    });
+    await expect(
+      updateInAppProductPrices(credentials, 'com.example.app', 'coins', { US: { currencyCode: 'USD', units: '13' } }, undefined, {}, { expected: { US: { currencyCode: 'USD', units: '11' }, GB: { currencyCode: 'GBP', units: '9' } } })
+    ).rejects.toThrow(/PRICE_CHANGED: .* in GB, US/);
+    expect(fetchMock.mock.calls.some((c) => (c as Call)[2]?.method === 'PATCH')).toBe(false);
+  });
+});

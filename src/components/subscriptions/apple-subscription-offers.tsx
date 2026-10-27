@@ -1,18 +1,15 @@
 'use client';
 
 import { useState } from 'react';
-import { AlertTriangle, ChevronDown, ChevronRight, Loader2, Plus, RefreshCw, Tag } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, Plus, Tag } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { getTerritoryByAlpha2 } from '@/lib/apple-connect/territories';
-import { defaultOfferBasis, type AppleOfferKind, type OfferDriftStatus, type StoreOffer } from '@/lib/pricing';
-import { useAppleOfferDrift, useAppleSubscriptionOffers, type OfferDriftQuery } from '@/hooks/use-apple-subscription-offers';
+import type { StoreOffer } from '@/lib/pricing';
+import { useAppleSubscriptionOffers } from '@/hooks/use-apple-subscription-offers';
 import { AppleOfferRuleDialog } from './apple-offer-rule-dialog';
 
 const KIND_LABELS: Record<string, string> = {
@@ -37,15 +34,6 @@ const DURATION_LABELS: Record<string, string> = {
   P3M: '3 months',
   P6M: '6 months',
   P1Y: '1 year',
-};
-
-const STATUS_VARIANTS: Record<OfferDriftStatus, 'default' | 'secondary' | 'destructive' | 'outline'> = {
-  match: 'secondary',
-  mismatch: 'destructive',
-  missing: 'destructive',
-  extra: 'outline',
-  unresolved: 'outline',
-  unreadable: 'outline',
 };
 
 function territoryName(alpha2: string): string {
@@ -93,135 +81,20 @@ function OfferPrices({ offer }: { offer: StoreOffer }) {
   );
 }
 
-function DriftCheck({ subscriptionId, offer }: { subscriptionId: string; offer: StoreOffer }) {
-  const [percent, setPercent] = useState('50');
-  // A pay-up-front offer is priced for its whole duration
-  const [basis, setBasis] = useState<OfferDriftQuery['basis']>(defaultOfferBasis(offer.mode));
-  const [snap, setSnap] = useState<OfferDriftQuery['snap']>('nearest');
-  const [query, setQuery] = useState<OfferDriftQuery | null>(null);
-  const { data, isFetching, error, refetch } = useAppleOfferDrift(subscriptionId, query);
+/**
+ * Re-price a promotional offer to "X% of each territory's current price".
+ * The dialog asks for the rule, previews every territory (a dry-run plan) and
+ * applies only after a confirm step.
+ */
+function UpdateToRule({ subscriptionId, offer }: { subscriptionId: string; offer: StoreOffer }) {
   const [updating, setUpdating] = useState(false);
-  const report = data?.report;
-  const drifted = report?.territories.filter((t) => t.status !== 'match') ?? [];
-
   return (
-    <div className="space-y-3 rounded border p-3">
-      <p className="text-sm font-medium">Check against rule</p>
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="space-y-1">
-          <Label htmlFor={`pct-${offer.storeId}`}>Percent of current price</Label>
-          <Input id={`pct-${offer.storeId}`} className="w-24" inputMode="decimal" value={percent} onChange={(e) => setPercent(e.target.value.trim())} />
-        </div>
-        <div className="space-y-1">
-          <Label>Basis</Label>
-          <Select value={basis} onValueChange={(v) => setBasis(v as OfferDriftQuery['basis'])}>
-            <SelectTrigger className="w-48">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="perPeriod">Per billing period</SelectItem>
-              <SelectItem value="totalOverDuration">Total over offer duration</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1">
-          <Label>Snap</Label>
-          <Select value={snap} onValueChange={(v) => setSnap(v as OfferDriftQuery['snap'])}>
-            <SelectTrigger className="w-32">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="nearest">Nearest</SelectItem>
-              <SelectItem value="floor">Round down</SelectItem>
-              <SelectItem value="ceil">Round up</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <Button
-          variant="outline"
-          disabled={isFetching || !/^\d+(\.\d{1,4})?$/.test(percent)}
-          onClick={() => setQuery({ kind: offer.kind as AppleOfferKind, offer: offer.storeId, percent, basis, snap })}
-        >
-          {isFetching && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          Check
-        </Button>
-        {query && (
-          <Button variant="ghost" disabled={isFetching} onClick={() => refetch()}>
-            <RefreshCw className="mr-2 h-4 w-4" />
-            Re-check
-          </Button>
-        )}
-      </div>
-
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
-      {report && (
-        <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <Badge variant={report.inSync ? 'secondary' : 'destructive'}>{report.inSync ? 'In step with the rule' : 'Drifted'}</Badge>
-            {!report.inSync && offer.kind === 'apple.promo' && query && (
-              <Button size="sm" variant="outline" onClick={() => setUpdating(true)}>
-                Update prices to rule
-              </Button>
-            )}
-            {(Object.entries(report.summary) as Array<[OfferDriftStatus, number]>)
-              .filter(([, n]) => n > 0)
-              .map(([status, n]) => (
-                <Badge key={status} variant={STATUS_VARIANTS[status]}>
-                  {n} {status}
-                </Badge>
-              ))}
-          </div>
-          {report.problems?.map((p) => (
-            <p key={p} className="text-sm text-destructive">
-              {p}
-            </p>
-          ))}
-          {drifted.length > 0 && (
-            <div className="max-h-80 overflow-auto rounded border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-20">Region</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Offer now</TableHead>
-                    <TableHead>Rule gives</TableHead>
-                    <TableHead>Current price</TableHead>
-                    <TableHead>Detail</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {drifted.map((e) => (
-                    <TableRow key={e.territory}>
-                      <TableCell className="font-mono">{e.territory}</TableCell>
-                      <TableCell>
-                        <Badge variant={STATUS_VARIANTS[e.status]}>{e.status}</Badge>
-                      </TableCell>
-                      <TableCell>{e.actual ? `${e.actual.amount} ${e.actual.currency}` : '–'}</TableCell>
-                      <TableCell>{e.expected ? `${e.expected.amount} ${e.expected.currency} (exact ${e.expected.exactTarget})` : '–'}</TableCell>
-                      <TableCell>{e.expected ? e.expected.currentPrice : '–'}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{e.reason ?? ''}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-          {updating && query && (
-            <AppleOfferRuleDialog
-              subscriptionId={subscriptionId}
-              target={{ kind: 'update', offer, rule: { percent: query.percent, basis: query.basis, snap: query.snap } }}
-              open={updating}
-              onOpenChange={setUpdating}
-            />
-          )}
-          {report.warnings && report.warnings.length > 0 && (
-            <p className="text-xs text-muted-foreground">
-              {report.warnings.length} {report.warnings.length === 1 ? 'territory snaps' : 'territories snap'} more than{' '}
-              {Number(report.deviationThreshold) * 100}% from the exact target.
-            </p>
-          )}
-        </div>
-      )}
+    <div className="flex items-center gap-3 rounded border p-3">
+      <p className="text-sm text-muted-foreground">Re-price this promotional offer to a percent of each territory&apos;s current price.</p>
+      <Button size="sm" variant="outline" onClick={() => setUpdating(true)}>
+        Update prices to rule
+      </Button>
+      {updating && <AppleOfferRuleDialog subscriptionId={subscriptionId} target={{ kind: 'update', offer }} open={updating} onOpenChange={setUpdating} />}
     </div>
   );
 }
@@ -230,7 +103,7 @@ function OfferRow({ subscriptionId, offer }: { subscriptionId: string; offer: St
   const [open, setOpen] = useState(false);
   const priced = Object.values(offer.prices).length;
   const problems = (offer.problems?.length ?? 0) + Object.keys(offer.territoryProblems ?? {}).length;
-  const canCheck = offer.mode !== null && offer.mode !== 'FREE_TRIAL' && offer.duration !== null;
+  const canReprice = offer.kind === 'apple.promo' && offer.mode !== null && offer.mode !== 'FREE_TRIAL' && offer.duration !== null;
   return (
     <>
       <TableRow className="cursor-pointer" onClick={() => setOpen(!open)}>
@@ -278,7 +151,7 @@ function OfferRow({ subscriptionId, offer }: { subscriptionId: string; offer: St
               </p>
             )}
             <OfferPrices offer={offer} />
-            {canCheck && <DriftCheck subscriptionId={subscriptionId} offer={offer} />}
+            {canReprice && <UpdateToRule subscriptionId={subscriptionId} offer={offer} />}
           </TableCell>
         </TableRow>
       )}
@@ -288,7 +161,7 @@ function OfferRow({ subscriptionId, offer }: { subscriptionId: string; offer: St
 
 /**
  * A subscription's offers. Promotional offers can be created from a
- * percent-of-current rule, and a drifted one re-priced to its rule; every
+ * percent-of-current rule, and an existing one re-priced to a rule; every
  * write is previewed first and applied behind a confirm dialog.
  */
 export function AppleSubscriptionOffers({ subscriptionId }: { subscriptionId: string }) {

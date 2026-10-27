@@ -2,6 +2,7 @@ import { googlePlayFetch } from './client';
 import type { RequestContext } from '../utils/request-budget';
 import type { ServiceAccountCredentials, InAppProduct, Money } from './types';
 import { isZeroDecimalCurrency, roundDownToPriceEnding } from '../pricing/rounding';
+import { assertExpectedPrices } from './expected-prices';
 
 // Type for regional pricing config
 interface RegionalPricingConfig {
@@ -214,7 +215,8 @@ export async function updateInAppProductPrices(
   productId: string,
   prices: Record<string, Money>,
   _defaultPrice?: Money,
-  ctx: RequestContext = {}
+  ctx: RequestContext = {},
+  options: { expected?: Record<string, Money> } = {}
 ): Promise<InAppProduct> {
   // Fetch current product to preserve untouched fields and existing availability.
   const currentProduct = await getInAppProductRaw(credentials, packageName, productId, ctx);
@@ -225,6 +227,8 @@ export async function updateInAppProductPrices(
   }
 
   const existingConfigs = purchaseOptions[0].regionalPricingAndAvailabilityConfigs || [];
+  // With `expected`: nothing is written unless every one of those regions still has that price
+  assertExpectedPrices(Object.fromEntries(existingConfigs.filter((c) => c.regionCode).map((c) => [c.regionCode!, c.price as Money | undefined])), options.expected);
 
   // Only regions present in `prices` change. Every other region is re-sent
   // exactly as fetched (same object, same order). In particular a region that

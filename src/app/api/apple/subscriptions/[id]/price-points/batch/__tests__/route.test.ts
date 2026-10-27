@@ -11,9 +11,13 @@ vi.mock('@/middleware/auth', () => ({
 }));
 
 const getSubscriptionPricePoints = vi.fn();
-vi.mock('@/lib/apple-connect', () => ({
+vi.mock('@/lib/apple-connect', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/apple-connect')>()),
   getSubscriptionPricePoints: (...args: unknown[]) => getSubscriptionPricePoints(...args),
 }));
+
+const assertSubscriptionInApp = vi.fn(async (..._args: unknown[]) => {});
+vi.mock('@/lib/apple-connect/ownership', () => ({ assertSubscriptionInApp: (...args: unknown[]) => assertSubscriptionInApp(...args) }));
 
 import { POST } from '../route';
 
@@ -25,6 +29,7 @@ async function events(response: Response) {
 function request(territories: Record<string, { targetPrice: number; currency: string }>) {
   return new NextRequest('http://localhost/api/apple/subscriptions/123/price-points/batch', {
     method: 'POST',
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ territories }),
   });
 }
@@ -32,6 +37,31 @@ function request(territories: Record<string, { targetPrice: number; currency: st
 // Block body: a function returned from beforeEach runs as a teardown in vitest
 beforeEach(() => {
   getSubscriptionPricePoints.mockReset();
+  assertSubscriptionInApp.mockReset();
+  assertSubscriptionInApp.mockResolvedValue(undefined);
+});
+
+describe('POST price-points/batch: the subscription', () => {
+  it('must be a numeric ID: anything else never reaches the App Store Connect path', async () => {
+    for (const id of ['..', 'v1/apps', '123%2F..%2Fapps', 'abc']) {
+      const res = await POST(request({ US: { targetPrice: 5, currency: 'USD' } }), { params: Promise.resolve({ id }) });
+      expect(res.status, id).toBe(400);
+    }
+    expect(assertSubscriptionInApp).not.toHaveBeenCalled();
+    expect(getSubscriptionPricePoints).not.toHaveBeenCalled();
+  });
+
+  it("must belong to the session's app", async () => {
+    assertSubscriptionInApp.mockRejectedValue(new ApiError('not in app', { status: 409, code: 'APP_MISMATCH', platform: 'apple' }));
+    const res = await POST(request({ US: { targetPrice: 5, currency: 'USD' } }), { params: Promise.resolve({ id: '123' }) });
+    expect(res.status).toBe(409);
+    expect(getSubscriptionPricePoints).not.toHaveBeenCalled();
+  });
+
+  it('takes only territory codes as keys', async () => {
+    const res = await POST(request({ constructor: { targetPrice: 5, currency: 'USD' } }), { params: Promise.resolve({ id: '123' }) });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe('POST price-points/batch', () => {

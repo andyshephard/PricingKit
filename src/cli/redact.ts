@@ -11,6 +11,20 @@ const GOOGLE_ACCESS_TOKEN = /\bya29\.[A-Za-z0-9._~+/=-]+/g;
 
 export const REDACTED = '[redacted]';
 
+/**
+ * A copy of a JSON value with every string redacted. For files written as
+ * JSON (run logs): redacting each string, rather than the serialised text,
+ * keeps the file valid JSON whatever a pattern matches.
+ */
+export function redactJsonValue<T>(value: T, redactor: Redactor): T {
+  if (typeof value === 'string') return redactor.redact(value) as T;
+  if (Array.isArray(value)) return value.map((v) => redactJsonValue(v, redactor)) as T;
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, redactJsonValue(v, redactor)])) as T;
+  }
+  return value;
+}
+
 export class Redactor {
   private secrets: string[] = [];
 

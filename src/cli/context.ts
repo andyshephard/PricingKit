@@ -4,7 +4,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { lstat, open, readFile, rename, rm } from 'node:fs/promises';
+import { lstat, open, readFile, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { AppleAdapter } from '@/lib/adapters/apple';
 import { PlayAdapter } from '@/lib/adapters/play';
@@ -24,6 +24,12 @@ export interface CommandContext {
   cwd: string;
   redactor: Redactor;
   now: () => Date;
+  /**
+   * Interactive only (stdin is a terminal): prints the lines and
+   * the question on stderr and returns the line typed, or null. Undefined
+   * otherwise (CI, pipes, tests without an answer).
+   */
+  ask?: (lines: string[], question: string) => Promise<string | null>;
 }
 
 export interface CommandResult {
@@ -34,10 +40,22 @@ export interface CommandResult {
   text: string;
 }
 
-export async function readInputFile(ctx: CommandContext, path: string, what: string): Promise<string> {
+/** Largest input file the CLI reads (plans, run logs, specs, workspaces) */
+export const MAX_INPUT_FILE_BYTES = 64 * 1024 * 1024;
+
+/**
+ * An input file's text. Only a regular file of at most MAX_INPUT_FILE_BYTES:
+ * a FIFO or device would block the read forever, a huge file exhaust memory.
+ */
+export async function readInputFile(ctx: CommandContext, path: string, what: string, maxBytes: number = MAX_INPUT_FILE_BYTES): Promise<string> {
+  const full = resolve(ctx.cwd, path);
   try {
-    return await readFile(resolve(ctx.cwd, path), 'utf8');
+    const info = await stat(full);
+    if (!info.isFile()) throw new CliError(`Can't read ${what} ${path}: not a regular file`);
+    if (info.size > maxBytes) throw new CliError(`Can't read ${what} ${path}: larger than ${Math.round(maxBytes / 1024 / 1024)} MB`);
+    return await readFile(full, 'utf8');
   } catch (error) {
+    if (error instanceof CliError) throw error;
     const code = (error as { code?: string }).code;
     throw new CliError(`Can't read ${what} ${path}${code ? ` (${code})` : ''}`);
   }

@@ -5,7 +5,8 @@ import { Search, RefreshCw, LogOut } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Breadcrumbs } from './breadcrumbs';
-import { useAuthStore } from '@/store/auth-store';
+import { toast } from 'sonner';
+import { DASHBOARD_AUTH_VERIFIED_KEY, useAuthStore } from '@/store/auth-store';
 import { useQueryClient } from '@tanstack/react-query';
 
 interface HeaderProps {
@@ -27,18 +28,25 @@ export function Header({
   const queryClient = useQueryClient();
   const clearAuth = useAuthStore((state) => state.clearAuth);
 
+  // Signing out clears both store sessions and the saved Open Exchange Rates
+  // key (server cookies), then this tab's state. A failed request is reported,
+  // not treated as signed out.
   const handleLogout = async () => {
+    const endpoints = ['/api/auth', '/api/apple/auth', '/api/settings/exchange-rates'];
+    const results = await Promise.allSettled(endpoints.map((url) => fetch(url, { method: 'DELETE' })));
+    const failed = results.filter((r) => r.status === 'rejected' || !r.value.ok).length;
     try {
-      await Promise.all([
-        fetch('/api/auth', { method: 'DELETE' }),
-        fetch('/api/apple/auth', { method: 'DELETE' }),
-      ]);
-      queryClient.clear();
-      clearAuth();
-      router.push('/setup');
-    } catch (error) {
-      console.error('Logout failed:', error);
+      sessionStorage.removeItem(DASHBOARD_AUTH_VERIFIED_KEY);
+    } catch {
+      // storage unavailable
     }
+    queryClient.clear();
+    clearAuth();
+    if (failed > 0) {
+      toast.error('Sign-out may be incomplete: the server did not confirm it. Close the browser or try again.');
+      return;
+    }
+    router.push('/setup');
   };
 
   return (

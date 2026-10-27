@@ -14,7 +14,7 @@ const googlePlayFetch = vi.fn();
 vi.mock('@/lib/google-play/client', () => ({ googlePlayFetch: (...args: unknown[]) => googlePlayFetch(...args) }));
 
 import { FakeAppleServer, SUB_ID } from '@/lib/adapters/__tests__/fake-apple';
-import { parseChangeSet, PRICING_SPEC_KIND, type BasePriceOp } from '@/lib/pricing';
+import { canonicalJson, fnv1a64, parseChangeSet, PRICING_SPEC_KIND, type BasePriceOp } from '@/lib/pricing';
 import { fakeAppleEnv, FakePlay, run, tempDir, throwawayRsaPem } from './fixtures';
 
 const BUNDLE = 'com.example.app';
@@ -65,11 +65,13 @@ describe('existing subscribers in plans and diff', () => {
     expect(byTerritory.DE).toMatchObject({ classification: 'increase-needs-consent', reasons: [expect.stringMatching(/DE requires consent for any price increase/)] });
 
     const diff = await run(['diff', 'plan.json'], { cwd: tmp.dir });
-    expect(diff.stdout).toMatch(/Proceeds\*\s+Existing subscribers\*/);
+    expect(diff.stdout).toMatch(/Proceeds\*\s+Existing subscribers/);
     expect(diff.stdout).toContain('* planner notes, not covered by the plan hash.');
     expect(diff.stdout).toContain('Planner notes (not covered by the plan hash):');
-    expect(diff.stdout).not.toContain('WARNING');
-    expect(diff.stdout).toMatch(/US\s+setPrice\s+24\.99 USD\s+34\.99 USD\s+\+40\.02%\s+17\.49 -> 24\.49\s+notified, no consent/);
+    // preserveCurrentPrice: false is in the ops (covered by the hash): diff always says so
+    expect(diff.stdout).toMatch(/WARNING: 3 App Store changes move EXISTING SUBSCRIBERS to the new price \(preserveCurrentPrice: false\)/);
+    expect(diff.stdout).not.toMatch(/the plan's note says/);
+    expect(diff.stdout).toMatch(/US\s+setPrice\s+24\.99 USD\s+34\.99 USD\s+\+40\.02%\s+17\.49 -> 24\.49\s+MOVES EXISTING SUBSCRIBERS: notified, no consent/);
     expect(diff.stdout).toMatch(/DE\s+setPrice.*NEEDS CONSENT/);
     expect(diff.stdout).toContain('Existing subscribers: ');
     expect(diff.stdout).toContain("Needs consent (subscribers who don't agree are lost at renewal): DE");
@@ -120,17 +122,27 @@ describe('existing subscribers in plans and diff', () => {
 });
 
 describe('plan schema versions', () => {
-  it('a version 1 plan (no planner notes) keeps its confirm hash and still applies', async () => {
+  it('every plan version is confirmed with the SHA-256 hash: a plan relabelled as version 1 or 2 gains nothing', async () => {
     writeSpec([{ product, targets: { type: 'fixed', prices: { US: '29.99' } } }]);
     expect((await plan()).code).toBe(2);
-    const v2 = readPlan();
-    expect(v2.schemaVersion).toBe(2);
-    const { priceChanges: _notes, dataFreshness: _data, ...rest } = v2;
+    const v3 = readPlan();
+    expect(v3.schemaVersion).toBe(3);
+    const sha = JSON.parse((await run(['diff', 'plan.json', '--json'], { cwd: tmp.dir })).stdout).changeSetHash;
+    expect(sha).toMatch(/^[0-9a-f]{32}$/);
+    const fnv = fnv1a64(canonicalJson({ app: v3.app, ops: v3.ops }));
+
+    const { priceChanges: _notes, dataFreshness: _data, ...rest } = v3;
     writeFileSync(join(tmp.dir, 'v1.json'), JSON.stringify({ ...rest, schemaVersion: 1 }));
-    const diff = JSON.parse((await run(['diff', 'v1.json', '--json'], { cwd: tmp.dir })).stdout);
-    const hash = JSON.parse((await run(['diff', 'plan.json', '--json'], { cwd: tmp.dir })).stdout).changeSetHash;
-    expect(diff.changeSetHash).toBe(hash);
-    expect((await run(['apply', 'v1.json', '--confirm', hash, '--allow-base-prices'], { env: appleEnv, cwd: tmp.dir })).code).toBe(0);
+    writeFileSync(join(tmp.dir, 'v2.json'), JSON.stringify({ ...v3, schemaVersion: 2 }));
+    for (const file of ['v1.json', 'v2.json']) {
+      const diff = await run(['diff', file], { cwd: tmp.dir });
+      expect(diff.stdout).toContain(`Plan hash: ${sha}`);
+      expect(diff.stdout).not.toContain('FNV');
+      expect((await run(['apply', file, '--confirm', fnv, '--allow-base-prices'], { env: appleEnv, cwd: tmp.dir })).code).toBe(1);
+    }
+    expect(apple.writes()).toEqual([]);
+    const applied = await run(['apply', 'v1.json', '--confirm', sha, '--allow-base-prices'], { env: appleEnv, cwd: tmp.dir });
+    expect(applied.code).toBe(0);
     writeFileSync(join(tmp.dir, 'v9.json'), JSON.stringify({ ...rest, schemaVersion: 9 }));
     const newer = await run(['diff', 'v9.json', '--json'], { cwd: tmp.dir });
     expect(newer.code).toBe(1);
@@ -163,7 +175,7 @@ describe('proceeds targets', () => {
     expect(op.after).toEqual({ currency: 'USD', amount: '30' });
     expect(changeSet.priceChanges?.[0]).toMatchObject({ tax: '0', proceeds: { after: '25.5', estimated: true, commission: '0.15' }, classification: 'increase-to-new-subscribers-only', ifMigrated: 'opt-out-possible' });
     const diff = await run(['diff', 'plan.json'], { cwd: tmp.dir });
-    expect(diff.stdout).toMatch(/Proceeds\*\s+Tax\*\s+Existing subscribers\*/);
+    expect(diff.stdout).toMatch(/Proceeds\*\s+Tax\*\s+Existing subscribers/);
     expect(diff.stdout).toMatch(/25\.5 \(est\.\)\s+0\s+new subscribers only \(migrating: opt-out possible\)/);
     expect(diff.stdout).toContain('Google Play proceeds are estimates: (price - tax) x (1 - commission), commission 0.15.');
     expect(play.writes()).toEqual([]);

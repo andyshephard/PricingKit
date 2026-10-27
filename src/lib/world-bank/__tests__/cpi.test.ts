@@ -2,7 +2,7 @@
 // request for concurrent callers, results cached, failures remembered for 5
 // minutes. fetch is stubbed: nothing leaves the process.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { CPI_FAILURE_CACHE_MS, getCpiSeries, resetCpiCacheForTests } from '../ppp';
+import { CPI_FAILURE_CACHE_MS, getCpiSeries, getPPPMultipliers, PPP_FAILURE_CACHE_MS, PPP_MIN_REFRESH_INTERVAL_MS, resetCpiCacheForTests, resetPPPCacheForTests } from '../ppp';
 
 const NOW = new Date('2030-06-01T00:00:00Z');
 const body = [{ page: 1 }, [
@@ -57,6 +57,49 @@ describe('getCpiSeries', () => {
     vi.setSystemTime(new Date(NOW.getTime() + CPI_FAILURE_CACHE_MS + 1000));
     fetchMock.mockResolvedValue(new Response(JSON.stringify(body)));
     await expect(getCpiSeries(2020, NOW)).resolves.toMatchObject({ IN: { 2029: 150 } });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('getPPPMultipliers', () => {
+  const pppBody = () =>
+    new Response(JSON.stringify([{ page: 1 }, [
+      { countryiso3code: 'USA', date: '2029', value: 1 },
+      { countryiso3code: 'IND', date: '2029', value: 20 },
+    ]]));
+
+  beforeEach(() => {
+    resetPPPCacheForTests();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('concurrent callers share one request', async () => {
+    fetchMock.mockImplementation(async () => pppBody());
+    const results = await Promise.all([getPPPMultipliers(), getPPPMultipliers(), getPPPMultipliers()]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(results[1]).toBe(results[0]);
+  });
+
+  it('remembers a failure for 5 minutes', async () => {
+    fetchMock.mockRejectedValue(new Error('down'));
+    await expect(getPPPMultipliers()).rejects.toThrow();
+    const calls = fetchMock.mock.calls.length;
+    await expect(getPPPMultipliers()).rejects.toThrow();
+    await expect(getPPPMultipliers(true)).rejects.toThrow();
+    expect(fetchMock.mock.calls.length).toBe(calls);
+    vi.setSystemTime(NOW.getTime() + PPP_FAILURE_CACHE_MS + 1);
+    fetchMock.mockImplementation(async () => pppBody());
+    await expect(getPPPMultipliers()).resolves.toMatchObject({ baseYear: 2029 });
+  });
+
+  it('honours a forced refresh at most once per 10 minutes', async () => {
+    fetchMock.mockImplementation(async () => pppBody());
+    await getPPPMultipliers();
+    for (let i = 0; i < 5; i++) await getPPPMultipliers(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(NOW.getTime() + PPP_MIN_REFRESH_INTERVAL_MS);
+    await getPPPMultipliers(true);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

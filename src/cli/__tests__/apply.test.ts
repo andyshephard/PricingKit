@@ -223,3 +223,54 @@ describe('pricingkit undo', () => {
     expect(r.stderr).toMatch(/different plan/);
   });
 });
+
+describe('pricingkit apply at a terminal', () => {
+  it('shows what the plan does and applies only when the app ID is typed back', async () => {
+    const { hash } = await planFile();
+    const calls = appleApiRequest.mock.calls.length;
+    const cancelled = await run(['apply', 'plan.json', '--confirm', hash], { env, cwd: tmp.dir, typed: 'yes' });
+    expect(cancelled.code).toBe(1);
+    expect(cancelled.stderr).toMatch(/Plan offers-\S+ for com\.example\.app \(App Store\): 2 ops \(createOffer 2\)/);
+    expect(cancelled.stderr).toMatch(/Type the app's bundle ID \(com\.example\.app\) to apply, anything else cancels:/);
+    expect(cancelled.stderr).toMatch(/Not applied: the confirmation typed did not match\. Nothing was read or sent\./);
+    expect(appleApiRequest.mock.calls.length).toBe(calls);
+    expect(existsSync(join(tmp.dir, 'plan.run.json'))).toBe(false);
+    // End of input cancels too
+    expect((await run(['apply', 'plan.json', '--confirm', hash], { env, cwd: tmp.dir, typed: null })).code).toBe(1);
+
+    const applied = await run(['apply', 'plan.json', '--confirm', hash], { env, cwd: tmp.dir, typed: ' com.example.app ' });
+    expect(applied.code).toBe(0);
+    expect(store.writes()).toHaveLength(2);
+  });
+
+  it('--yes is refused at a terminal; without a terminal (CI) nothing is asked and --yes is accepted', async () => {
+    const { hash } = await planFile();
+    const calls = appleApiRequest.mock.calls.length;
+    const yes = await run(['apply', 'plan.json', '--confirm', hash, '--yes'], { env, cwd: tmp.dir, typed: 'com.example.app' });
+    expect(yes.code).toBe(1);
+    expect(yes.stderr).toMatch(/--yes is for non-interactive runs/);
+    expect(appleApiRequest.mock.calls.length).toBe(calls);
+    const ci = await run(['apply', 'plan.json', '--confirm', hash, '--yes'], { env, cwd: tmp.dir });
+    expect(ci.code).toBe(0);
+    expect(ci.stderr).not.toMatch(/Type the app/);
+  });
+});
+
+describe('run logs', () => {
+  it('are scrubbed like printed output, and stay valid JSON', async () => {
+    const { hash } = await planFile();
+    const keyLine = env.ASC_PRIVATE_KEY.split('\n')[1];
+    appleApiRequest.mockImplementation(async (...args: unknown[]) => {
+      const options = args[2] as { method?: string } | undefined;
+      if (options?.method === 'POST') throw Object.assign(new Error(`upstream echoed ${env.ASC_KEY_ID} and -----BEGIN PRIVATE KEY-----\n${keyLine}`), { status: 400 });
+      return store.handle(...(args as Parameters<typeof store.handle>));
+    });
+    const r = await run(['apply', 'plan.json', '--confirm', hash], { env, cwd: tmp.dir });
+    expect(r.code).toBe(1);
+    const text = readFileSync(join(tmp.dir, 'plan.run.json'), 'utf8');
+    expect(text).not.toContain(env.ASC_KEY_ID);
+    expect(text).not.toContain(keyLine);
+    const log = parseRun(text);
+    expect(log.ops.some((o) => o.error?.message.includes('[redacted]'))).toBe(true);
+  });
+});

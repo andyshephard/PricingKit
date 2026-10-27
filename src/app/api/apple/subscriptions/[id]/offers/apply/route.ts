@@ -12,14 +12,16 @@ import {
   parseRun,
   RunValidationError,
   summarizeRun,
+  confirmHashSchema,
 } from '@/lib/pricing';
 import { appleErrorResponse } from '../../../../_lib/error-response';
+import { rejectCrossSite, readJsonBody, LARGE_BODY_LIMIT } from '@/lib/request-guard';
 
 const bodySchema = z
   .object({
     changeSet: z.unknown(),
     /** changeSetHash of the plan the user reviewed */
-    confirm: z.string().regex(/^[0-9a-f]{16}$/),
+    confirm: confirmHashSchema,
     /** A previous run of this plan, to resume */
     run: z.unknown().optional(),
   })
@@ -39,6 +41,8 @@ const ALLOWED_OFFER_KINDS = new Set(['apple.promo']);
 // hash. Each op is checked against App Store Connect before anything is sent;
 // the response is the run log (pricingkit.applyRun).
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   try {
     const auth = await getAppleAuthFromCookies();
     if (!auth) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
@@ -47,7 +51,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!/^\d+$/.test(id)) {
       return NextResponse.json({ error: 'Use the numeric App Store Connect subscription ID' }, { status: 400 });
     }
-    const parsed = bodySchema.safeParse(await request.json().catch(() => null));
+    const read = await readJsonBody(request, LARGE_BODY_LIMIT);
+    if (!read.ok) return read.response;
+    const parsed = bodySchema.safeParse(read.body);
     if (!parsed.success) {
       return NextResponse.json({ error: parsed.error.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`).join('; ') }, { status: 400 });
     }

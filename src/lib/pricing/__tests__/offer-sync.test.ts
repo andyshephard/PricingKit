@@ -1,6 +1,6 @@
 // The sync engine: rules files, re-deriving offers against a plan's target
-// base prices, manual actions, scheduled base prices, the combined drift
-// report and the executor's base-first ordering. Invented products and prices.
+// base prices, manual actions, scheduled base prices
+// and the executor's base-first ordering. Invented products and prices.
 import { describe, it, expect } from 'vitest';
 import {
   applyChangeSet,
@@ -8,7 +8,6 @@ import {
   buildUndoChangeSet,
   changeSetHash as changeSetHashOf,
   checkChangeSetRules,
-  checkRulesDrift,
   InvalidOfferRulesError,
   parseChangeSet,
   parseOfferRules,
@@ -166,16 +165,16 @@ describe('planOfferSync', () => {
     expect(parseChangeSet(serializeChangeSet(result.changeSet))).toEqual(result.changeSet);
   });
 
-  it('on demand (no base plan) re-prices only a drifted offer, against current prices', () => {
+  it('on demand (no base plan) re-prices only an out-of-step offer, against current prices', () => {
     const inSync = sync([rule()], [offer('apple.promo', 'example_half')]);
     expect(inSync.changeSet.ops).toEqual([]);
     expect(inSync.entries[0]).toMatchObject({ action: 'none', pricedAgainst: 'currentPrices' });
 
-    const drifted = sync([rule()], [offer('apple.promo', 'example_half', { US: ['USD', '34.99', 'us-3499'], GB: ['GBP', '24.99', 'gb-2499'] })]);
-    const op = drifted.changeSet.ops[0] as OfferOp;
+    const outOfStep = sync([rule()], [offer('apple.promo', 'example_half', { US: ['USD', '34.99', 'us-3499'], GB: ['GBP', '24.99', 'gb-2499'] })]);
+    const op = outOfStep.changeSet.ops[0] as OfferOp;
     expect(op.kind).toBe('updateOfferPrices');
     expect(op.dependsOn).toBeUndefined();
-    expect(drifted.entries[0].changes).toEqual([{ territory: 'US', before: price('USD', '34.99', 'us-3499'), after: price('USD', '29.99', 'us-2999') }]);
+    expect(outOfStep.entries[0].changes).toEqual([{ territory: 'US', before: price('USD', '34.99', 'us-3499'), after: price('USD', '29.99', 'us-2999') }]);
   });
 
   it('lists offers whose prices are immutable as manual actions and never deletes or re-creates them', () => {
@@ -265,7 +264,7 @@ describe('planOfferSync', () => {
       expect(result.changeSet.warnings).toContainEqual({ opId: op.id, message: expect.stringMatching(/apply as soon as this plan is applied, before the base prices change/) });
     });
 
-    it('warns when the store already holds a scheduled base price the offer will drift from', () => {
+    it('warns when the store already holds a scheduled base price the offer will go out of step with', () => {
       const base = baseState({
         GB: { territory: 'GB', currency: 'GBP', current: price('GBP', '49.99', 'gb-4999'), scheduled: { ...price('GBP', '54.99', 'gb-5499'), startDate: '2030-09-01' } },
       });
@@ -303,38 +302,6 @@ describe('dependsOn validation', () => {
     cs.ops[0] = { ...cs.ops[0], target: { ...cs.ops[0].target, product: other } } as never;
     (cs.ops[0] as { idempotencyKey: string }).idempotencyKey = `setPrice|apple:subscription:${other.id}|US|USD 69.99 us-6999 `;
     expect(checkChangeSetRules(cs)).toContainEqual(expect.stringMatching(/an op on another product/));
-  });
-});
-
-describe('checkRulesDrift', () => {
-  it('reports every offer in the rules file in one document', () => {
-    const report = checkRulesDrift({
-      app,
-      rules: [rule(), rule({ key: 'drifted' }), rule({ key: 'missing' }), rule({ key: 'trial', syncWithBase: false })],
-      products: [
-        productData([
-          offer('apple.promo', 'example_half'),
-          offer('apple.promo', 'drifted', { US: ['USD', '34.99', 'us-3499'], GB: ['GBP', '24.99', 'gb-2499'] }),
-          { ...offer('apple.promo', 'trial'), mode: 'FREE_TRIAL', prices: { US: { currency: 'USD', amount: '0', free: true } } },
-        ]),
-      ],
-      now: '2030-01-01T00:00:00Z',
-    });
-    expect(report).toMatchObject({ kind: 'pricingkit.rulesDrift', schemaVersion: 1, inSync: false, summary: { offers: 4, inSync: 1, drifted: 1, notFound: 1, errors: 1 } });
-    expect(report.offers.map((o) => [o.key, o.status])).toEqual([
-      ['example_half', 'inSync'],
-      ['drifted', 'drifted'],
-      ['missing', 'notFound'],
-      ['trial', 'error'],
-    ]);
-    expect(report.offers[1].report!.territories.find((t) => t.territory === 'US')).toMatchObject({ status: 'mismatch' });
-    expect(report.offers[3].error).toMatchObject({ code: 'OFFER_RULE', message: expect.stringMatching(/free trial/) });
-    expect(report.notChecked).toBeUndefined();
-  });
-
-  it('a rules file whose offers all match is in sync', () => {
-    const report = checkRulesDrift({ app, rules: [rule()], products: [productData([offer('apple.promo', 'example_half')])] });
-    expect(report.inSync).toBe(true);
   });
 });
 

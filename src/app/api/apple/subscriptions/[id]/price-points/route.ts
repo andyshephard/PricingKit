@@ -5,6 +5,8 @@ import {
 } from '@/lib/apple-connect';
 import { appleErrorResponse } from '../../../_lib/error-response';
 import { alpha2ToAlpha3 } from '@/lib/apple-connect/territories';
+import { assertSubscriptionInApp } from '@/lib/apple-connect/ownership';
+import { appleInternalIdSchema } from '@/lib/validation';
 
 // GET /api/apple/subscriptions/[id]/price-points?territory=US
 // Returns available price tiers for a territory
@@ -22,7 +24,16 @@ export async function GET(
     }
 
     const { id } = await params;
+    // Only a numeric subscription ID reaches the App Store Connect path
+    if (!appleInternalIdSchema.safeParse(id).success) {
+      return NextResponse.json({ error: 'Use the numeric App Store Connect subscription ID' }, { status: 400 });
+    }
     const territory = request.nextUrl.searchParams.get('territory') || 'US';
+    if (!/^[A-Z]{2,3}$/.test(territory)) {
+      return NextResponse.json({ error: 'territory must be an ISO 3166-1 code, e.g. GB' }, { status: 400 });
+    }
+    // API keys reach every app of a team: refuse another app's subscription
+    await assertSubscriptionInApp(auth.credentials, id);
 
     // Convert alpha-2 to alpha-3 if needed (Apple API uses alpha-3)
     const alpha3Territory = alpha2ToAlpha3(territory) || territory;

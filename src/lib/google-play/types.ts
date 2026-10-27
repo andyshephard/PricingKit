@@ -1,16 +1,21 @@
 // Google Play Developer API Type Definitions
 
+/**
+ * A Google service account key. Requests need client_email, private_key_id
+ * and private_key; a web session keeps only those and project_id
+ * (src/lib/session-envelope.ts), so the rest is optional here.
+ */
 export interface ServiceAccountCredentials {
-  type: string;
+  type?: string;
   project_id: string;
   private_key_id: string;
   private_key: string;
   client_email: string;
-  client_id: string;
-  auth_uri: string;
-  token_uri: string;
-  auth_provider_x509_cert_url: string;
-  client_x509_cert_url: string;
+  client_id?: string;
+  auth_uri?: string;
+  token_uri?: string;
+  auth_provider_x509_cert_url?: string;
+  client_x509_cert_url?: string;
 }
 
 export interface Money {

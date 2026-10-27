@@ -16,9 +16,8 @@ import { BIG_MAC_INDEX, DEFAULT_BIG_MAC_MULTIPLIER } from '@/lib/pricing/indexes
 import { NETFLIX_PRICE_INDEX, DEFAULT_NETFLIX_MULTIPLIER } from '@/lib/pricing/indexes/netflix';
 import { getExchangeRates } from '@/lib/exchange-rates/client';
 import { FALLBACK_EXCHANGE_RATES } from '@/lib/pricing/indexes/exchange-rates';
-import { hasAuthenticatedSession } from '@/lib/session';
+import { COOKIE_NAMES, hasAuthenticatedSession, readCookie } from '@/lib/session';
 
-const EXCHANGE_RATES_COOKIE = 'exchange_rates_api_key';
 const FALLBACK_RATES_SNAPSHOT_DATE = REFERENCE_DATA.fallbackExchangeRates.asOf;
 
 /**
@@ -61,7 +60,7 @@ export async function GET(request: Request) {
   // Pull user-supplied key from cookie (Settings page) so prod works without a
   // Cloudflare secret. Falls back to env var inside getExchangeRates().
   const cookieStore = await cookies();
-  const userApiKey = cookieStore.get(EXCHANGE_RATES_COOKIE)?.value;
+  const userApiKey = readCookie(cookieStore, COOKIE_NAMES.exchangeRatesKey)?.value;
 
   // This endpoint is public (index checker), but ?refresh=true bypasses the caches
   // and spends upstream API quota, so it requires a signed-in Google or Apple session.

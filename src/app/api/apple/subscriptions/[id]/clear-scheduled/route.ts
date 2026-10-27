@@ -16,6 +16,7 @@ import {
 } from '@/lib/validation';
 import { RequestBudget } from '@/lib/utils/request-budget';
 import { assertSubscriptionInApp } from '@/lib/apple-connect/ownership';
+import { rejectCrossSite } from '@/lib/request-guard';
 
 // Check if the ID is a numeric Apple subscription ID (e.g., "1234567890")
 function isNumericSubscriptionId(id: string): boolean {
@@ -27,6 +28,8 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   try {
     const auth = await getAppleAuthFromCookies();
     if (!auth) {

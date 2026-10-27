@@ -1,7 +1,7 @@
 // AppleAdapter: App Store Connect behind the core's PlatformAdapter interface.
 //
 // Phase 1 covers subscription base prices (current and scheduled). Phase 2a
-// adds subscription offer reads, previews and drift checks; Phase 2b plans
+// adds subscription offer reads and previews; Phase 2b plans
 // and applies offer ops (create, re-price, end, delete). In-app purchase
 // prices come later; the adapter refuses them clearly.
 
@@ -27,15 +27,11 @@ import {
   type TerritoryPriceState,
   appleSubscriptionPeriodToIso,
   assertDerivableOffer,
-  checkOfferDrift,
-  defaultOfferBasis,
-  OfferRuleError,
   deriveOfferPrices,
   type AppleOfferKind,
   type BillingPeriod,
   type Decimal,
   type OfferDerivation,
-  type OfferDriftReport,
   type OfferDuration,
   type OfferMode,
   type OfferTerritoryPrice,
@@ -56,7 +52,6 @@ import {
   type OfferPlan,
   type OfferPlanInput,
   type OfferSpec,
-  checkRulesDrift,
   findRuleOffer,
   planOfferSync,
   productKey,
@@ -65,7 +60,6 @@ import {
   type OfferRules,
   type OfferSyncPlan,
   type OfferSyncProduct,
-  type RulesDriftReport,
   type ScheduledBasePolicy,
 } from '@/lib/pricing';
 import { getSubscriptionOffer, listSubscriptionOffers, listSubscriptionOffersOfKind } from '@/lib/apple-connect/offers';
@@ -542,52 +536,6 @@ export class AppleAdapter implements PlatformAdapter {
     });
   }
 
-  /**
-   * Check an existing offer against its rule: which territories' offer
-   * prices no longer match the rule applied to today's base prices. Returns
-   * null when the subscription has no such offer. An offer the rule can't
-   * apply to (free trial, unknown mode or duration, weeks against months)
-   * is refused with OfferRuleError before any base price or price point is
-   * read. Without a basis, a pay-up-front offer is checked over its whole
-   * duration and any other offer per billing period. Reads only.
-   */
-  async checkOfferDrift(
-    product: ProductRef,
-    options: {
-      kind: AppleOfferKind;
-      offer: string;
-      rule: Omit<PercentOfCurrentRule, 'basis'> & { basis?: PercentOfCurrentRule['basis'] };
-      territories?: 'all' | string[];
-      deviationThreshold?: Decimal;
-    }
-  ): Promise<OfferDriftReport | null> {
-    const offer = await this.fetchOffer(product, options.kind, options.offer);
-    if (!offer) return null;
-    if (offer.mode === null || offer.duration === null || offer.mode === 'FREE_TRIAL') {
-      // Same refusal the core gives, before spending requests on prices and ladders
-      throw new OfferRuleError(
-        offer.mode === 'FREE_TRIAL'
-          ? `Offer ${offer.key} is a free trial; it has no price to check`
-          : `Offer ${offer.key} has an unknown mode or duration; its rule can't be checked`
-      );
-    }
-    const rule: PercentOfCurrentRule = { ...options.rule, basis: options.rule.basis ?? defaultOfferBasis(offer.mode) };
-    const billingPeriod = await this.fetchBillingPeriod(product);
-    assertDerivableOffer(rule, offer, billingPeriod);
-    const base = await this.fetchState(product);
-    const ladders = await this.fetchPriceLadders(product, this.ladderTerritories(base, options.territories));
-    return checkOfferDrift({
-      rule,
-      offer,
-      billingPeriod,
-      base,
-      ladders,
-      territories: options.territories,
-      deviationThreshold: options.deviationThreshold,
-      now: (this.now?.() ?? new Date()).toISOString(),
-    });
-  }
-
   private ladderTerritories(base: ProductPriceState, territories: 'all' | string[] | undefined): string[] {
     return territories === undefined || territories === 'all' ? Object.keys(base.territories) : territories;
   }
@@ -657,28 +605,21 @@ export class AppleAdapter implements PlatformAdapter {
   }
 
   // -------------------------------------------------------------------------
-  // Sync and drift from a rules file (reads only)
+  // Sync from a rules file (reads only)
 
   /**
-   * What sync and drift need for each product a rules file names, each read
-   * once: app ownership, billing period, base prices (or the state a base
-   * plan was made against, from `states`) and the offers of every kind the
-   * rules name. Price points, the expensive read (one request per 10
-   * territories), are read only for offers a rule can price (found, known
-   * terms, not a free trial), and only for their territories:
-   *   sync  - the offer's territories within the rule's `territories`
-   *   drift - the offer's territories, or the rule's list when it has one
-   *           (a listed territory the offer lacks is reported as missing)
-   * For 'sync', products without a syncWithBase rule aren't read at all.
-   * `ladderTerritories` records what was read. Reads only.
+   * What sync needs for each product a rules file names with a syncWithBase
+   * rule, each read once: app ownership, billing period, base prices (or the
+   * state a base plan was made against, from `states`) and the offers of
+   * every kind the rules name. Price points, the expensive read (one request
+   * per 10 territories), are read only for offers a rule can price (found,
+   * known terms, not a free trial), and only for the offer's territories
+   * within the rule's `territories`. Products without a syncWithBase rule
+   * aren't read at all. `ladderTerritories` records what was read. Reads only.
    */
-  async readRuleProducts(
-    rules: OfferRules,
-    options: { states?: ProductPriceState[]; purpose?: 'sync' | 'drift' } = {}
-  ): Promise<OfferSyncProduct[]> {
+  async readRuleProducts(rules: OfferRules, options: { states?: ProductPriceState[] } = {}): Promise<OfferSyncProduct[]> {
     this.assertApp(rules.app);
-    const purpose = options.purpose ?? 'drift';
-    const active = purpose === 'sync' ? rules.offers.filter((r) => r.syncWithBase) : rules.offers;
+    const active = rules.offers.filter((r) => r.syncWithBase);
     const out: OfferSyncProduct[] = [];
     for (const product of ruleProducts({ offers: active })) {
       const id = subscriptionId(product);
@@ -699,7 +640,7 @@ export class AppleAdapter implements PlatformAdapter {
         if (!offer.mode || !offer.duration || offer.mode === 'FREE_TRIAL') continue; // the rule can't price it
         const own = [...Object.keys(offer.prices), ...Object.keys(offer.territoryProblems ?? {})];
         const list = rule.territories && rule.territories !== 'all' ? rule.territories : undefined;
-        const territories = !list ? own : purpose === 'drift' ? list : own.filter((t) => list.includes(t));
+        const territories = !list ? own : own.filter((t) => list.includes(t));
         // A territory without a base price can't be priced; its price points aren't needed
         for (const t of territories) if (base.territories[t]) wanted.add(t);
       }
@@ -725,7 +666,7 @@ export class AppleAdapter implements PlatformAdapter {
     createdAt?: string;
     description?: string;
   }): Promise<OfferSyncPlan> {
-    const products = await this.readRuleProducts(input.rules, { purpose: 'sync', ...(input.states ? { states: input.states } : {}) });
+    const products = await this.readRuleProducts(input.rules, input.states ? { states: input.states } : {});
     return planOfferSync({
       app: input.rules.app,
       rules: input.rules.offers,
@@ -738,20 +679,15 @@ export class AppleAdapter implements PlatformAdapter {
     });
   }
 
-  /** Check every offer in a rules file against its rule; one combined pricingkit.rulesDrift report. Reads only. */
-  async checkRulesDrift(rules: OfferRules): Promise<RulesDriftReport> {
-    const products = await this.readRuleProducts(rules, { purpose: 'drift' });
-    return checkRulesDrift({ app: rules.app, rules: rules.offers, products, now: (this.now?.() ?? new Date()).toISOString() });
-  }
-
   /** The executor's app check: the plan must be for the credentials' app (bundle ID) */
   verifyApp(app: AppRef): void {
     this.assertApp(app);
   }
 
+  /** The plan's app must be the credentials' app; credentials without a bundle ID match nothing */
   private assertApp(app: AppRef): void {
-    if (!('bundleId' in app) || (this.credentials.bundleId && app.bundleId !== this.credentials.bundleId)) {
-      throw new ApiError(`The plan is for ${'bundleId' in app ? app.bundleId : app.packageName}, but the session is for ${this.credentials.bundleId}`, {
+    if (!('bundleId' in app) || !this.credentials.bundleId || app.bundleId !== this.credentials.bundleId) {
+      throw new ApiError(`The plan is for ${'bundleId' in app ? app.bundleId : app.packageName}, but the session is for ${this.credentials.bundleId || 'no app'}`, {
         status: 409,
         code: 'APP_MISMATCH',
         platform: 'apple',

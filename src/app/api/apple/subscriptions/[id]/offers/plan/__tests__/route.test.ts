@@ -26,7 +26,7 @@ vi.mock('@/lib/adapters/apple', () => ({
 import { POST } from '../route';
 
 const call = (body: unknown, id = '123') =>
-  POST(new NextRequest(`http://localhost/api/apple/subscriptions/${id}/offers/plan`, { method: 'POST', body: JSON.stringify(body) }), { params: Promise.resolve({ id }) });
+  POST(new NextRequest(`http://localhost/api/apple/subscriptions/${id}/offers/plan`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }), { params: Promise.resolve({ id }) });
 
 const create = { action: 'create', offerCode: 'example_half', name: 'Half', mode: 'PAY_UP_FRONT', duration: 'P1Y', percent: '50', basis: 'totalOverDuration', snap: 'nearest' };
 

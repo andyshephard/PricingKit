@@ -2,22 +2,40 @@
 // Pure: the platform rules live here so an undo plan can be built offline.
 
 import { computeIdempotencyKey, type BasePriceOp } from './changeset';
+import { compareDecimal } from './decimal';
 
 export type InverseResult =
-  | { op: Omit<BasePriceOp, 'id'> }
+  | { op: Omit<BasePriceOp, 'id'>; /** Something a reviewer of the undo plan must know */ warning?: string }
   | { notReversible: string };
 
+/** An App Store price going up, in the same currency */
+function isIncrease(before: BasePriceOp['before'], after: BasePriceOp['after']): boolean {
+  return Boolean(before && after && before.currency === after.currency && compareDecimal(after.amount, before.amount) > 0);
+}
+
 function make(op: BasePriceOp, kind: BasePriceOp['kind'], before: BasePriceOp['before'], after: BasePriceOp['after']): InverseResult {
+  let options = op.options;
+  let warning: string | undefined;
+  // preserveCurrentPrice: false on a decrease is how the decrease reached existing App Store
+  // subscribers. Copied onto its undo (an increase) it would raise their price too, which needs
+  // their consent in most storefronts. The undo keeps their price unless someone edits it.
+  if (op.platform === 'apple' && options?.preserveCurrentPrice === false && isIncrease(before, after)) {
+    options = { ...options, preserveCurrentPrice: true };
+    warning =
+      `${op.id} moved existing subscribers in ${op.target.territory} to ${before?.amount} ${before?.currency} (preserveCurrentPrice: false). ` +
+      `Its undo raises the price back to ${after?.amount} ${after?.currency} for new subscribers only (preserveCurrentPrice: true): existing subscribers keep the lower price. ` +
+      'To raise theirs too, set preserveCurrentPrice to false on this op and plan for consent.';
+  }
   const inverse: Omit<BasePriceOp, 'id' | 'idempotencyKey'> = {
     kind,
     platform: op.platform,
     target: op.target,
     before,
     after,
-    ...(op.options ? { options: op.options } : {}),
+    ...(options ? { options } : {}),
     note: `undo of ${op.id}`,
   };
-  return { op: { ...inverse, idempotencyKey: computeIdempotencyKey(inverse) } };
+  return { op: { ...inverse, idempotencyKey: computeIdempotencyKey(inverse) }, ...(warning ? { warning } : {}) };
 }
 
 /**

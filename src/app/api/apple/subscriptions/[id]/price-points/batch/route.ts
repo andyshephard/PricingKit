@@ -6,14 +6,17 @@ import {
 } from '@/lib/apple-connect';
 import { appleErrorResponse, getAppleErrorMessage } from '../../../../_lib/error-response';
 import { alpha2ToAlpha3 } from '@/lib/apple-connect/territories';
+import { assertSubscriptionInApp } from '@/lib/apple-connect/ownership';
+import { appleInternalIdSchema, regionCodeSchema } from '@/lib/validation';
 import { executeWithRateLimit, RateLimitError } from '@/lib/utils/rate-limit';
 import { getErrorStatus } from '@/lib/utils/api-error';
 import { createNdjsonStream, NDJSON_HEADERS } from '@/lib/utils/ndjson-stream';
 import { isBudgetExceeded, RequestBudget } from '@/lib/utils/request-budget';
+import { rejectCrossSite, readJsonBody, LARGE_BODY_LIMIT } from '@/lib/request-guard';
 
 const batchSchema = z.object({
   territories: z.record(
-    z.string(),
+    regionCodeSchema,
     z.object({
       targetPrice: z.number().positive(),
       currency: z.string().min(1),
@@ -27,6 +30,8 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   try {
     const auth = await getAppleAuthFromCookies();
     if (!auth) {
@@ -37,16 +42,14 @@ export async function POST(
     }
 
     const { id } = await params;
-
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json(
-        { error: 'Invalid JSON in request body' },
-        { status: 400 }
-      );
+    // Only a numeric subscription ID reaches the App Store Connect path
+    if (!appleInternalIdSchema.safeParse(id).success) {
+      return NextResponse.json({ error: 'Use the numeric App Store Connect subscription ID' }, { status: 400 });
     }
+
+    const read = await readJsonBody(request, LARGE_BODY_LIMIT);
+    if (!read.ok) return read.response;
+    const body = read.body;
 
     const result = batchSchema.safeParse(body);
     if (!result.success) {
@@ -72,6 +75,8 @@ export async function POST(
     const subscriptionId = id;
     // One budget for the whole run (Apple allows ~3600 requests/hour per key)
     const ctx = { budget: new RequestBudget() };
+    // API keys reach every app of a team: refuse another app's subscription
+    await assertSubscriptionInApp(credentials, subscriptionId, ctx);
 
     (async () => {
       try {

@@ -1,6 +1,6 @@
 // PlayAdapter offers end to end against a stateful fake of the Play endpoints
 // (googlePlayFetch is mocked): plan, preview, apply, idempotency, resume,
-// undo, app ownership, budget, and sync and drift for every Play pricing type.
+// undo, app ownership, budget, and sync for every Play pricing type.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('@/lib/google-play/client', () => ({ googlePlayFetch: vi.fn() }));
@@ -16,7 +16,6 @@ import {
   parseOfferRules,
   PlayOfferLifecycleError,
   type OfferSpec,
-  type PlayOfferDriftReport,
   type PlayOfferOp,
   type ProductRef,
 } from '@/lib/pricing';
@@ -321,7 +320,7 @@ describe('app ownership', () => {
     await expect(applyChangeSet(plan.changeSet, { adapter: other, confirm: plan.hash })).rejects.toMatchObject({ code: 'APP_MISMATCH', status: 409 });
     expect(store.calls.length).toBe(calls);
     await expect(other.planOffers({ app, offers: [retentionSpec] })).rejects.toMatchObject({ code: 'APP_MISMATCH' });
-    await expect(other.checkRulesDrift(parseOfferRules({ kind: 'pricingkit.offerRules', schemaVersion: 1, app, offers: [{ product: annual, kind: 'play.offer', key: 'x', pricing: { type: 'play.relativeDiscount', fraction: '0.5' }, syncWithBase: false }] }))).rejects.toMatchObject({ code: 'APP_MISMATCH' });
+    await expect(other.planOfferSync({ rules: parseOfferRules({ kind: 'pricingkit.offerRules', schemaVersion: 1, app, offers: [{ product: annual, kind: 'play.offer', key: 'x', pricing: { type: 'play.relativeDiscount', fraction: '0.5' }, syncWithBase: true }] }) })).rejects.toMatchObject({ code: 'APP_MISMATCH' });
   });
 
   it("fails ops on a base plan that isn't in the app, sending nothing", async () => {
@@ -368,7 +367,7 @@ describe('budget', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Sync and drift
+// Sync
 
 function rules(offers: unknown[]) {
   return parseOfferRules({ kind: 'pricingkit.offerRules', schemaVersion: 1, app, offers });
@@ -385,42 +384,32 @@ function pricedOffer(offerId: string, prices: Record<string, [string, string]>, 
   };
 }
 
-describe('sync and drift for each Play pricing type', () => {
-  it('relative discount: in sync before and after a base change, and listed as following base automatically', async () => {
+describe('sync for each Play pricing type', () => {
+  it('relative discount: nothing to do before or after a base change, listed as following base automatically', async () => {
     store.seed('annual', retentionOfferResource());
     const r = rules([{ product: annual, kind: 'play.offer', key: 'annual-half-off', pricing: { type: 'play.relativeDiscount', fraction: '0.5' }, syncWithBase: true }]);
-    expect((await adapter().checkRulesDrift(r)).inSync).toBe(true);
     store.setBasePrice('annual', 'US', '69.99');
-    const drift = await adapter().checkRulesDrift(r);
-    expect(drift.inSync).toBe(true);
-    expect((drift.offers[0].report as PlayOfferDriftReport).followsBase).toBe(true);
     const sync = await adapter().planOfferSync({ rules: r, createdAt: NOW });
     expect(sync.entries[0].action).toBe('followsBase');
     expect(sync.changeSet.ops).toEqual([]);
-    // A different fraction in the store is drift, and sync puts the rule's back
+    // A different fraction in the store: sync puts the rule's back
     const r40 = rules([{ product: annual, kind: 'play.offer', key: 'annual-half-off', pricing: { type: 'play.relativeDiscount', fraction: '0.4' }, syncWithBase: true }]);
-    const drifted = await adapter().checkRulesDrift(r40);
-    expect(drifted.offers[0].report!.summary).toMatchObject({ mismatch: 3 });
     expect((await adapter().planOfferSync({ rules: r40, createdAt: NOW })).changeSet.ops).toMatchObject([{ kind: 'updateOfferPrices' }]);
   });
 
-  it('percent of current: drifts when the base price changes, and sync re-prices it with Play prices', async () => {
+  it('percent of current: in step until the base price changes, then sync re-prices it with Play prices', async () => {
     store.seed('annual', pricedOffer('annual-half-price', { US: ['USD', '29.99'], GB: ['GBP', '24.99'], JP: ['JPY', '4900'] }));
     const r = rules([{ product: annual, kind: 'play.offer', key: 'annual-half-price', pricing: { type: 'percentOfCurrent', percent: '50', snap: 'nearest' }, syncWithBase: true }]);
-    expect((await adapter().checkRulesDrift(r)).inSync).toBe(true);
+    expect((await adapter().planOfferSync({ rules: r, createdAt: NOW })).changeSet.ops).toEqual([]);
 
     store.setBasePrice('annual', 'US', '69.99');
-    const drift = await adapter().checkRulesDrift(r);
-    const report = drift.offers[0].report as PlayOfferDriftReport;
-    expect(report.territories.find((t) => t.territory === 'US')).toMatchObject({ status: 'mismatch', actual: { amount: '29.99' }, expected: { type: 'price', amount: '34.99' } });
-    expect(report.summary).toMatchObject({ match: 2, mismatch: 1 });
-
     const sync = await adapter().planOfferSync({ rules: r, createdAt: NOW });
     const op = sync.changeSet.ops[0] as PlayOfferOp;
     expect(op).toMatchObject({ kind: 'updateOfferPrices', regionsVersion: '2025/03' });
     expect(op.after!.phases[0].regions.US).toEqual({ type: 'price', currency: 'USD', amount: '34.99' });
+    expect(sync.entries[0].play?.changes.map((c) => c.region)).toEqual(['US']);
     await applyChangeSet(sync.changeSet, { adapter: adapter(), confirm: sync.hash });
-    expect((await adapter().checkRulesDrift(r)).inSync).toBe(true);
+    expect((await adapter().planOfferSync({ rules: r, createdAt: NOW })).changeSet.ops).toEqual([]);
   });
 
   it('percent of current with a base-price plan: offers are derived against the planned prices and wait for them', async () => {
@@ -439,13 +428,11 @@ describe('sync and drift for each Play pricing type', () => {
     expect(store.writes()).toEqual([`PATCH ${PRODUCT}`, `PATCH ${PRODUCT}/basePlans/annual/offers/annual-half-price`]);
   });
 
-  it('fixed prices: drift when they differ from the rule, re-written by sync, and flagged when no longer below the base', async () => {
+  it('fixed prices: re-written by sync when they differ from the rule, and flagged when no longer below the base', async () => {
     store.seed('annual', pricedOffer('annual-fixed', { US: ['USD', '39.99'], GB: ['GBP', '29.99'] }));
     const fixed = (gb: string) =>
       rules([{ product: annual, kind: 'play.offer', key: 'annual-fixed', pricing: { type: 'fixed', prices: { US: '39.99', GB: gb } }, syncWithBase: true }]);
-    expect((await adapter().checkRulesDrift(fixed('29.99'))).inSync).toBe(true);
-    const drift = await adapter().checkRulesDrift(fixed('27.99'));
-    expect((drift.offers[0].report as PlayOfferDriftReport).territories.find((t) => t.territory === 'GB')).toMatchObject({ status: 'mismatch' });
+    expect((await adapter().planOfferSync({ rules: fixed('29.99'), createdAt: NOW })).entries[0].action).toBe('none');
     const sync = await adapter().planOfferSync({ rules: fixed('27.99'), createdAt: NOW });
     expect((sync.changeSet.ops[0] as PlayOfferOp).after!.phases[0].regions.GB).toEqual({ type: 'price', currency: 'GBP', amount: '27.99' });
     // The base drops below the fixed price: that region keeps its price and is listed, not written
@@ -455,18 +442,12 @@ describe('sync and drift for each Play pricing type', () => {
     expect(lowered.changeSet.skipped).toEqual(expect.arrayContaining([expect.objectContaining({ territory: 'US', reason: 'INVALID_TARGET', detail: expect.stringMatching(/not below the base price/) })]));
   });
 
-  it('absolute discount: keeps the amount off across base changes, drifts when the amount differs', async () => {
+  it('absolute discount: keeps the amount off across base changes, re-written when the amount differs', async () => {
     store.seed('annual', pricedOffer('annual-ten-off', { US: ['USD', '10'] }, 'absoluteDiscount'));
     const r = (amount: string) =>
       rules([{ product: annual, kind: 'play.offer', key: 'annual-ten-off', pricing: { type: 'play.absoluteDiscount', amounts: { US: amount } }, territories: ['US'], syncWithBase: true }]);
-    expect((await adapter().checkRulesDrift(r('10'))).inSync).toBe(true);
     store.setBasePrice('annual', 'US', '69.99');
-    const report = (await adapter().checkRulesDrift(r('10'))).offers[0].report as PlayOfferDriftReport;
-    expect(report.inSync).toBe(true);
-    expect(report.territories[0]).toMatchObject({ basePrice: '69.99', offerPrice: '59.99' });
     expect((await adapter().planOfferSync({ rules: r('10'), createdAt: NOW })).entries[0].action).toBe('none');
-    const drift = await adapter().checkRulesDrift(r('15'));
-    expect(drift.offers[0].status).toBe('drifted');
     const sync = await adapter().planOfferSync({ rules: r('15'), createdAt: NOW });
     expect((sync.changeSet.ops[0] as PlayOfferOp).after!.phases[0].regions.US).toEqual({ type: 'absoluteDiscount', currency: 'USD', amount: '15' });
   });
@@ -479,12 +460,9 @@ describe('sync and drift for each Play pricing type', () => {
       { product: annual, kind: 'play.offer', key: 'new-customer-trial', pricing: { type: 'play.relativeDiscount', fraction: '0.5' }, syncWithBase: true },
       { product: annual, kind: 'play.offer', key: 'odd', pricing: { type: 'play.relativeDiscount', fraction: '0.5' }, syncWithBase: true },
     ]);
-    const drift = await adapter().checkRulesDrift(r);
-    expect(drift.offers.map((o) => o.status)).toEqual(['notFound', 'error', 'drifted']);
-    expect(drift.offers[1].error?.message).toMatch(/free trial/);
-    expect((drift.offers[2].report as PlayOfferDriftReport).problems?.join()).toMatch(/unknown field somethingNew/);
     const sync = await adapter().planOfferSync({ rules: r, createdAt: NOW });
     expect(sync.manualActions.map((m) => m.code)).toEqual(['OFFER_NOT_FOUND', 'RULE_NOT_APPLICABLE', 'OFFER_UNREADABLE']);
+    expect(sync.manualActions[1].message).toMatch(/free trial/);
     expect(sync.changeSet.ops).toEqual([]);
   });
 });

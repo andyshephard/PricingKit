@@ -4,7 +4,7 @@
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { UsageError } from './errors';
 
-export const COMMANDS = ['export', 'plan', 'diff', 'offers', 'offer', 'drift', 'parity', 'apply', 'undo'] as const;
+export const COMMANDS = ['export', 'plan', 'diff', 'offers', 'offer', 'parity', 'apply', 'undo'] as const;
 export type CommandName = (typeof COMMANDS)[number];
 
 type OptionSpec = NonNullable<ParseArgsConfig['options']>;
@@ -57,22 +57,6 @@ const OPTIONS: Record<CommandName, OptionSpec> = {
     out: { type: 'string', short: 'o' },
     force: { type: 'boolean' },
   },
-  drift: {
-    ...COMMON,
-    ...APP,
-    rules: { type: 'string' },
-    subscription: { type: 'string' },
-    'base-plan': { type: 'string' },
-    kind: { type: 'string' },
-    offer: { type: 'string' },
-    percent: { type: 'string' },
-    'relative-discount': { type: 'string' },
-    basis: { type: 'string' },
-    snap: { type: 'string' },
-    threshold: { type: 'string' },
-    territories: { type: 'string' },
-    workspace: { type: 'string' },
-  },
   parity: { ...COMMON, workspace: { type: 'string' }, mapping: { type: 'string' } },
   apply: {
     ...COMMON,
@@ -85,6 +69,7 @@ const OPTIONS: Record<CommandName, OptionSpec> = {
     'allow-base-prices': { type: 'boolean' },
     'workspace-plan': { type: 'string' },
     'resume-runs': { type: 'boolean' },
+    yes: { type: 'boolean', short: 'y' },
   },
   undo: { ...COMMON, out: { type: 'string', short: 'o' }, force: { type: 'boolean' }, 'workspace-plan': { type: 'string' } },
 };
@@ -168,6 +153,11 @@ export function stringFlag(flags: Flags, name: string, required = false): string
 
 export type AppSelection = { platform: 'apple'; bundleId: string } | { platform: 'google'; packageName: string };
 
+/** Does the --bundle-id / --package-name on the command line name this app? */
+export function sameApp(selected: AppSelection, app: { bundleId: string } | { packageName: string }): boolean {
+  return selected.platform === 'apple' ? 'bundleId' in app && app.bundleId === selected.bundleId : 'packageName' in app && app.packageName === selected.packageName;
+}
+
 /** Exactly one of --bundle-id (App Store) or --package-name (Google Play) */
 export function appSelection(flags: Flags, required = true): AppSelection | undefined {
   const bundleId = stringFlag(flags, 'bundle-id');
@@ -187,8 +177,8 @@ const SHARED_HELP = `Shared options:
   --budget <n>      Most store requests this run may send (default ${DEFAULT_CLI_BUDGET})
   -h, --help        Help for the command`;
 
-export const MAIN_HELP = `pricingkit: read store prices, plan price and offer changes, check offers for drift,
-and apply reviewed plans. Only "apply" writes to a store, and only with --confirm.
+export const MAIN_HELP = `pricingkit: read store prices, plan price and offer changes, and apply reviewed
+plans. Only "apply" writes to a store, and only with --confirm.
 
 Usage: pricingkit <command> [options]
 
@@ -202,23 +192,21 @@ Commands:
            Google Play offers with their phases, eligibility, tags and regions
   offer    Plan deactivating, activating or deleting one existing offer (writes a plan file
            for "apply"); App Store and Google Play
-  drift    Check offers against their rules (one offer, or every offer in a rules file with
-           --rules, or every app of a workspace with --workspace); App Store and Google Play
   parity   Compare the App Store and Google Play prices of each subscription a workspace maps
            across the stores, territory by territory (read-only)
   apply    Apply a reviewed plan, App Store or Google Play (needs --confirm <plan hash>; base
            prices also need --allow-base-prices); saves the run log
   undo     Turn a plan and its run log into an undo plan (offline), to review and apply
-  mcp      Run an MCP server over stdio for agents: offers, drift, plan and diff tools, and
+  mcp      Run an MCP server over stdio for agents: offers, plan and diff tools, and
            apply_command, which returns the apply command for a person to run (it never
            applies anything). Credentials come from the server's environment.
 
 ${SHARED_HELP}
 
 Exit codes:
-  0  OK (and, for plan, diff and drift: nothing to change)
+  0  OK (and, for plan and diff: nothing to change)
   1  Error: bad arguments, missing credentials, a store error or a spent budget
-  2  Drift found, or the plan has ops
+  2  The plan has ops (or manual actions); parity found a gap
 
 Credentials come only from environment variables:
   App Store Connect: ASC_KEY_ID, ASC_ISSUER_ID, and one of ASC_PRIVATE_KEY (the .p8 contents),
@@ -231,7 +219,7 @@ before anything is read.
 Workspaces (pricingkit.workspace): one file listing several apps, App Store and Google
 Play, each with its spec, rules and offer plan spec, plus parity mappings between an App
 Store subscription and a Google Play base plan. "plan --workspace" writes one plan per app
-and a workspace plan index; diff, apply and undo take --workspace-plan <index>; drift and
+and a workspace plan index; diff, apply and undo take --workspace-plan <index>; parity and
 export take --workspace. A plan never holds ops for two apps.
 
 Spec and rules files are JSON, or YAML when named .yaml or .yml (numbers keep
@@ -407,46 +395,6 @@ refused with the reason and no plan is written (OFFER_LIFECYCLE_REFUSED).
 Exit code 2 when a plan was written.
 
 ${SHARED_HELP}`,
-  drift: `Usage:
-  pricingkit drift --rules <rules.json>
-  pricingkit drift --workspace <workspace file>
-  pricingkit drift --bundle-id <id> --subscription <subscription id>
-                   --kind <kind> --offer <offer id or key> --percent <n>
-                   [--basis perPeriod|totalOverDuration] [--snap nearest|floor|ceil]
-                   [--threshold <0..1>] [--territories all|GB,US,...]
-  pricingkit drift --package-name <name> --subscription <product id> --base-plan <id>
-                   --offer <offer id> (--percent <n> | --relative-discount <0..1>)
-                   [--basis perPeriod|totalOverDuration] [--threshold <0..1>]
-                   [--territories all|GB,US,...]
-
-Checks every territory's offer price against "percent of that territory's
-current price, snapped to its price points" and prints a pricingkit.offerDrift
-report. Without --basis, a pay-up-front offer is checked over its whole
-duration and any other offer per billing period.
-On Google Play, --percent checks a phase priced at that percent of each
-region's base price (made a valid price by Play's own conversion; about one
-request per region), and --relative-discount checks that every region has
-Play's native discount of that fraction ("0.5" = 50% off), which follows the
-base price by itself. A pricingkit.playOfferDrift report is printed.
-With --territories, only those territories are checked; the offer's other
-territories are listed as outOfScope and don't affect the result.
-
-Exit code 2 when the offer is not in sync (any mismatch, missing, extra,
-unresolved or unreadable territory), 0 when every territory matches.
-
-With --rules, checks every offer in a pricingkit.offerRules file (the app
-comes from the file) and prints one pricingkit.rulesDrift report with each
-offer's pricingkit.offerDrift report. Exit code 2 when any offer drifted or
-doesn't exist, otherwise 1 when an offer couldn't be checked (e.g. a rule on a
-free trial), otherwise 0. The text report starts with DRIFT, NOT CHECKED or
-In sync and lists offers that couldn't be checked right below, with drift too.
-A rules file for a Google Play app (packageName) checks its Play offers.
-
-With --workspace, checks the rules file of every app in the workspace, each
-through its own app's adapter, and prints one pricingkit.workspaceDrift report
-(exit codes as for --rules, across all apps).
-
-${SHARED_HELP}`,
   parity: `Usage:
   pricingkit parity --workspace <workspace file> [--mapping <id>]
 
@@ -471,9 +419,9 @@ ${SHARED_HELP}`,
   apply: `Usage:
   pricingkit apply <plan.json> --confirm <plan hash> [--run-out <run.json>] [--force]
   pricingkit apply <plan.json> --confirm <plan hash> --resume <run.json>
-                   [--force-delete] [--allow-base-prices]
+                   [--force-delete] [--allow-base-prices] [--yes]
   pricingkit apply --workspace-plan <workspace-plan.json> --confirm <workspace plan hash>
-                   [--resume-runs] [--force] [--force-delete] [--allow-base-prices]
+                   [--resume-runs] [--force] [--force-delete] [--allow-base-prices] [--yes]
 
 Applies a plan made by "pricingkit plan" (or "undo", or "offer"),
 App Store or Google Play: the app comes from the plan.
@@ -505,6 +453,13 @@ refused (INVALID_RUN) before anything is read or sent. --force replaces
 existing run logs, and with them the record "undo" needs to reverse those
 runs: move them aside first if you may want to undo. The request budget
 (--budget) is shared by all the plans of one run.
+
+On a terminal, apply then prints a summary (the app, ops by kind, base-price
+ops, deletes, App Store changes that move existing subscribers) and asks you to
+type the app's bundle ID or package name (with --workspace-plan: the number of
+apps) before it loads credentials; anything else cancels with nothing sent.
+Without a terminal (CI, pipes) nothing is asked; --yes (-y) says so explicitly
+and is refused at a terminal.
 
 Exit code 0 when every op is done, 1 otherwise (the log says which).
 

@@ -1,7 +1,6 @@
 // Offer price derivation ("X% of each territory's own price, snapped to that
-// territory's valid price points") and the drift check that compares an
-// existing offer with its rule. Pure: callers pass in the base prices and
-// price-point ladders they read.
+// territory's valid price points"), used by offer plans, previews and sync.
+// Pure: callers pass in the base prices and price-point ladders they read.
 
 import {
   compareDecimal,
@@ -18,9 +17,7 @@ import {
   type BillingPeriod,
   type OfferDuration,
   type OfferMode,
-  type OfferTerritoryPrice,
   type PercentOfCurrentRule,
-  type StoreOffer,
 } from './offers';
 import { snapToPricePoints, type PricePointCandidate } from './snap';
 
@@ -287,177 +284,5 @@ export function deriveOfferPrices(input: OfferDerivationInput): OfferDerivation 
       errors: rows.filter((r) => !r.ok).length,
       warnings: rows.filter((r) => r.flags.some((f) => f.severity === 'warning')).length,
     },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Drift
-
-export const OFFER_DRIFT_KIND = 'pricingkit.offerDrift' as const;
-export const OFFER_DRIFT_SCHEMA_VERSION = 1 as const;
-
-/**
- * match      - the offer price is the price the rule gives
- * mismatch   - the offer has a different price than the rule gives
- * missing    - the rule gives a price, the offer has none in this territory
- * extra      - the offer has a price in a territory the rule doesn't cover
- * unresolved - the rule can't give a price here (no base price, no price point, ...)
- * unreadable - the offer's own price here couldn't be read
- */
-export type OfferDriftStatus = 'match' | 'mismatch' | 'missing' | 'extra' | 'unresolved' | 'unreadable';
-
-export interface OfferDriftEntry {
-  territory: string;
-  status: OfferDriftStatus;
-  /** The offer's price as the store has it */
-  actual?: OfferTerritoryPrice;
-  /** What the rule gives */
-  expected?: { currency: string; amount: Decimal; pricePointId?: string; exactTarget: Decimal; currentPrice: Decimal };
-  reason?: string;
-}
-
-export interface OfferDriftReport {
-  kind: typeof OFFER_DRIFT_KIND;
-  schemaVersion: typeof OFFER_DRIFT_SCHEMA_VERSION;
-  checkedAt: string;
-  offer: { kind: StoreOffer['kind']; storeId: string; key: string; name?: string; mode: OfferMode; duration: OfferDuration };
-  rule: PercentOfCurrentRule;
-  billingPeriod: BillingPeriod;
-  deviationThreshold: Decimal;
-  /** True when every territory matches */
-  inSync: boolean;
-  summary: Record<OfferDriftStatus, number>;
-  /** Every territory looked at, sorted; filter on status for the drifted ones */
-  territories: OfferDriftEntry[];
-  /**
-   * Set when the check was limited to a list of territories: the offer's
-   * other territories, sorted. They were not checked and don't affect inSync.
-   */
-  outOfScope?: string[];
-  /** Offer-level read problems (e.g. a price Apple returned without a territory) */
-  problems?: string[];
-  /** Warnings from the derivation (e.g. deviation above threshold) */
-  warnings?: Array<{ territory: string; message: string }>;
-}
-
-function samePointOrAmount(actual: OfferTerritoryPrice, expected: { currency: string; amount: Decimal; pricePointId?: string }): boolean {
-  if (actual.pricePointId && expected.pricePointId) return actual.pricePointId === expected.pricePointId;
-  return actual.currency === expected.currency && compareDecimal(actual.amount, expected.amount) === 0;
-}
-
-export interface OfferDriftInput extends Omit<OfferDerivationInput, 'offer'> {
-  offer: StoreOffer;
-  /** ISO timestamp for the report (tests) */
-  now?: string;
-}
-
-/**
- * Compare an existing offer with the price its rule gives today in every
- * territory. Reports missing and extra territories and every snapped-price
- * mismatch. With a territory list, only those territories are checked; the
- * offer's others are listed in `outOfScope`, not as extra. The result is
- * plain JSON.
- */
-export function checkOfferDrift(input: OfferDriftInput): OfferDriftReport {
-  const { offer } = input;
-  if (!offer.mode || !offer.duration) {
-    throw new OfferRuleError(`Offer ${offer.key} has an unknown mode or duration; its rule can't be checked`);
-  }
-  const derivation = deriveOfferPrices({ ...input, offer: { mode: offer.mode, duration: offer.duration } });
-  const entries: OfferDriftEntry[] = [];
-  const covered = new Set<string>();
-  const warnings: Array<{ territory: string; message: string }> = [];
-
-  for (const row of derivation.rows) {
-    covered.add(row.territory);
-    const actual = offer.prices[row.territory];
-    const unreadable = offer.territoryProblems?.[row.territory];
-    for (const f of row.flags) if (f.severity === 'warning') warnings.push({ territory: row.territory, message: f.message });
-
-    if (unreadable) {
-      entries.push({ territory: row.territory, status: 'unreadable', reason: unreadable });
-      continue;
-    }
-    if (!row.ok || row.snappedPrice === null || row.exactTarget === null || row.currentPrice === null) {
-      entries.push({
-        territory: row.territory,
-        status: 'unresolved',
-        ...(actual ? { actual } : {}),
-        reason: row.flags.filter((f) => f.severity === 'error').map((f) => f.message).join('; '),
-      });
-      continue;
-    }
-    const expected = {
-      currency: row.currency,
-      amount: row.snappedPrice,
-      ...(row.pricePointId ? { pricePointId: row.pricePointId } : {}),
-      exactTarget: row.exactTarget,
-      currentPrice: row.currentPrice,
-    };
-    if (!actual) {
-      entries.push({ territory: row.territory, status: 'missing', expected, reason: 'The offer has no price in this territory' });
-    } else if (samePointOrAmount(actual, expected)) {
-      entries.push({ territory: row.territory, status: 'match', actual, expected });
-    } else {
-      entries.push({
-        territory: row.territory,
-        status: 'mismatch',
-        actual,
-        expected,
-        reason: `Offer is ${actual.amount} ${actual.currency}, rule gives ${expected.amount} ${expected.currency}`,
-      });
-    }
-  }
-
-  // A check limited to some territories says nothing about the others: list
-  // them as out of scope instead of "extra", so a scoped check can pass
-  const scoped = input.territories !== undefined && input.territories !== 'all';
-  const outOfScope: string[] = [];
-  const offerTerritories = new Set([...Object.keys(offer.prices), ...Object.keys(offer.territoryProblems ?? {})]);
-  for (const territory of offerTerritories) {
-    if (covered.has(territory)) continue;
-    if (scoped) {
-      outOfScope.push(territory);
-      continue;
-    }
-    const actual = offer.prices[territory];
-    const unreadable = offer.territoryProblems?.[territory];
-    if (unreadable) {
-      entries.push({ territory, status: 'unreadable', reason: `${unreadable} (a territory the rule does not cover)` });
-      continue;
-    }
-    entries.push({
-      territory,
-      status: 'extra',
-      ...(actual ? { actual } : {}),
-      reason: 'The offer has a price in a territory the rule does not cover',
-    });
-  }
-  entries.sort((a, b) => a.territory.localeCompare(b.territory));
-
-  const summary: Record<OfferDriftStatus, number> = { match: 0, mismatch: 0, missing: 0, extra: 0, unresolved: 0, unreadable: 0 };
-  for (const e of entries) summary[e.status]++;
-
-  return {
-    kind: OFFER_DRIFT_KIND,
-    schemaVersion: OFFER_DRIFT_SCHEMA_VERSION,
-    checkedAt: input.now ?? new Date().toISOString(),
-    offer: {
-      kind: offer.kind,
-      storeId: offer.storeId,
-      key: offer.key,
-      ...(offer.name ? { name: offer.name } : {}),
-      mode: offer.mode,
-      duration: offer.duration,
-    },
-    rule: derivation.rule,
-    billingPeriod: input.billingPeriod,
-    deviationThreshold: derivation.deviationThreshold,
-    inSync: entries.length > 0 && entries.every((e) => e.status === 'match') && !(offer.problems?.length),
-    summary,
-    territories: entries,
-    ...(scoped ? { outOfScope: outOfScope.sort() } : {}),
-    ...(offer.problems?.length ? { problems: [...offer.problems] } : {}),
-    ...(warnings.length ? { warnings } : {}),
   };
 }

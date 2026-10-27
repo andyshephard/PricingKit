@@ -21,3 +21,28 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+
+  # The long-running v2 branch gets the same updates until it is merged into main
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: v2
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ['*']
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /
+    target-branch: v2
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]

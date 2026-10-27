@@ -2,22 +2,28 @@ import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import {
   validateServiceAccountJson,
-  createSession,
-  getSessionCredentials,
-  deleteSession,
   googlePlayFetch,
+  isAcceptedServiceAccountKey,
 } from '@/lib/google-play/client';
+import { packageNameSchema } from '@/lib/validation';
+import { signInAttempts, trustedClientIp } from '@/lib/utils/attempt-limiter';
 import type { ServiceAccountCredentials } from '@/lib/google-play/types';
 import {
   MissingEncryptionKeyError,
-  MISSING_ENCRYPTION_KEY_MESSAGE,
   canStoreSessions,
+  encryptionKeyMessage,
 } from '@/lib/encryption';
 import {
-  GOOGLE_PACKAGE_NAME_COOKIE,
-  GOOGLE_SESSION_COOKIE,
+  clearCookie,
+  COOKIE_NAMES,
+  CookieTooLargeError,
+  readAppCookie,
+  readSessionCookie,
   SESSION_COOKIE_MAX_AGE,
+  writeCookie,
+  writeSessionCookie,
 } from '@/lib/session';
+import { rejectCrossSite, readJsonBody, SMALL_BODY_LIMIT } from '@/lib/request-guard';
 
 interface ProbeListResp<T> {
   subscriptions?: T[];
@@ -26,29 +32,26 @@ interface ProbeProduct {
   productId?: string;
 }
 
-const SESSION_COOKIE = GOOGLE_SESSION_COOKIE;
-const PACKAGE_NAME_COOKIE = GOOGLE_PACKAGE_NAME_COOKIE;
-const COOKIE_MAX_AGE = SESSION_COOKIE_MAX_AGE;
-
 export async function POST(request: NextRequest) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   try {
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json(
-        { error: 'Invalid JSON in request body' },
-        { status: 400 }
-      );
-    }
-    const { credentials, packageName } = body;
+    const read = await readJsonBody(request, SMALL_BODY_LIMIT);
+    if (!read.ok) return read.response;
+    const body = (typeof read.body === 'object' && read.body !== null ? read.body : {}) as { credentials?: unknown; packageName?: unknown };
+    const { credentials } = body;
 
-    if (!credentials || !packageName) {
+    if (!credentials || !body.packageName) {
       return NextResponse.json(
         { error: 'Missing credentials or package name' },
         { status: 400 }
       );
     }
+    const parsedPackage = packageNameSchema.safeParse(body.packageName);
+    if (!parsedPackage.success) {
+      return NextResponse.json({ error: 'Invalid package name' }, { status: 400 });
+    }
+    const packageName = parsedPackage.data;
 
     if (!validateServiceAccountJson(credentials)) {
       return NextResponse.json(
@@ -56,12 +59,29 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-
     // Fail closed before contacting Google: without ENCRYPTION_KEY (outside
     // `next dev`) the session could not be stored anyway.
     if (!canStoreSessions()) {
-      console.error(MISSING_ENCRYPTION_KEY_MESSAGE);
-      return NextResponse.json({ error: MISSING_ENCRYPTION_KEY_MESSAGE }, { status: 500 });
+      console.error(encryptionKeyMessage());
+      return NextResponse.json({ error: encryptionKeyMessage() }, { status: 500 });
+    }
+    // Checked before the key is imported: importing a huge RSA key costs real CPU
+    if (!isAcceptedServiceAccountKey((credentials as ServiceAccountCredentials).private_key)) {
+      return NextResponse.json(
+        { error: 'The service account key must be an RSA private key of 2048 to 4096 bits (Google issues 2048-bit keys).' },
+        { status: 400 }
+      );
+    }
+
+
+    // Sign-in attempts are limited per client (with TRUSTED_CLIENT_IP_HEADER) and
+    // per instance, so this route can't be used to test stolen keys at speed
+    const decision = signInAttempts.attempt(trustedClientIp(request.headers, process.env.TRUSTED_CLIENT_IP_HEADER));
+    if (!decision.allowed) {
+      return NextResponse.json(
+        { error: 'Too many sign-in attempts. Try again later.' },
+        { status: 429, headers: { 'Retry-After': String(decision.retryAfterSeconds) } }
+      );
     }
 
     // Test the connection by trying to list subscriptions (uses the newer monetization API)
@@ -110,7 +130,7 @@ export async function POST(request: NextRequest) {
       }
       if (error.code === 404) {
         return NextResponse.json(
-          { error: `App not found. Please verify the package name "${packageName}" is correct and the app exists in Play Console.` },
+          { error: 'App not found. Check the package name and that the app exists in Play Console.' },
           { status: 404 }
         );
       }
@@ -122,26 +142,19 @@ export async function POST(request: NextRequest) {
     // live store); a missing permission surfaces on the first real edit, where the
     // product/subscription routes return GOOGLE_PRICING_WRITE_DENIED_ERROR.
 
-    // Create session and store session ID in cookie
-    const sessionId = await createSession(creds);
-
+    // The session keeps client_email, private_key_id, private_key and
+    // project_id only, sealed with a 24-hour expiry. Credentials too large
+    // for a cookie are refused here rather than dropped by the browser.
     const cookieStore = await cookies();
-
-    cookieStore.set(SESSION_COOKIE, sessionId, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: COOKIE_MAX_AGE,
-      path: '/',
-    });
-
-    cookieStore.set(PACKAGE_NAME_COOKIE, packageName, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: COOKIE_MAX_AGE,
-      path: '/',
-    });
+    try {
+      await writeSessionCookie(cookieStore, 'google', creds);
+    } catch (error) {
+      if (error instanceof CookieTooLargeError) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+      throw error;
+    }
+    writeCookie(cookieStore, COOKIE_NAMES.googlePackage, packageName, SESSION_COOKIE_MAX_AGE);
 
     return NextResponse.json({
       success: true,
@@ -171,14 +184,12 @@ export async function POST(request: NextRequest) {
 export async function GET() {
   try {
     const cookieStore = await cookies();
-    const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
-    const packageName = cookieStore.get(PACKAGE_NAME_COOKIE)?.value;
-
-    if (!sessionId || !packageName) {
+    const packageName = readAppCookie(cookieStore, COOKIE_NAMES.googlePackage);
+    if (!packageName) {
       return NextResponse.json({ authenticated: false });
     }
 
-    const credentials = await getSessionCredentials(sessionId);
+    const credentials = await readSessionCookie(cookieStore, 'google');
     if (!credentials) {
       return NextResponse.json({ authenticated: false });
     }
@@ -195,17 +206,13 @@ export async function GET() {
   }
 }
 
-export async function DELETE() {
+export async function DELETE(request: Request) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   try {
     const cookieStore = await cookies();
-    const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
-
-    if (sessionId) {
-      await deleteSession();
-    }
-
-    cookieStore.delete(SESSION_COOKIE);
-    cookieStore.delete(PACKAGE_NAME_COOKIE);
+    clearCookie(cookieStore, COOKIE_NAMES.googleSession);
+    clearCookie(cookieStore, COOKIE_NAMES.googlePackage);
 
     return NextResponse.json({ success: true });
   } catch (error) {

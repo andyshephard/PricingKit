@@ -32,6 +32,12 @@ vi.mock('@/lib/apple-connect', () => ({
   getSubscriptionPrices: mocks.getAppleSubscriptionPrices,
 }));
 
+const assertSubscriptionInApp = vi.fn(async (..._args: unknown[]) => {});
+vi.mock('@/lib/apple-connect/ownership', () => ({
+  APP_MISMATCH: 'APP_MISMATCH',
+  assertSubscriptionInApp: (...args: unknown[]) => assertSubscriptionInApp(...args),
+}));
+
 import * as route from '../route';
 
 function request(query: string) {
@@ -43,6 +49,7 @@ const appleAuth = { credentials: {}, bundleId: 'com.example.app' };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  assertSubscriptionInApp.mockResolvedValue(undefined);
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
@@ -62,6 +69,8 @@ describe('/api/export', () => {
       .filter(Boolean)
       .sort();
     expect(imported).toEqual([
+      'APP_MISMATCH',
+      'assertSubscriptionInApp',
       'getBaseTerritoryForProduct',
       'getInAppProductRaw',
       'getInAppPurchase',
@@ -217,6 +226,15 @@ describe('/api/export', () => {
     expect(mocks.getAppleSubscription).not.toHaveBeenCalled();
     const body = await res.text();
     expect(body).toContain(',US,USD,9.99,8.49,,12.99,2026-03-01,11.04');
+  });
+
+  it("refuses to export another app's subscription by numeric id (it would carry this app's bundle ID)", async () => {
+    mocks.getAppleAuthFromCookies.mockResolvedValue(appleAuth);
+    assertSubscriptionInApp.mockRejectedValue(Object.assign(new Error('not in app'), { status: 409, code: 'APP_MISMATCH' }));
+    const res = await route.GET(request('platform=apple&type=subscription&id=6700000001'));
+    expect(res.status).toBe(409);
+    expect(mocks.getAppleSubscriptionById).not.toHaveBeenCalled();
+    expect(mocks.getAppleSubscriptionPrices).not.toHaveBeenCalled();
   });
 
   it('returns 502 when a store amount is not an exact decimal', async () => {

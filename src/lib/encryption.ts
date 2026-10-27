@@ -1,194 +1,307 @@
 // Session cookie encryption (AES-256-GCM, Web Crypto, so it runs on Workers).
 //
-// Two formats:
-// - v2 (written since Phase 8): "v2." + base64(iv(12) + ciphertext+tag). The
-//   AES key is derived from ENCRYPTION_KEY once per process with HKDF-SHA-256
-//   and cached, so a request costs one AES-GCM operation instead of 100,000
-//   PBKDF2 iterations.
-// - legacy (v1): base64(salt(16) + iv(12) + ciphertext+tag), key from PBKDF2
-//   (100,000 iterations, SHA-256) with the per-cookie salt. Still read, so
-//   sessions made before the upgrade keep working; the auth helpers
-//   re-encrypt such a cookie as v2 on its next request (src/middleware/auth.ts).
-//   Legacy base64 never contains ".", so the prefix can't be confused with it.
+// The key: ENCRYPTION_KEY must be base64 (or base64url) of at least 32 bytes
+// with at least 16 distinct byte values (`openssl rand -base64 32` always
+// qualifies). Outside `next dev` anything else is refused: sessions can't be
+// created or read. This checks format, length and that the bytes aren't an
+// obvious repeat; it can't tell whether the key is random, so generate it,
+// never type it. The decoded bytes are the HKDF
+// input, so a cookie's known plaintext can't be used to guess a short
+// passphrase cheaply. Under `next dev` a non-conforming key still works, with
+// a warning (its UTF-8 bytes are the HKDF input).
 //
-// HKDF does no key stretching: ENCRYPTION_KEY must be a random secret
-// (`openssl rand -base64 32`), not a passphrase.
+// Formats:
+// - v3 (current): "v3." + base64url(iv(12) + ciphertext+tag), AES key from
+//   HKDF-SHA-256 over the key bytes, with additional authenticated data the
+//   caller supplies (src/lib/session-envelope.ts binds the cookie name and
+//   the session version). What is encrypted is a session envelope with an
+//   absolute expiry.
+// - legacy v2: "v2." + base64(iv + ciphertext+tag), key from HKDF over the
+//   UTF-8 text of ENCRYPTION_KEY, no additional data, no expiry inside.
+// - legacy v1: base64(salt(16) + iv(12) + ciphertext+tag), key from PBKDF2
+//   (100,000 iterations, SHA-256) with the per-cookie salt.
+//   Legacy cookies are read only until LEGACY_SESSION_CUTOFF, after a strict
+//   shape and length check (so junk is refused before any key derivation),
+//   and are re-written as v3 when read.
 
 const ALGORITHM = 'AES-GCM';
 const IV_LENGTH = 12;
+const TAG_LENGTH = 16;
 const SALT_LENGTH = 16;
 const KEY_LENGTH = 32;
 const PBKDF2_ITERATIONS = 100000;
+/** ENCRYPTION_KEY must decode to at least this many bytes */
+export const MIN_ENCRYPTION_KEY_BYTES = 32;
+/**
+ * ...with at least this many distinct byte values. 32 random bytes have
+ * about 30 (never below 24 in 20,000 trials); "AAAA...", "abab..." or a
+ * repeated word have a handful.
+ */
+export const MIN_ENCRYPTION_KEY_DISTINCT_BYTES = 16;
 
-/** Prefix of v2 (HKDF) session ciphertexts */
+/**
+ * Legacy (v1 and v2) session cookies are accepted until this instant and
+ * refused from then on. Set two weeks after the v3 envelope shipped: browser
+ * cookies lasted 24 hours, so every active session has been re-written as v3
+ * long before. Remove the legacy read path once this date has passed.
+ */
+export const LEGACY_SESSION_CUTOFF = '2026-11-10T00:00:00Z';
+export const LEGACY_SESSION_CUTOFF_MS = Date.parse(LEGACY_SESSION_CUTOFF);
+
+export const SESSION_CIPHERTEXT_V3_PREFIX = 'v3.';
+/** Prefix of legacy v2 (HKDF over the key text) session ciphertexts */
 export const SESSION_CIPHERTEXT_V2_PREFIX = 'v2.';
-/** Fixed HKDF salt and info: domain separation for this one use of ENCRYPTION_KEY */
-const HKDF_SALT = new TextEncoder().encode('pricingkit/session-cookie/salt/v2');
-const HKDF_INFO = new TextEncoder().encode('pricingkit/session-cookie/aes-256-gcm/v2');
-/** Below this many characters ENCRYPTION_KEY is unlikely to be a random 32-byte secret */
-const MIN_RECOMMENDED_KEY_LENGTH = 32;
 
-function requireEncryptionKey(): string {
-  const encryptionKey = process.env.ENCRYPTION_KEY;
-  if (!encryptionKey) {
-    throw new Error('ENCRYPTION_KEY environment variable is required for secure session storage');
-  }
-  return encryptionKey;
+/** Longest cookie value considered at all (browsers keep about 4 KB per cookie) */
+const MAX_CIPHERTEXT_CHARS = 4096;
+/** The smallest credentials a real legacy session held (an App Store Connect key) are well above this */
+const MIN_LEGACY_PLAINTEXT_BYTES = 128;
+const MAX_LEGACY_BYTES = 3072;
+
+const V3_SALT = new TextEncoder().encode('pricingkit/session-cookie/salt/v3');
+const V3_INFO = new TextEncoder().encode('pricingkit/session-cookie/aes-256-gcm/v3');
+const V2_SALT = new TextEncoder().encode('pricingkit/session-cookie/salt/v2');
+const V2_INFO = new TextEncoder().encode('pricingkit/session-cookie/aes-256-gcm/v2');
+
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+const BASE64URL = /^[A-Za-z0-9_-]+$/;
+const BASE64_ANY = /^[A-Za-z0-9+/_-]+={0,2}$/;
+
+/** Plaintext (base64) session cookies and weak keys are only permitted under `next dev` */
+export function isPlaintextSessionAllowed(): boolean {
+  // `next build` inlines NODE_ENV as 'production', so built servers always fail
+  // closed; checking for 'development' (rather than !== 'production') also
+  // covers code run outside Next, such as tests and scripts.
+  return process.env.NODE_ENV === 'development';
 }
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
-/**
- * Legacy key: PBKDF2 over ENCRYPTION_KEY with the cookie's own salt. Only
- * used to read cookies written before v2.
- */
-async function deriveLegacyKey(salt: Uint8Array): Promise<CryptoKey> {
-  const encoder = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey('raw', encoder.encode(requireEncryptionKey()), 'PBKDF2', false, ['deriveKey']);
-  return crypto.subtle.deriveKey(
-    { name: 'PBKDF2', salt: toArrayBuffer(salt), iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
-    keyMaterial,
-    { name: ALGORITHM, length: KEY_LENGTH * 8 },
-    false,
-    ['encrypt', 'decrypt'],
-  );
-}
-
-// One cached key per ENCRYPTION_KEY value (a changed env, e.g. in tests, derives again)
-let cachedV2: { secret: string; key: Promise<CryptoKey> } | undefined;
-let warnedShortKey = false;
-
-/** v2 key: HKDF-SHA-256 over ENCRYPTION_KEY, derived once and cached */
-function deriveV2Key(): Promise<CryptoKey> {
-  const secret = requireEncryptionKey();
-  if (cachedV2?.secret === secret) return cachedV2.key;
-  if (secret.length < MIN_RECOMMENDED_KEY_LENGTH && !warnedShortKey) {
-    warnedShortKey = true;
-    console.warn(`ENCRYPTION_KEY is shorter than ${MIN_RECOMMENDED_KEY_LENGTH} characters. Use a random secret (openssl rand -base64 32): session keys are derived with HKDF, which does not stretch weak keys.`);
-  }
-  const key = (async () => {
-    const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), 'HKDF', false, ['deriveKey']);
-    return crypto.subtle.deriveKey(
-      { name: 'HKDF', hash: 'SHA-256', salt: toArrayBuffer(HKDF_SALT), info: toArrayBuffer(HKDF_INFO) },
-      material,
-      { name: ALGORITHM, length: KEY_LENGTH * 8 },
-      false,
-      ['encrypt', 'decrypt'],
-    );
-  })();
-  cachedV2 = { secret, key };
-  // A failed derivation isn't cached
-  key.catch(() => {
-    if (cachedV2?.key === key) cachedV2 = undefined;
-  });
-  return key;
-}
-
-function toBase64(bytes: Uint8Array): string {
+export function toBase64(bytes: Uint8Array): string {
   let binary = '';
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
   return btoa(binary);
 }
 
-function fromBase64(value: string): Uint8Array {
-  const binaryStr = atob(value);
+export function toBase64Url(bytes: Uint8Array): string {
+  return toBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** Decodes base64 or base64url; throws on anything else */
+export function fromBase64(value: string): Uint8Array {
+  if (!BASE64_ANY.test(value)) throw new Error('not base64');
+  const standard = value.replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '');
+  if (standard.length % 4 === 1) throw new Error('not base64');
+  const binaryStr = atob(standard + '='.repeat((4 - (standard.length % 4)) % 4));
   const bytes = new Uint8Array(binaryStr.length);
   for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
   return bytes;
 }
 
-/**
- * Encrypts with AES-256-GCM under the v2 (HKDF) key.
- * Returns "v2." + base64(iv + ciphertext), GCM's tag appended to the ciphertext.
- */
-export async function encrypt(plaintext: string): Promise<string> {
-  const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
-  const key = await deriveV2Key();
-  const encrypted = await crypto.subtle.encrypt({ name: ALGORITHM, iv }, key, new TextEncoder().encode(plaintext));
-  const combined = new Uint8Array(iv.length + encrypted.byteLength);
-  combined.set(iv, 0);
-  combined.set(new Uint8Array(encrypted), iv.length);
-  return SESSION_CIPHERTEXT_V2_PREFIX + toBase64(combined);
-}
+// ---------------------------------------------------------------------------
+// The key
 
-/** True for a ciphertext in the legacy (PBKDF2) format, which should be re-encrypted */
-export function isLegacyCiphertext(value: string): boolean {
-  return !value.startsWith(SESSION_CIPHERTEXT_V2_PREFIX);
-}
+export type EncryptionKeyProblem = 'missing' | 'weak';
 
-/**
- * Decrypts a v2 ciphertext, or a legacy (PBKDF2) one. Throws if the value
- * is neither or doesn't authenticate under the current ENCRYPTION_KEY.
- */
-export async function decrypt(value: string): Promise<string> {
-  if (!isLegacyCiphertext(value)) {
-    const combined = fromBase64(value.slice(SESSION_CIPHERTEXT_V2_PREFIX.length));
-    // slice() copies, so each part has its own ArrayBuffer
-    const iv = combined.slice(0, IV_LENGTH);
-    const ciphertextWithTag = combined.slice(IV_LENGTH);
-    const decrypted = await crypto.subtle.decrypt({ name: ALGORITHM, iv }, await deriveV2Key(), ciphertextWithTag);
-    return new TextDecoder().decode(decrypted);
-  }
-  const combined = fromBase64(value);
-  const salt = combined.slice(0, SALT_LENGTH);
-  const iv = combined.slice(SALT_LENGTH, SALT_LENGTH + IV_LENGTH);
-  const ciphertextWithTag = combined.slice(SALT_LENGTH + IV_LENGTH);
-  const decrypted = await crypto.subtle.decrypt({ name: ALGORITHM, iv }, await deriveLegacyKey(salt), ciphertextWithTag);
-  return new TextDecoder().decode(decrypted);
-}
-
-/**
- * Legacy cookie -> the same plaintext encrypted as v2. Returns null when the
- * value is already v2, encryption isn't configured, or it doesn't decrypt.
- * Used by the auth helpers to migrate sessions without logging anyone out.
- */
-export async function reencryptLegacyCiphertext(value: string): Promise<string | null> {
-  if (!isEncryptionAvailable() || !isLegacyCiphertext(value)) return null;
+/** The decoded key bytes, or null when ENCRYPTION_KEY isn't base64 of at least 32 bytes with enough distinct values */
+function decodedKeyBytes(secret: string): Uint8Array | null {
+  const trimmed = secret.trim();
+  if (!BASE64_ANY.test(trimmed)) return null;
   try {
-    return await encrypt(await decrypt(value));
+    const bytes = fromBase64(trimmed);
+    return bytes.length >= MIN_ENCRYPTION_KEY_BYTES && new Set(bytes).size >= MIN_ENCRYPTION_KEY_DISTINCT_BYTES ? bytes : null;
   } catch {
     return null;
   }
 }
 
+/** What is wrong with ENCRYPTION_KEY, if anything */
+export function encryptionKeyProblem(): EncryptionKeyProblem | null {
+  const secret = process.env.ENCRYPTION_KEY;
+  if (typeof secret !== 'string' || secret.trim() === '') return 'missing';
+  return decodedKeyBytes(secret) ? null : 'weak';
+}
+
 /**
- * Checks if encryption is available (ENCRYPTION_KEY is set).
+ * True when sessions can be encrypted: a conforming ENCRYPTION_KEY, or under
+ * `next dev` any non-empty one.
  */
 export function isEncryptionAvailable(): boolean {
-  return typeof process.env.ENCRYPTION_KEY === 'string' && process.env.ENCRYPTION_KEY.length > 0;
+  const problem = encryptionKeyProblem();
+  return problem === null || (problem === 'weak' && isPlaintextSessionAllowed());
 }
 
 export const MISSING_ENCRYPTION_KEY_MESSAGE =
-  'ENCRYPTION_KEY is not set, so credentials cannot be stored securely. Set ENCRYPTION_KEY to a random string of 32+ characters (e.g. `openssl rand -base64 32`) and restart the server.';
+  'ENCRYPTION_KEY is not set, so credentials cannot be stored securely. Set ENCRYPTION_KEY to 32 random bytes in base64 (`openssl rand -base64 32`) and restart the server.';
+
+export const WEAK_ENCRYPTION_KEY_MESSAGE =
+  'ENCRYPTION_KEY must be base64 of at least 32 bytes that are not an obvious repeat; generate one with `openssl rand -base64 32` (PricingKit checks the format, not the randomness). Sessions are refused until it is replaced; everyone signs in again afterwards.';
+
+/** The message for the current key problem (safe to show: it contains no secrets) */
+export function encryptionKeyMessage(): string {
+  return encryptionKeyProblem() === 'weak' ? WEAK_ENCRYPTION_KEY_MESSAGE : MISSING_ENCRYPTION_KEY_MESSAGE;
+}
 
 /**
- * Thrown when a session would have to be stored without encryption outside
+ * Thrown when a session would have to be stored without a usable key outside
  * `next dev`. The message is safe to show to the user (it contains no secrets).
  */
 export class MissingEncryptionKeyError extends Error {
-  constructor() {
-    super(MISSING_ENCRYPTION_KEY_MESSAGE);
+  constructor(message: string = encryptionKeyMessage()) {
+    super(message);
     this.name = 'MissingEncryptionKeyError';
   }
 }
 
 /**
- * Plaintext (base64) session cookies are only permitted under `next dev`.
- * `next build` inlines NODE_ENV as 'production', so built servers always fail
- * closed; checking for 'development' (rather than !== 'production') also
- * covers code run outside Next, such as tests and scripts.
+ * Whether a new session can be stored at all. Login routes check this before
+ * contacting the store, so a missing or weak ENCRYPTION_KEY is reported with
+ * any credentials and no upstream call is made.
  */
-export function isPlaintextSessionAllowed(): boolean {
-  return process.env.NODE_ENV === 'development';
+export function canStoreSessions(): boolean {
+  return isEncryptionAvailable() || (encryptionKeyProblem() === 'missing' && isPlaintextSessionAllowed());
+}
+
+function requireSecret(): string {
+  if (!isEncryptionAvailable()) throw new MissingEncryptionKeyError();
+  return process.env.ENCRYPTION_KEY!;
+}
+
+type CachedKey = { secret: string; key: Promise<CryptoKey> };
+let cachedV3: CachedKey | undefined;
+let cachedV2: CachedKey | undefined;
+let warnedWeakKey = false;
+
+function hkdfKey(ikm: Uint8Array, salt: Uint8Array, info: Uint8Array): Promise<CryptoKey> {
+  return (async () => {
+    const material = await crypto.subtle.importKey('raw', toArrayBuffer(ikm), 'HKDF', false, ['deriveKey']);
+    return crypto.subtle.deriveKey(
+      { name: 'HKDF', hash: 'SHA-256', salt: toArrayBuffer(salt), info: toArrayBuffer(info) },
+      material,
+      { name: ALGORITHM, length: KEY_LENGTH * 8 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+  })();
+}
+
+/** One cached key per ENCRYPTION_KEY value (a changed env, e.g. in tests, derives again); failures aren't cached */
+function cached(slot: 'v3' | 'v2', secret: string, derive: () => Promise<CryptoKey>): Promise<CryptoKey> {
+  const current = slot === 'v3' ? cachedV3 : cachedV2;
+  if (current?.secret === secret) return current.key;
+  const entry: CachedKey = { secret, key: derive() };
+  if (slot === 'v3') cachedV3 = entry;
+  else cachedV2 = entry;
+  entry.key.catch(() => {
+    if (slot === 'v3' && cachedV3 === entry) cachedV3 = undefined;
+    if (slot === 'v2' && cachedV2 === entry) cachedV2 = undefined;
+  });
+  return entry.key;
+}
+
+/** v3 key: HKDF-SHA-256 over the decoded key bytes (under `next dev` a weak key's UTF-8 bytes) */
+function v3Key(): Promise<CryptoKey> {
+  const secret = requireSecret();
+  return cached('v3', secret, () => {
+    let ikm = decodedKeyBytes(secret);
+    if (!ikm) {
+      if (!warnedWeakKey) {
+        warnedWeakKey = true;
+        console.warn(`${WEAK_ENCRYPTION_KEY_MESSAGE} (Accepted under next dev only.)`);
+      }
+      ikm = new TextEncoder().encode(secret);
+    }
+    return hkdfKey(ikm, V3_SALT, V3_INFO);
+  });
+}
+
+/** Legacy v2 key: HKDF over the UTF-8 text of ENCRYPTION_KEY */
+function v2Key(): Promise<CryptoKey> {
+  const secret = requireSecret();
+  return cached('v2', secret, () => hkdfKey(new TextEncoder().encode(secret), V2_SALT, V2_INFO));
+}
+
+/** Legacy v1 key: PBKDF2 over ENCRYPTION_KEY with the cookie's own salt */
+async function v1Key(salt: Uint8Array): Promise<CryptoKey> {
+  const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(requireSecret()), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: toArrayBuffer(salt), iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+    material,
+    { name: ALGORITHM, length: KEY_LENGTH * 8 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+// ---------------------------------------------------------------------------
+// v3
+
+/** "v3." + base64url(iv + ciphertext+tag), authenticated with `aad` */
+export async function sealV3(plaintext: string, aad: string): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
+  const encrypted = await crypto.subtle.encrypt(
+    { name: ALGORITHM, iv, additionalData: toArrayBuffer(new TextEncoder().encode(aad)) },
+    await v3Key(),
+    new TextEncoder().encode(plaintext)
+  );
+  const combined = new Uint8Array(IV_LENGTH + encrypted.byteLength);
+  combined.set(iv, 0);
+  combined.set(new Uint8Array(encrypted), IV_LENGTH);
+  return SESSION_CIPHERTEXT_V3_PREFIX + toBase64Url(combined);
+}
+
+/** Opens a v3 ciphertext; throws unless it is well formed and authenticates with this key and `aad` */
+export async function openV3(value: string, aad: string): Promise<string> {
+  if (!value.startsWith(SESSION_CIPHERTEXT_V3_PREFIX) || value.length > MAX_CIPHERTEXT_CHARS) throw new Error('not a v3 session');
+  const body = value.slice(SESSION_CIPHERTEXT_V3_PREFIX.length);
+  if (!BASE64URL.test(body)) throw new Error('not a v3 session');
+  const combined = fromBase64(body);
+  if (combined.length <= IV_LENGTH + TAG_LENGTH) throw new Error('not a v3 session');
+  const decrypted = await crypto.subtle.decrypt(
+    { name: ALGORITHM, iv: combined.slice(0, IV_LENGTH), additionalData: toArrayBuffer(new TextEncoder().encode(aad)) },
+    await v3Key(),
+    combined.slice(IV_LENGTH)
+  );
+  return new TextDecoder().decode(decrypted);
+}
+
+// ---------------------------------------------------------------------------
+// Legacy (read only, until LEGACY_SESSION_CUTOFF)
+
+export function isLegacyCiphertext(value: string): boolean {
+  return !value.startsWith(SESSION_CIPHERTEXT_V3_PREFIX);
+}
+
+/** Whether legacy cookies (and legacy cookie names) are still accepted at `nowMs` */
+export function legacySessionsAccepted(nowMs: number = Date.now()): boolean {
+  return nowMs < LEGACY_SESSION_CUTOFF_MS;
 }
 
 /**
- * Whether a new session can be stored at all. Login routes check this before
- * contacting the store, so a missing ENCRYPTION_KEY is reported with any
- * credentials and no upstream call is made.
+ * Opens a legacy v1 or v2 ciphertext. Throws after the cutoff, and for
+ * anything that isn't strictly base64 of a plausible size, before any key
+ * is derived (a v1 key costs 100,000 PBKDF2 iterations).
  */
-export function canStoreSessions(): boolean {
-  return isEncryptionAvailable() || isPlaintextSessionAllowed();
+export async function openLegacy(value: string, nowMs: number = Date.now()): Promise<string> {
+  if (!legacySessionsAccepted(nowMs)) throw new Error('legacy sessions are no longer accepted');
+  if (value.length > MAX_CIPHERTEXT_CHARS) throw new Error('not a session');
+  if (value.startsWith(SESSION_CIPHERTEXT_V2_PREFIX)) {
+    const body = value.slice(SESSION_CIPHERTEXT_V2_PREFIX.length);
+    if (!BASE64.test(body)) throw new Error('not a session');
+    const combined = fromBase64(body);
+    if (combined.length < IV_LENGTH + TAG_LENGTH + MIN_LEGACY_PLAINTEXT_BYTES || combined.length > MAX_LEGACY_BYTES) throw new Error('not a session');
+    const decrypted = await crypto.subtle.decrypt({ name: ALGORITHM, iv: combined.slice(0, IV_LENGTH) }, await v2Key(), combined.slice(IV_LENGTH));
+    return new TextDecoder().decode(decrypted);
+  }
+  if (!BASE64.test(value)) throw new Error('not a session');
+  const combined = fromBase64(value);
+  if (combined.length < SALT_LENGTH + IV_LENGTH + TAG_LENGTH + MIN_LEGACY_PLAINTEXT_BYTES || combined.length > MAX_LEGACY_BYTES) {
+    throw new Error('not a session');
+  }
+  const salt = combined.slice(0, SALT_LENGTH);
+  const iv = combined.slice(SALT_LENGTH, SALT_LENGTH + IV_LENGTH);
+  const decrypted = await crypto.subtle.decrypt({ name: ALGORITHM, iv }, await v1Key(salt), combined.slice(SALT_LENGTH + IV_LENGTH));
+  return new TextDecoder().decode(decrypted);
 }

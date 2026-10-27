@@ -139,7 +139,8 @@ describe('pricingkit with YAML files', () => {
     expect(r.code).toBe(2);
     const plan = parseChangeSet(readFileSync(join(tmp.dir, 'plan.json'), 'utf8'));
     expect(plan.ops.map((op) => op.kind)).toEqual(['setPrice', 'setPrice', 'updateOfferPrices']);
-    expect((await run(['drift', '--rules', 'rules.yml'], { env, cwd: tmp.dir })).code).toBe(0);
+    // The same rules file alone: the offer is in step with today's prices
+    expect((await run(['plan', '--rules', 'rules.yml', '--out', 'sync.json'], { env, cwd: tmp.dir })).code).toBe(0);
     expect(store.writes()).toEqual([]);
   });
 

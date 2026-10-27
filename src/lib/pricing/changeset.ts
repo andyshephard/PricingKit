@@ -7,7 +7,7 @@
 
 import { z } from 'zod';
 import { normalizeDecimal } from './decimal';
-import { canonicalJson, fnv1a64, priceValueSchema, productRefSchema, appRefSchema, territorySchema } from './refs';
+import { canonicalJson, confirmHash, priceValueSchema, productRefSchema, appRefSchema, territorySchema } from './refs';
 import { checkOfferOpRules, describeOfferOp, isOfferOp, isOfferOpKind, offerOpSchema, offerTargetKey, type OfferOp, type OfferOpKind } from './offer-ops';
 import { OFFER_KINDS, type OfferKind } from './offers';
 import type { PlayOfferOp } from './play-offers';
@@ -26,12 +26,14 @@ import {
 
 /**
  * Version written by this build. 2 adds the planner notes priceChanges and
- * dataFreshness (Phase 8); everything else is as in 1. The plan hash covers
- * app + ops only, so a v1 plan keeps its hash when read by this build.
+ * dataFreshness (Phase 8); 3 marks plans confirmed with the SHA-256 hash, so
+ * older builds (which computed another hash) refuse them instead of asking
+ * for a hash nobody has; everything else is as in 1. Every version this
+ * build reads is hashed the same way (`changeSetHash`).
  */
-export const CHANGESET_SCHEMA_VERSION = 2 as const;
+export const CHANGESET_SCHEMA_VERSION = 3 as const;
 /** Versions this build reads */
-export const CHANGESET_SCHEMA_VERSIONS_READ = [1, 2] as const;
+export const CHANGESET_SCHEMA_VERSIONS_READ = [1, 2, 3] as const;
 export type ChangeSetSchemaVersion = (typeof CHANGESET_SCHEMA_VERSIONS_READ)[number];
 export const CHANGESET_KIND = 'pricingkit.changeset' as const;
 
@@ -208,14 +210,17 @@ export function describeOp(op: ChangeOp): string {
 }
 
 /**
- * Hash of what a ChangeSet does (app + ops). Ignores id, createdAt,
+ * Hash of what a ChangeSet does (app + ops): what `apply --confirm` must
+ * name. SHA-256, 32 hex digits, for every schema version: the version is
+ * part of the file, so it can't choose the hash. Ignores id, createdAt,
  * description and planner notes, so re-serialising never changes it.
  */
 export function changeSetHash(changeSet: Pick<ChangeSet, 'app' | 'ops'>): string {
-  return fnv1a64(canonicalJson({ app: changeSet.app, ops: changeSet.ops }));
+  return confirmHash(canonicalJson({ app: changeSet.app, ops: changeSet.ops }));
 }
 
 export { canonicalJson, fnv1a64, priceValueSchema, productRefSchema, appRefSchema } from './refs';
+export { confirmHash, confirmHashSchema, sha256Hex, CONFIRM_HASH_HEX_DIGITS } from './refs';
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -258,7 +263,7 @@ const skipSchema = z
 
 export const changeSetSchema = z
   .object({
-    schemaVersion: z.union([z.literal(1), z.literal(2)]),
+    schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     kind: z.literal(CHANGESET_KIND),
     id: z.string().min(1),
     createdAt: z.string().min(1),

@@ -2,7 +2,8 @@
 // the stdio transport. Agents can plan; humans apply: no tool writes to a
 // store. The App Store client is mocked: nothing leaves the process.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { linkSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
+import { linkSync, mkdirSync, readdirSync, readFileSync, symlinkSync, truncateSync, writeFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 
@@ -14,7 +15,7 @@ vi.mock('@/lib/apple-connect/client', async (importOriginal) => {
 
 import { FakeOfferStore } from '@/lib/adapters/__tests__/fake-apple-offer-store';
 import { changeSetHash, parseChangeSet } from '@/lib/pricing';
-import { MAX_LINE_BYTES, McpServer, serveMcp, shellQuote, TOOLS } from '../mcp';
+import { internalErrorMessage, MAX_LINE_BYTES, MAX_TOOL_FILE_BYTES, McpServer, serveMcp, shellQuote, TOOLS } from '../mcp';
 import { run as runCliCaptured, fakeAppleEnv, tempDir } from './fixtures';
 
 const BUNDLE = 'com.example.app';
@@ -30,7 +31,7 @@ async function call(method: string, params: Record<string, unknown> = {}) {
 }
 async function tool(name: string, args: Record<string, unknown>) {
   const r = await call('tools/call', { name, arguments: args });
-  return r.result as { content: Array<{ text: string }>; structuredContent?: { exitCode?: number; result?: unknown; command?: string; hash?: string }; isError?: boolean };
+  return r.result as { content: Array<{ text: string }>; structuredContent?: { exitCode?: number; result?: unknown; command?: string; hash?: string; requiredFlags?: unknown }; isError?: boolean };
 }
 const writeJson = (name: string, value: unknown) => writeFileSync(join(tmp.dir, name), JSON.stringify(value));
 
@@ -62,7 +63,7 @@ describe('MCP protocol', () => {
     expect((await call('nope')).error).toMatchObject({ code: -32601 });
 
     const list = (await call('tools/list')).result as { tools: Array<{ name: string; inputSchema: { type: string; additionalProperties: boolean; properties: Record<string, unknown>; required?: string[] } }> };
-    expect(list.tools.map((t) => t.name)).toEqual(['offers', 'drift', 'plan', 'diff', 'apply_command']);
+    expect(list.tools.map((t) => t.name)).toEqual(['offers', 'plan', 'diff', 'apply_command']);
     for (const t of list.tools) {
       expect(t.inputSchema).toMatchObject({ type: 'object', additionalProperties: false });
       for (const key of t.inputSchema.required ?? []) expect(t.inputSchema.properties).toHaveProperty(key);
@@ -77,15 +78,13 @@ describe('MCP protocol', () => {
 });
 
 describe('MCP tools', () => {
-  it('drift and offers run the read-only commands', async () => {
-    const drift = await tool('drift', { rules: 'rules.json' });
-    expect(drift.structuredContent).toMatchObject({ exitCode: 0, result: { kind: 'pricingkit.rulesDrift', inSync: true } });
+  it('offers runs the read-only command', async () => {
     const offers = await tool('offers', { bundleId: BUNDLE, subscription: A, kind: 'apple.promo' });
     expect(offers.structuredContent).toMatchObject({ exitCode: 0, result: { kind: 'pricingkit.offers' } });
     expect(store.writes()).toEqual([]);
   });
 
-  it('plan writes a plan file, diff summarises it, apply_command returns the command and applies nothing', async () => {
+  it('plan writes a plan file, diff summarises it, apply_command returns the start of the command and applies nothing', async () => {
     const plan = await tool('plan', { spec: 'base.json', rules: 'rules.json', out: 'plans/plan.json' });
     // plans/ doesn't exist: the CLI reports it, nothing is written
     expect(plan.isError).toBe(true);
@@ -93,26 +92,37 @@ describe('MCP tools', () => {
     expect(ok.structuredContent!.exitCode).toBe(2);
     const changeSet = parseChangeSet(readFileSync(join(tmp.dir, 'plan.json'), 'utf8'));
     const hash = changeSetHash(changeSet);
-    expect((ok.structuredContent!.result as { hash: string }).hash).toBe(hash);
+    // No tool output carries the confirm hash: the person applying runs diff themselves
+    expect((ok.structuredContent!.result as { hash?: string }).hash).toBeUndefined();
+    expect(JSON.stringify(ok)).not.toContain(hash);
 
     const diff = await tool('diff', { plan: 'plan.json' });
-    expect(diff.structuredContent).toMatchObject({ exitCode: 2, result: { changeSetHash: hash, byGroup: { basePrices: 2, offers: 1 } } });
+    expect(diff.structuredContent).toMatchObject({ exitCode: 2, result: { byGroup: { basePrices: 2, offers: 1 } } });
+    expect((diff.structuredContent!.result as { changeSetHash?: string }).changeSetHash).toBeUndefined();
+    expect(JSON.stringify(diff)).not.toContain(hash);
 
     const before = appleApiRequest.mock.calls.length;
     const command = await tool('apply_command', { plan: 'plan.json' });
-    expect(command.structuredContent!.command).toBe(`pricingkit apply plan.json --confirm ${hash} --allow-base-prices`);
-    expect(command.content[0].text).toMatch(/A person must review the plan/);
+    // No hash and no opt-in flag: the person gets the hash from their own diff and adds the flag knowingly
+    expect(command.structuredContent!.command).toBe('pricingkit apply plan.json');
+    expect(JSON.stringify(command)).not.toContain(hash);
+    expect(command.structuredContent).toMatchObject({ needsConfirm: true, requiredFlags: [{ flag: '--allow-base-prices', reason: expect.stringMatching(/changes base prices \(2 ops\)/) }] });
+    expect(command.content[0].text).toMatch(/^pricingkit apply plan\.json --confirm <hash from pricingkit diff>/);
+    expect(command.content[0].text).toMatch(/runs this command with --confirm <the hash that diff prints> and the flags below/);
+    expect(command.content[0].text).toMatch(/PRICINGKIT_EXPECT_BUNDLE_ID/);
     expect(appleApiRequest.mock.calls.length).toBe(before);
     expect(store.writes()).toEqual([]);
     expect(readdirSync(tmp.dir).some((f) => f.endsWith('.run.json'))).toBe(false);
 
     // The command it returns works for the person who runs it
-    const applied = await runCliCaptured((command.structuredContent!.command as string).split(' ').slice(1), { env, cwd: tmp.dir });
+    const reviewed = await runCliCaptured(['diff', 'plan.json', '--json'], { cwd: tmp.dir });
+    const confirm = JSON.parse(reviewed.stdout).changeSetHash;
+    const applied = await runCliCaptured([...(command.structuredContent!.command as string).split(' ').slice(1), '--confirm', confirm, '--allow-base-prices'], { env, cwd: tmp.dir });
     expect(applied.code).toBe(0);
     expect(store.writes()).toHaveLength(3);
   });
 
-  it('apply_command adds --force-delete for deletes and --resume when asked', async () => {
+  it('apply_command names --force-delete for deletes, and adds --resume when asked', async () => {
     const del = await runCliCaptured(['offer', 'delete', '--bundle-id', BUNDLE, '--subscription', A, '--kind', 'apple.promo', '--offer', 'example_annual_50', '--out', 'del.json'], { env, cwd: tmp.dir });
     expect(del.code).toBe(2);
     const hash = changeSetHash(parseChangeSet(readFileSync(join(tmp.dir, 'del.json'), 'utf8')));
@@ -121,7 +131,8 @@ describe('MCP tools', () => {
     // A failed run (no --force-delete) leaves a log to resume
     expect((await runCliCaptured(['apply', 'del.json', '--confirm', hash], { env, cwd: tmp.dir })).code).toBe(1);
     const r = await tool('apply_command', { plan: 'del.json', resume: 'del.run.json' });
-    expect(r.structuredContent!.command).toBe(`pricingkit apply del.json --confirm ${hash} --resume del.run.json --force-delete`);
+    expect(r.structuredContent!.command).toBe('pricingkit apply del.json --resume del.run.json');
+    expect(r.structuredContent!.requiredFlags).toEqual([{ flag: '--force-delete', reason: expect.stringMatching(/deletes 1 offer/) }]);
     expect(r.content[0].text).toMatch(/already records 0 of 1 ops as done \(ok or skipped\); they won't be re-checked\. 1 will be checked/);
 
     // A run log of another plan is refused
@@ -139,7 +150,7 @@ describe('MCP tools', () => {
     const cases: Array<[string, Record<string, unknown>, RegExp]> = [
       ['plan', { spec: 'base.json' }, /out is required/],
       ['plan', { spec: 'base.json', out: 'p.json', confirm: 'x' }, /Unknown argument "confirm"/],
-      ['drift', { rules: '--help' }, /can't be empty or start with "-"/],
+      ['plan', { rules: '--help', out: 'p.json' }, /can't be empty or start with "-"/],
       ['offers', { bundleId: BUNDLE, subscription: A, kind: 'apple.everything' }, /kind must be one of/],
       ['offers', { bundleId: BUNDLE, subscription: 9900000001 }, /subscription must be a string/],
       ['plan', { spec: '../outside.json', out: 'p.json' }, /spec must be a file inside the working directory/],
@@ -226,9 +237,9 @@ describe('MCP tools', () => {
   });
 
   it('reports CLI errors as tool errors, redacted, with the exit code', async () => {
-    const r = await tool('drift', { rules: 'missing.json' });
+    const r = await tool('diff', { plan: 'missing.json' });
     expect(r.isError).toBe(true);
-    expect(r.structuredContent).toMatchObject({ exitCode: 1, result: { error: { message: expect.stringMatching(/Can't read rules file missing\.json/) } } });
+    expect(r.structuredContent).toMatchObject({ exitCode: 1, result: { error: { message: expect.stringMatching(/missing\.json/) } } });
     expect(JSON.stringify(r)).not.toContain(env.ASC_PRIVATE_KEY.split('\n')[1]);
   });
 });
@@ -248,7 +259,7 @@ describe('MCP notifications and output files', () => {
     expect(logged.join('')).toMatch(/refused a plan call sent as a notification/);
     expect(appleApiRequest).not.toHaveBeenCalled();
     // A read-only tool sent as a notification runs; nothing is answered
-    expect(await server.handle({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'drift', arguments: { rules: 'rules.json' } } })).toBeUndefined();
+    expect(await server.handle({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'offers', arguments: { bundleId: BUNDLE, subscription: A } } })).toBeUndefined();
     expect(appleApiRequest).toHaveBeenCalled();
   });
 
@@ -345,3 +356,49 @@ describe('the write boundary', () => {
     expect(mcp).not.toMatch(/commands\/apply'|applyCommand\b|applyChangeSet/);
   });
 });
+
+describe('MCP file safety', () => {
+  it.skipIf(process.platform === 'win32')('refuses a FIFO instead of blocking on it, in the server and in the CLI', async () => {
+    execFileSync('mkfifo', [join(tmp.dir, 'fifo.json')]);
+    const r = await tool('diff', { plan: 'fifo.json' });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/plan: fifo\.json is not a regular file/);
+    const cli = await runCliCaptured(['diff', 'fifo.json'], { cwd: tmp.dir });
+    expect(cli.code).toBe(1);
+    expect(cli.stderr).toMatch(/not a regular file/);
+  });
+
+  it('refuses a file larger than the cap before reading it', async () => {
+    writeFileSync(join(tmp.dir, 'huge.json'), '');
+    truncateSync(join(tmp.dir, 'huge.json'), MAX_TOOL_FILE_BYTES + 1);
+    const r = await tool('diff', { plan: 'huge.json' });
+    expect(r.content[0].text).toMatch(/larger than 16 MB/);
+  });
+
+  it('never writes into dot-folders or dot-files', async () => {
+    mkdirSync(join(tmp.dir, '.github'));
+    for (const out of ['.github/plan.json', '.plan.json']) {
+      const r = await tool('plan', { spec: 'base.json', out });
+      expect(r.isError, out).toBe(true);
+      expect(r.content[0].text).toMatch(/starting with "\."/);
+    }
+    mkdirSync(join(tmp.dir, 'plans'));
+    symlinkSync(join(tmp.dir, '.github'), join(tmp.dir, 'plans', 'ci'));
+    expect((await tool('plan', { spec: 'base.json', out: 'plans/ci/plan.json' })).content[0].text).toMatch(/starting with "\."/);
+    expect(readdirSync(join(tmp.dir, '.github'))).toEqual([]);
+    expect(appleApiRequest).not.toHaveBeenCalled();
+  });
+
+  it('quotes a leading "=" (zsh expands =cmd to a path)', () => {
+    expect(shellQuote('=ls')).toBe("'=ls'");
+    expect(shellQuote('a=b')).toBe('a=b');
+  });
+
+  it('scrubs credentials from internal error messages', () => {
+    const message = internalErrorMessage(new Error(`failed with ${env.ASC_PRIVATE_KEY} and key ${env.ASC_KEY_ID}`), env);
+    expect(message).not.toContain(env.ASC_KEY_ID);
+    expect(message).not.toContain(env.ASC_PRIVATE_KEY.split('\n')[1]);
+    expect(message.length).toBeLessThanOrEqual(303);
+  });
+});
+

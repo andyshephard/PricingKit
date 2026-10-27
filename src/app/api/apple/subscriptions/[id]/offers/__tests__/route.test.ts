@@ -23,6 +23,9 @@ vi.mock('@/lib/adapters/apple', () => ({
   },
 }));
 
+const assertSubscriptionInApp = vi.fn(async (..._args: unknown[]) => {});
+vi.mock('@/lib/apple-connect/ownership', () => ({ assertSubscriptionInApp: (...args: unknown[]) => assertSubscriptionInApp(...args) }));
+
 import { GET } from '../route';
 
 function call(id: string) {
@@ -34,6 +37,18 @@ beforeEach(() => {
   getAppleAuthFromCookies.mockReset();
   getAppleAuthFromCookies.mockResolvedValue(session);
   constructed.length = 0;
+  assertSubscriptionInApp.mockReset();
+  assertSubscriptionInApp.mockResolvedValue(undefined);
+});
+
+describe('GET offers ownership', () => {
+  it("refuses another app's subscription before reading its offers", async () => {
+    assertSubscriptionInApp.mockRejectedValue(new ApiError('Subscription 456 is not in com.example.test', { status: 409, code: 'APP_MISMATCH', platform: 'apple' }));
+    const res = await call('456');
+    expect(res.status).toBe(409);
+    expect(assertSubscriptionInApp).toHaveBeenCalledWith(session.credentials, '456', expect.objectContaining({ budget: expect.any(RequestBudget) }));
+    expect(fetchOffers).not.toHaveBeenCalled();
+  });
 });
 
 describe('GET offers', () => {

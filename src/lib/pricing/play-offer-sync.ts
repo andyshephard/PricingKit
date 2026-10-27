@@ -1,25 +1,24 @@
-// Sync and drift for Google Play offers, from the same rules file as App
-// Store offers (`pricingkit.offerRules`, for a packageName app). Pure: the
-// Play adapter reads the base plans, their offers and Play's prices for
-// percent-of-current targets, and passes them in.
+// Sync for Google Play offers, from the same rules file as App Store offers
+// (`pricingkit.offerRules`, for a packageName app). Pure: the Play adapter
+// reads the base plans, their offers and Play's prices for percent-of-current
+// targets, and passes them in.
 //
 // What a base price change does to each kind of Play rule:
 //   play.relativeDiscount - nothing: Play applies the fraction to whatever the
 //                           base price is, so the offer follows it by itself
-//                           ("follows base automatically"). Drift checks only
-//                           that every region still has that fraction.
+//                           ("follows base automatically").
 //   play.absoluteDiscount - the offer keeps the same amount off the new base
-//                           price. Drift checks the amounts; sync re-writes
-//                           them only if they differ from the rule, and flags
-//                           regions where the amount is no longer below the
-//                           base price.
-//   fixed                 - fixed offer prices: drift checks them; sync
-//                           re-writes them if they differ and flags regions
-//                           where the price is no longer below the base.
+//                           price. Sync re-writes the amounts only if they
+//                           differ from the rule, and flags regions where the
+//                           amount is no longer below the base price.
+//   fixed                 - fixed offer prices: sync re-writes them if they
+//                           differ and flags regions where the price is no
+//                           longer below the base.
 //   percentOfCurrent      - absolute prices derived from the base price, so
-//                           they drift when it changes: sync re-derives them
-//                           against the new base (Play's own price for each
-//                           target) and re-writes the phase prices.
+//                           they go out of step when it changes: sync
+//                           re-derives them against the new base (Play's own
+//                           price for each target) and re-writes the phase
+//                           prices.
 
 import {
   basePriceOps,
@@ -36,7 +35,6 @@ import {
 } from './changeset';
 import type { Decimal } from './decimal';
 import { productKey, type AppRef, type ProductPriceState, type ProductRef } from './model';
-import type { OfferDriftStatus } from './offer-derivation';
 import { isOfferOp } from './offer-ops';
 import type { StoreOffer } from './offers';
 import {
@@ -48,20 +46,14 @@ import {
 import {
   changedPlayRegions,
   computePlayOfferIdempotencyKey,
-  describePlayPhase,
-  describePlayTargeting,
-  samePhaseRegionPrice,
   storeOfferProblems,
   type PlayOfferOp,
   type PlayOfferState,
   type PlayPhaseRegionPrice,
 } from './play-offers';
-import { projectBasePrices, type OfferRule, type OfferSyncEntry, type OfferSyncPlan, type PlayRulePricing, type RulesDriftEntry, type RulesDriftReport } from './offer-sync';
+import { projectBasePrices, type OfferRule, type OfferSyncEntry, type OfferSyncPlan } from './offer-sync';
 
-export const PLAY_OFFER_DRIFT_KIND = 'pricingkit.playOfferDrift' as const;
-export const PLAY_OFFER_DRIFT_SCHEMA_VERSION = 1 as const;
-
-/** What sync and drift need about one base plan */
+/** What sync needs about one base plan */
 export interface PlayRuleProduct {
   product: ProductRef;
   /** The base plan's billing period (ISO 8601) */
@@ -77,46 +69,6 @@ export type PlayRuleSnaps = Record<string, { resolved: Record<string, { currency
 
 export function playRuleKey(rule: Pick<OfferRule, 'product' | 'key'>): string {
   return `${productKey(rule.product)}|${rule.key}`;
-}
-
-export interface PlayOfferDriftEntry {
-  territory: string;
-  status: OfferDriftStatus;
-  /** The phase's price config as Play has it */
-  actual?: PlayPhaseRegionPrice;
-  /** What the rule gives */
-  expected?: PlayPhaseRegionPrice;
-  basePrice?: Decimal;
-  /** What the rule's price comes to per recurrence (an estimate for discounts) */
-  offerPrice?: Decimal;
-  reason?: string;
-}
-
-export interface PlayOfferDriftReport {
-  kind: typeof PLAY_OFFER_DRIFT_KIND;
-  schemaVersion: typeof PLAY_OFFER_DRIFT_SCHEMA_VERSION;
-  checkedAt: string;
-  offer: {
-    kind: 'play.offer';
-    key: string;
-    storeId: string;
-    state: PlayOfferState['state'];
-    eligibility: string;
-    tags: string[];
-    phases: string[];
-  };
-  rule: PlayRulePricing;
-  /** 1-based phase the rule prices */
-  phase: number;
-  billingPeriod: string;
-  /** Relative discounts follow the base price by themselves: no sync needed when in sync */
-  followsBase: boolean;
-  inSync: boolean;
-  summary: Record<OfferDriftStatus, number>;
-  territories: PlayOfferDriftEntry[];
-  outOfScope?: string[];
-  problems?: string[];
-  warnings?: Array<{ territory: string; message: string }>;
 }
 
 /** The rule as derivation pricing: percentOfCurrent keeps an optional basis (Play default: prorated over the phase) */
@@ -149,12 +101,11 @@ export function findPlayRuleOffer(rule: Pick<OfferRule, 'key' | 'product'>, offe
   );
 }
 
-/** The regions a rule covers: drift - the rule's list, or every base plan region; sync - the offer's regions (within the list) */
-function ruleScope(rule: OfferRule, offer: PlayOfferState, purpose: 'sync' | 'drift'): 'all' | string[] {
+/** The regions sync covers: the offer's regions (within the rule's list, if it has one) */
+function ruleScope(rule: OfferRule, offer: PlayOfferState): string[] {
   const list = rule.territories && rule.territories !== 'all' ? rule.territories : undefined;
   const own = Object.keys(offer.regions).sort();
-  if (purpose === 'sync') return list ? own.filter((r) => list.includes(r)) : own;
-  return list ?? 'all';
+  return list ? own.filter((r) => list.includes(r)) : own;
 }
 
 export type PlayRuleTarget = { rule: OfferRule; base: ProductPriceState; targets: Record<string, { currency: string; amount: Decimal }> };
@@ -162,14 +113,14 @@ export type PlayRuleTarget = { rule: OfferRule; base: ProductPriceState; targets
 /**
  * The exact targets the adapter has to turn into Play prices for each
  * percentOfCurrent rule, against `bases` (the plan's projected base prices
- * for sync; today's for drift). Rules that can't price their offer are
+ * or today's). Rules that can't price their offer, and rules without syncWithBase, are
  * left out (the planner reports them).
  */
-export function playRuleTargets(rules: OfferRule[], products: PlayRuleProduct[], purpose: 'sync' | 'drift', bases?: Map<string, ProductPriceState>): PlayRuleTarget[] {
+export function playRuleTargets(rules: OfferRule[], products: PlayRuleProduct[], bases?: Map<string, ProductPriceState>): PlayRuleTarget[] {
   const out: PlayRuleTarget[] = [];
   for (const rule of rules) {
     if (rule.kind !== 'play.offer' || rule.pricing.type !== 'percentOfCurrent') continue;
-    if (purpose === 'sync' && !rule.syncWithBase) continue;
+    if (!rule.syncWithBase) continue;
     const data = products.find((p) => productKey(p.product) === productKey(rule.product));
     if (!data) continue;
     const matches = findPlayRuleOffer(rule, data.offers);
@@ -178,138 +129,10 @@ export function playRuleTargets(rules: OfferRule[], products: PlayRuleProduct[],
     const phase = playRulePhase(rule, offer);
     if ('error' in phase) continue;
     const base = bases?.get(productKey(rule.product)) ?? data.base;
-    const targets = playPercentTargets({ pricing: pricingOf(rule), phase: offer.phases[phase.index], billingPeriod: data.billingPeriod, base, territories: ruleScope(rule, offer, purpose) });
+    const targets = playPercentTargets({ pricing: pricingOf(rule), phase: offer.phases[phase.index], billingPeriod: data.billingPeriod, base, territories: ruleScope(rule, offer) });
     if (Object.keys(targets).length > 0) out.push({ rule, base, targets });
   }
   return out;
-}
-
-// ---------------------------------------------------------------------------
-// Drift
-
-function emptySummary(): Record<OfferDriftStatus, number> {
-  return { match: 0, mismatch: 0, missing: 0, extra: 0, unresolved: 0, unreadable: 0 };
-}
-
-function checkPlayRule(rule: OfferRule, data: PlayRuleProduct, snaps: PlayRuleSnaps, checkedAt: string): RulesDriftEntry {
-  const head = { product: rule.product, kind: rule.kind, key: rule.key, syncWithBase: rule.syncWithBase };
-  const matches = findPlayRuleOffer(rule, data.offers);
-  if (matches.length === 0) return { ...head, status: 'notFound' };
-  if (matches.length > 1) return { ...head, status: 'error', error: { code: 'AMBIGUOUS_OFFER', message: `${matches.length} offers match "${rule.key}"` } };
-  const store = matches[0];
-  const offer = store.play?.offer;
-  if (!offer) return { ...head, status: 'error', error: { code: 'OFFER_UNREADABLE', message: `The Play offer "${rule.key}" has no readable details` } };
-  const phase = playRulePhase(rule, offer);
-  if ('error' in phase) return { ...head, status: 'error', error: { code: 'OFFER_RULE', message: `The rule can't check the Play offer "${rule.key}": ${phase.error}` } };
-  const pricing = pricingOf(rule);
-  const problem = playPricingProblem(pricing, offer.phases[phase.index], data.billingPeriod);
-  if (problem) return { ...head, status: 'error', error: { code: 'OFFER_RULE', message: problem } };
-
-  const scope = ruleScope(rule, offer, 'drift');
-  const rows = derivePlayPhasePrices({
-    pricing,
-    phase: offer.phases[phase.index],
-    billingPeriod: data.billingPeriod,
-    base: data.base,
-    territories: scope,
-    ...(snaps[playRuleKey(rule)] ? { snapped: snaps[playRuleKey(rule)] } : {}),
-    ...(rule.deviationThreshold ? { deviationThreshold: rule.deviationThreshold } : {}),
-  });
-  const actualPhase = offer.phases[phase.index];
-  const entries: PlayOfferDriftEntry[] = [];
-  const warnings: Array<{ territory: string; message: string }> = [];
-  const covered = new Set<string>();
-  for (const row of rows) {
-    covered.add(row.region);
-    for (const f of row.flags) if (f.severity === 'warning') warnings.push({ territory: row.region, message: f.message });
-    const actual = actualPhase.regions[row.region];
-    const unreadable = store.territoryProblems?.[row.region];
-    const extras = { ...(row.basePrice ? { basePrice: row.basePrice } : {}), ...(row.offerPrice ? { offerPrice: row.offerPrice } : {}) };
-    if (unreadable) entries.push({ territory: row.region, status: 'unreadable', reason: unreadable });
-    else if (!row.ok || !row.config) {
-      entries.push({ territory: row.region, status: 'unresolved', ...(actual ? { actual } : {}), ...extras, reason: row.flags.filter((f) => f.severity === 'error').map((f) => f.message).join('; ') });
-    } else if (!actual) entries.push({ territory: row.region, status: 'missing', expected: row.config, ...extras, reason: 'The offer has no price in this region' });
-    else if (samePhaseRegionPrice(actual, row.config)) entries.push({ territory: row.region, status: 'match', actual, expected: row.config, ...extras });
-    else entries.push({ territory: row.region, status: 'mismatch', actual, expected: row.config, ...extras, reason: `Offer has ${describe(actual)}, rule gives ${describe(row.config)}` });
-  }
-  const scoped = scope !== 'all';
-  const outOfScope: string[] = [];
-  for (const region of Object.keys(offer.regions).sort()) {
-    if (covered.has(region)) continue;
-    if (scoped) outOfScope.push(region);
-    else entries.push({ territory: region, status: 'extra', ...(actualPhase.regions[region] ? { actual: actualPhase.regions[region] } : {}), reason: 'The offer has a price in a region the rule does not cover' });
-  }
-  entries.sort((a, b) => a.territory.localeCompare(b.territory));
-  const summary = emptySummary();
-  for (const e of entries) summary[e.status]++;
-  const problems = store.problems ?? [];
-  const report: PlayOfferDriftReport = {
-    kind: PLAY_OFFER_DRIFT_KIND,
-    schemaVersion: PLAY_OFFER_DRIFT_SCHEMA_VERSION,
-    checkedAt,
-    offer: {
-      kind: 'play.offer',
-      key: offer.key,
-      storeId: store.storeId,
-      state: offer.state,
-      eligibility: describePlayTargeting(offer.targeting),
-      tags: offer.tags,
-      phases: offer.phases.map(describePlayPhase),
-    },
-    rule: rule.pricing,
-    phase: phase.index + 1,
-    billingPeriod: data.billingPeriod,
-    followsBase: rule.pricing.type === 'play.relativeDiscount',
-    inSync: entries.length > 0 && entries.every((e) => e.status === 'match') && problems.length === 0,
-    summary,
-    territories: entries,
-    ...(scoped ? { outOfScope } : {}),
-    ...(problems.length ? { problems: [...problems] } : {}),
-    ...(warnings.length ? { warnings } : {}),
-  };
-  return { ...head, status: report.inSync ? 'inSync' : 'drifted', report };
-}
-
-function describe(price: PlayPhaseRegionPrice): string {
-  switch (price.type) {
-    case 'free':
-      return 'free';
-    case 'relativeDiscount':
-      return `relative discount ${price.fraction}`;
-    case 'absoluteDiscount':
-      return `${price.amount} ${price.currency} off`;
-    default:
-      return `${price.amount} ${price.currency}`;
-  }
-}
-
-export interface PlayRulesDriftInput {
-  app: AppRef;
-  rules: OfferRule[];
-  products: PlayRuleProduct[];
-  /** Play's prices for percentOfCurrent targets against today's base prices */
-  snaps?: PlayRuleSnaps;
-  now?: string;
-}
-
-/** Check every Play offer in a rules file against its rule; one pricingkit.rulesDrift report */
-export function checkPlayRulesDrift(input: PlayRulesDriftInput): RulesDriftReport {
-  const checkedAt = input.now ?? new Date().toISOString();
-  const offers = input.rules.map((rule) => {
-    const data = input.products.find((p) => productKey(p.product) === productKey(rule.product));
-    if (!data) throw new Error(`checkPlayRulesDrift: no state was passed for ${productKey(rule.product)}`);
-    return checkPlayRule(rule, data, input.snaps ?? {}, checkedAt);
-  });
-  const count = (status: RulesDriftEntry['status']) => offers.filter((o) => o.status === status).length;
-  return {
-    kind: 'pricingkit.rulesDrift',
-    schemaVersion: 1,
-    checkedAt,
-    app: input.app,
-    inSync: offers.every((o) => o.status === 'inSync'),
-    summary: { offers: offers.length, inSync: count('inSync'), drifted: count('drifted'), notFound: count('notFound'), errors: count('error') },
-    offers,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +237,7 @@ export function planPlayOfferSync(input: PlanPlayOfferSyncInput): OfferSyncPlan 
       continue;
     }
 
-    const scope = ruleScope(rule, state, 'sync') as string[];
+    const scope = ruleScope(rule, state);
     const used = baseOps.filter((op) => productKey(op.target.product) === pk && op.kind === 'setPrice' && scope.includes(op.target.territory));
     if (used.length > 0) entry.pricedAgainst = 'planTargets';
     const rows = derivePlayPhasePrices({

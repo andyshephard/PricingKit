@@ -1,51 +1,38 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import {
-  appleApiRequest,
-  AppleApiError,
-  getAppleSessionCredentials,
-} from '@/lib/apple-connect/client';
+import { appleApiRequest, AppleApiError } from '@/lib/apple-connect/client';
 import type {
   AppleApiListResponse,
   AppleConnectCredentials,
 } from '@/lib/apple-connect/types';
-import {
-  APPLE_BUNDLE_ID_COOKIE,
-  APPLE_SESSION_COOKIE,
-  SESSION_COOKIE_MAX_AGE,
-} from '@/lib/session';
-
-const COOKIE_MAX_AGE = SESSION_COOKIE_MAX_AGE;
+import { COOKIE_NAMES, readSessionCookie, SESSION_COOKIE_MAX_AGE, writeCookie } from '@/lib/session';
+import { readJsonBody, rejectCrossSite, SMALL_BODY_LIMIT } from '@/lib/request-guard';
+import { bundleIdSchema } from '@/lib/validation';
 
 export async function POST(request: NextRequest) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   const cookieStore = await cookies();
-  const sessionId = cookieStore.get(APPLE_SESSION_COOKIE)?.value;
-  if (!sessionId) {
-    return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-  }
-
-  const sessionCredentials = await getAppleSessionCredentials(sessionId);
+  const sessionCredentials = await readSessionCookie(cookieStore, 'apple');
   if (!sessionCredentials) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
   }
 
-  let body: { bundleId?: unknown };
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json(
-      { error: 'Invalid JSON in request body' },
-      { status: 400 }
-    );
-  }
+  const read = await readJsonBody(request, SMALL_BODY_LIMIT);
+  if (!read.ok) return read.response;
+  const body = (typeof read.body === 'object' && read.body !== null ? read.body : {}) as { bundleId?: unknown };
 
-  const bundleId = body.bundleId;
-  if (typeof bundleId !== 'string' || bundleId.trim() === '') {
+  if (typeof body.bundleId !== 'string' || body.bundleId.trim() === '') {
     return NextResponse.json(
       { error: 'Missing bundleId in request body' },
       { status: 400 }
     );
   }
+  const parsedBundle = bundleIdSchema.safeParse(body.bundleId);
+  if (!parsedBundle.success) {
+    return NextResponse.json({ error: 'Invalid bundle ID' }, { status: 400 });
+  }
+  const bundleId = parsedBundle.data;
 
   const credentials: AppleConnectCredentials = {
     ...sessionCredentials,
@@ -88,13 +75,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  cookieStore.set(APPLE_BUNDLE_ID_COOKIE, bundleId, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    maxAge: COOKIE_MAX_AGE,
-    path: '/',
-  });
+  writeCookie(cookieStore, COOKIE_NAMES.appleBundle, bundleId, SESSION_COOKIE_MAX_AGE);
 
   return NextResponse.json({ ok: true, bundleId });
 }

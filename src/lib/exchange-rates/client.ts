@@ -26,14 +26,40 @@ interface OpenExchangeRatesResponse {
   rates: Record<string, number>;
 }
 
-// In-memory cache
+// Caches, from cheapest to slowest: this isolate's memory, the platform's
+// shared cache (Cloudflare's Cache API, when there is one), and on Node a
+// file in the working directory. Requests that miss share one in-flight
+// upstream request, and a failed one is remembered for 5 minutes, so a burst
+// of requests or an upstream outage costs the operator's key one request,
+// not one per visitor.
 let memoryCache: ExchangeRatesData | null = null;
+let inFlight: Promise<ExchangeRatesData> | null = null;
+let lastFailure: { at: number; error: unknown } | null = null;
+
+/** How long a failed upstream request is remembered (no new request meanwhile) */
+export const FAILURE_CACHE_MS = 5 * 60 * 1000;
+/** Upstream request timeout */
+export const FETCH_TIMEOUT_MS = 10_000;
+const SHARED_CACHE_URL = 'https://pricingkit.invalid/cache/exchange-rates/v1';
+
+/** Test-only: forget every cached result, failure and in-flight request */
+export function resetExchangeRatesCacheForTests(): void {
+  memoryCache = null;
+  inFlight = null;
+  lastFailure = null;
+}
 
 /**
  * Get the API key from provided value or environment variables
  */
 function getApiKey(providedKey?: string): string | null {
   return providedKey || process.env.OPEN_EXCHANGE_RATES_APP_ID || null;
+}
+
+function isRatesData(value: unknown): value is ExchangeRatesData {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.base === 'string' && typeof v.fetchedAt === 'string' && typeof v.timestamp === 'number' && typeof v.rates === 'object' && v.rates !== null;
 }
 
 /**
@@ -44,8 +70,8 @@ async function loadFromDisk(): Promise<ExchangeRatesData | null> {
     const fs = await import('fs/promises');
     const path = await import('path');
     const cacheFile = path.join(process.cwd(), '.exchange-rates.json');
-    const data = await fs.readFile(cacheFile, 'utf-8');
-    return JSON.parse(data) as ExchangeRatesData;
+    const data = JSON.parse(await fs.readFile(cacheFile, 'utf-8'));
+    return isRatesData(data) ? data : null;
   } catch {
     return null;
   }
@@ -65,12 +91,66 @@ async function saveToDisk(data: ExchangeRatesData): Promise<void> {
   }
 }
 
+/** Cloudflare's shared cache (caches.default), or null on Node and in tests */
+function sharedCache(): Cache | null {
+  try {
+    const store = (globalThis as { caches?: { default?: Cache } }).caches?.default;
+    return store && typeof store.match === 'function' && typeof store.put === 'function' ? store : null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadShared(): Promise<ExchangeRatesData | null> {
+  const cache = sharedCache();
+  if (!cache) return null;
+  try {
+    const response = await cache.match(SHARED_CACHE_URL);
+    if (!response) return null;
+    const data = await response.json();
+    return isRatesData(data) ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveShared(data: ExchangeRatesData): Promise<void> {
+  const cache = sharedCache();
+  if (!cache) return;
+  try {
+    await cache.put(
+      SHARED_CACHE_URL,
+      new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json', 'Cache-Control': `max-age=${CACHE_DURATION_MS / 1000}` } })
+    );
+  } catch {
+    // best effort
+  }
+}
+
 /**
  * Check if cached data is still valid
  */
 function isCacheValid(data: ExchangeRatesData): boolean {
   const age = Date.now() - new Date(data.fetchedAt).getTime();
   return age < CACHE_DURATION_MS;
+}
+
+/** Fresh data from memory, the shared cache or disk, or null */
+async function freshCached(): Promise<ExchangeRatesData | null> {
+  if (memoryCache && isCacheValid(memoryCache)) return memoryCache;
+  for (const load of [loadShared, loadFromDisk]) {
+    const data = await load();
+    if (data && isCacheValid(data)) {
+      memoryCache = data;
+      return data;
+    }
+  }
+  return null;
+}
+
+/** The newest data we have, however old */
+async function staleCached(): Promise<ExchangeRatesData | null> {
+  return memoryCache ?? (await loadShared()) ?? (await loadFromDisk());
 }
 
 /**
@@ -89,11 +169,13 @@ async function fetchFromApi(providedApiKey?: string): Promise<ExchangeRatesData>
     headers: {
       'Accept': 'application/json',
     },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Open Exchange Rates API error: ${response.status} - ${errorText}`);
+    // The body may echo request details; it is not passed on
+    await response.body?.cancel().catch(() => {});
+    throw new Error(`Open Exchange Rates API error: ${response.status}`);
   }
 
   const data: OpenExchangeRatesResponse = await response.json();
@@ -106,42 +188,86 @@ async function fetchFromApi(providedApiKey?: string): Promise<ExchangeRatesData>
   };
 }
 
+async function store(fresh: ExchangeRatesData): Promise<void> {
+  memoryCache = fresh;
+  await saveShared(fresh);
+  await saveToDisk(fresh);
+}
+
 /**
- * Get exchange rates with caching
- * Returns cached data if available and valid, otherwise fetches fresh data
- * @param forceRefresh - Force a fresh fetch from the API
- * @param apiKey - Optional API key (uses env var if not provided)
+ * One upstream request with the operator's key (OPEN_EXCHANGE_RATES_APP_ID).
+ * The only fetch whose failure is remembered and whose promise is shared:
+ * both describe the operator key, so nothing a visitor sends can affect them.
  */
-export async function getExchangeRates(forceRefresh = false, apiKey?: string): Promise<ExchangeRatesData> {
-  // Check memory cache first
-  if (!forceRefresh && memoryCache && isCacheValid(memoryCache)) {
-    return memoryCache;
-  }
-
-  // Check disk cache
-  if (!forceRefresh) {
-    const diskCache = await loadFromDisk();
-    if (diskCache && isCacheValid(diskCache)) {
-      memoryCache = diskCache;
-      return diskCache;
-    }
-  }
-
-  // Fetch fresh data from API
+async function fetchWithOperatorKey(): Promise<ExchangeRatesData> {
   try {
-    const freshData = await fetchFromApi(apiKey);
-    memoryCache = freshData;
-    await saveToDisk(freshData);
-    return freshData;
+    const fresh = await fetchFromApi();
+    lastFailure = null;
+    await store(fresh);
+    return fresh;
   } catch (error) {
-    // If API call fails, try to use stale cache
-    const staleCache = memoryCache || await loadFromDisk();
-    if (staleCache) {
-      console.warn('Using stale exchange rates cache due to API error:', error);
-      return staleCache;
+    if (!(error instanceof NoApiKeyError)) lastFailure = { at: Date.now(), error };
+    const stale = await staleCached();
+    if (stale) {
+      console.warn('Using stale exchange rates cache due to API error:', error instanceof Error ? error.message : error);
+      return stale;
     }
     throw error;
   }
+}
+
+/**
+ * One upstream request with a user's own key (saved in Settings). Never
+ * shares a promise with other requests and never touches the operator key's
+ * failure memory: a bogus user key can't make other visitors' requests fail.
+ */
+async function fetchWithUserKey(apiKey: string): Promise<ExchangeRatesData> {
+  try {
+    const fresh = await fetchFromApi(apiKey);
+    await store(fresh);
+    return fresh;
+  } catch (error) {
+    const stale = await staleCached();
+    if (stale) return stale;
+    throw error;
+  }
+}
+
+/**
+ * Exchange rates, from a cache when one is fresh (6 hours).
+ *
+ * With the user's own key (`apiKey`, saved in Settings) a miss, or a
+ * `forceRefresh`, goes upstream with that key, on its own. Otherwise the
+ * operator's key (OPEN_EXCHANGE_RATES_APP_ID) is used: concurrent misses
+ * share one upstream request, and after a failure no request is sent for 5
+ * minutes (stale data, if any, is served meanwhile; else the same error).
+ * `forceRefresh` never spends the operator key: without a user key it is
+ * served from the caches like any other request.
+ */
+export async function getExchangeRates(forceRefresh = false, apiKey?: string): Promise<ExchangeRatesData> {
+  if (!(forceRefresh && apiKey)) {
+    const cached = await freshCached();
+    if (cached) return cached;
+  }
+  if (apiKey) return fetchWithUserKey(apiKey);
+
+  // A missing key fails without contacting anyone; it isn't cached (a key may be added any moment)
+  if (!getApiKey()) {
+    const stale = await staleCached();
+    if (stale) return stale;
+    throw new NoApiKeyError();
+  }
+  if (lastFailure && Date.now() - lastFailure.at < FAILURE_CACHE_MS) {
+    const stale = await staleCached();
+    if (stale) return stale;
+    throw lastFailure.error;
+  }
+  if (!inFlight) {
+    inFlight = fetchWithOperatorKey().finally(() => {
+      inFlight = null;
+    });
+  }
+  return inFlight;
 }
 
 /**
@@ -197,7 +323,7 @@ export async function getCacheStatus(): Promise<{
   currencyCount: number;
 }> {
   const apiKey = getApiKey();
-  const cachedData = memoryCache || await loadFromDisk();
+  const cachedData = await staleCached();
 
   return {
     hasApiKey: !!apiKey,

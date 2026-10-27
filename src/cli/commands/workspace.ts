@@ -1,4 +1,4 @@
-// Workspaces in the CLI: plan, diff, apply, undo and drift across several
+// Workspaces in the CLI: plan, diff, apply, undo, parity and export across several
 // apps (pricingkit.workspace, see src/lib/pricing/workspace.ts).
 //
 // One plan per app, never one plan for several apps. `plan --workspace`
@@ -38,7 +38,6 @@ import {
   type ParityMappingReport,
   type ParityReport,
   type ProductPriceState,
-  type RulesDriftReport,
   type ScheduledBasePolicy,
   type WorkspacePlan,
   type WorkspacePlanEntry,
@@ -48,11 +47,10 @@ import type { PlayAdapter } from '@/lib/adapters/play';
 import { stringFlag } from '../args';
 import { adapterForApp, readInputFile, readOnly, writeOutputFile, writeOutputFileAtomic, type CommandContext, type CommandResult } from '../context';
 import { csvImportOutcomes, formatCsvOutcomes, offerImportStates, withCsvWarnings, type CsvRowOutcome } from '../csv-report';
-import { CliError, EXIT_CHANGES, EXIT_ERROR, EXIT_OK, UsageError, type ExitCode } from '../errors';
+import { CliError, EXIT_CHANGES, EXIT_ERROR, EXIT_OK, UsageError } from '../errors';
 import { loadWorkspace, type LoadedWorkspace, type LoadedWorkspaceApp } from '../workspace';
 import { defaultRunFile } from './apply';
 import { formatPlanSummary, summarizeChangeSet, type PlanSummary } from './diff';
-import { formatRulesDriftReport, rulesDriftExitCode } from './drift';
 import { assertSpecGuards, baseApplyNote, deviationNote, deviationSkips, formatOfferPlan, formatSyncPlan, planFromSpec } from './plan';
 import { formatParityReport } from './parity';
 import { defaultUndoFile } from './undo';
@@ -435,38 +433,6 @@ export async function undoWorkspaceCommand(ctx: CommandContext, indexPath: strin
       : ['Nothing to undo.'])
   );
   return { exitCode: ops > 0 ? EXIT_CHANGES : EXIT_OK, json: { workspacePlan: index, notReversible }, text: text.join('\n') };
-}
-
-// ---------------------------------------------------------------------------
-// drift --workspace
-
-export async function driftWorkspaceCommand(ctx: CommandContext, workspacePath: string): Promise<CommandResult> {
-  const loaded = await loadWorkspace(ctx, workspacePath);
-  const pool = new AdapterPool(ctx);
-  const apps: Array<{ appId: string; app: AppRef; report?: RulesDriftReport }> = [];
-  const text: string[] = [];
-  let exitCode: ExitCode = EXIT_OK;
-  for (const app of loaded.apps) {
-    if (!app.rules) {
-      apps.push({ appId: app.entry.id, app: app.entry.app });
-      continue;
-    }
-    const report = await (await pool.get(app.entry.app)).checkRulesDrift(app.rules);
-    apps.push({ appId: app.entry.id, app: app.entry.app, report });
-    text.push('', header(app.entry.id, app.entry.app, 'offer rules'), formatRulesDriftReport(report));
-    const code = rulesDriftExitCode(report);
-    if (code === EXIT_CHANGES || (code === EXIT_ERROR && exitCode === EXIT_OK)) exitCode = code;
-  }
-  const checked = apps.filter((a) => a.report);
-  if (checked.length === 0) throw new UsageError('No app in the workspace has a rules file to check');
-  const inSync = checked.every((a) => a.report!.inSync);
-  const status = inSync ? 'In sync' : exitCode === EXIT_CHANGES ? 'DRIFT' : 'NOT CHECKED';
-  text.unshift(`Workspace ${workspacePath}: ${status}: ${checked.length} apps with offer rules${apps.length > checked.length ? ` (${apps.length - checked.length} without)` : ''}`);
-  return {
-    exitCode,
-    json: { kind: 'pricingkit.workspaceDrift', schemaVersion: 1, checkedAt: ctx.now().toISOString(), inSync, apps },
-    text: text.join('\n'),
-  };
 }
 
 // ---------------------------------------------------------------------------

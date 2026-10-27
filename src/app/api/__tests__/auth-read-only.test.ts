@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
-import { createCookieStore, type TestCookieStore } from './helpers';
+import { createCookieStore, sessionCookieValue, TEST_ENCRYPTION_KEY, type TestCookieStore } from './helpers';
 
 let cookieStore: TestCookieStore;
 vi.mock('next/headers', () => ({
@@ -10,7 +10,7 @@ vi.mock('next/headers', () => ({
 import { POST as authPOST } from '../auth/route';
 import { POST as activeAppPOST } from '../active-app/route';
 import { POST as appleAuthPOST } from '../apple/auth/route';
-import { createSession, clearGoogleAccessTokenCache } from '@/lib/google-play/client';
+import { clearGoogleAccessTokenCache } from '@/lib/google-play/client';
 import type { ServiceAccountCredentials } from '@/lib/google-play/types';
 
 async function makePem(): Promise<string> {
@@ -79,7 +79,7 @@ describe('login and app switch never write to the store', () => {
   });
 
   beforeEach(() => {
-    vi.stubEnv('ENCRYPTION_KEY', 'test-encryption-key-at-least-32-characters');
+    vi.stubEnv('ENCRYPTION_KEY', TEST_ENCRYPTION_KEY);
     clearGoogleAccessTokenCache();
     cookieStore = createCookieStore();
     installFetch();
@@ -93,6 +93,7 @@ describe('login and app switch never write to the store', () => {
   it('POST /api/auth only issues GET requests to Google Play', async () => {
     const req = new NextRequest('http://localhost/api/auth', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ credentials, packageName: 'com.example.app' }),
     });
     const res = await authPOST(req);
@@ -103,9 +104,10 @@ describe('login and app switch never write to the store', () => {
   });
 
   it('POST /api/active-app only issues GET requests to Google Play', async () => {
-    cookieStore = createCookieStore({ gplay_session: await createSession(credentials) });
+    cookieStore = createCookieStore({ gplay_session: await sessionCookieValue('google', credentials) });
     const req = new NextRequest('http://localhost/api/active-app', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ packageName: 'com.example.other' }),
     });
     const res = await activeAppPOST(req);
@@ -125,6 +127,7 @@ describe('login and app switch never write to the store', () => {
     );
     const req = new NextRequest('http://localhost/api/auth', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ credentials, packageName: 'com.example.app' }),
     });
     const res = await authPOST(req);
@@ -145,6 +148,7 @@ describe('login and app switch never write to the store', () => {
       const placeholder = { ...credentials, private_key: '-----BEGIN PRIVATE KEY-----\nnot-a-key\n-----END PRIVATE KEY-----\n' };
       const req = new NextRequest('http://localhost/api/auth', {
         method: 'POST',
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ credentials: placeholder, packageName: 'com.example.app' }),
       });
       const res = await authPOST(req);
@@ -163,6 +167,7 @@ describe('login and app switch never write to the store', () => {
     vi.stubEnv('NODE_ENV', 'production');
     const req = new NextRequest('http://localhost/api/apple/auth', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         privateKey: '-----BEGIN PRIVATE KEY-----\nnot-a-key\n-----END PRIVATE KEY-----',
         keyId: 'KEYID12345',

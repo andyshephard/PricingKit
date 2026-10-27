@@ -65,6 +65,11 @@ describe('escapeCsvCell', () => {
     expect(escapeCsvCell('=1,2')).toBe(`"'=1,2"`);
   });
 
+  it('neutralizes a leading line feed and the full-width signs', () => {
+    expect(escapeCsvCell('\n=1+1')).toBe(`"'\n=1+1"`);
+    for (const sign of ['\uFF1D', '\uFF0B', '\uFF20', '\uFF0D']) expect(escapeCsvCell(`${sign}SUM(A1)`)).toBe(`'${sign}SUM(A1)`);
+  });
+
   it('keeps negative numbers as numbers', () => {
     expect(escapeCsvCell('-1.5')).toBe('-1.5');
   });

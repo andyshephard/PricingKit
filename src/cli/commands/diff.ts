@@ -69,6 +69,8 @@ export interface PlanSummary {
        */
       existingSubscribers?: string;
       existingSubscribersVerified?: boolean;
+      /** App Store op with preserveCurrentPrice: false: existing subscribers move to the new price */
+      movesExistingSubscribers?: true;
       /** Google Play: what migrating the legacy cohort to this price would need */
       ifMigrated?: string;
       /** Developer proceeds after the change (Google Play: estimated) */
@@ -85,6 +87,8 @@ export interface PlanSummary {
   byExistingSubscribers: Record<string, number>;
   /** Ops whose stored note disagrees with the class recomputed from the op (the note was edited or is stale) */
   noteMismatches: Array<{ opId: string; territory: string; stored: string; recomputed: string }>;
+  /** App Store ops with preserveCurrentPrice: false (from the ops, covered by the hash) */
+  movesExistingSubscribers: Array<{ opId: string; territory: string }>;
   /** The reference data the plan's targets came from, with ages */
   dataFreshness: FreshnessEntry[];
   /** Ops per group: base prices are applied before offers */
@@ -120,6 +124,7 @@ export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
   const notes = new Map((changeSet.priceChanges ?? []).map((n) => [n.opId, n]));
   const noteMismatches: PlanSummary['noteMismatches'] = [];
   const effective: string[] = [];
+  const movers: PlanSummary['movesExistingSubscribers'] = [];
   for (const op of changeSet.ops) {
     const key = productKey(op.target.product);
     if (!products.has(key)) products.set(key, { product: op.target.product, key, ops: [] });
@@ -129,7 +134,12 @@ export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
     }
     const change = percentChange(op.before, op.after);
     const note = notes.get(op.id);
-    const checked = note ? recheckNote(op, note, changeSet.createdAt) : undefined;
+    // Without a note the class comes from the op alone: what applies, not what a note claims
+    const checked = note ? recheckNote(op, note, changeSet.createdAt) : classifyFromOp(op, changeSet.createdAt);
+    // App Store: preserveCurrentPrice false moves existing subscribers to the new price. Shown
+    // whatever the notes say: it is part of the op, so the plan hash covers it.
+    const moves = op.platform === 'apple' && op.options?.preserveCurrentPrice === false && op.after !== null;
+    if (moves) movers.push({ opId: op.id, territory: op.target.territory });
     if (checked?.mismatch) noteMismatches.push({ opId: op.id, territory: op.target.territory, ...checked.mismatch });
     if (checked) effective.push(checked.classification);
     products.get(key)!.ops.push({
@@ -141,6 +151,7 @@ export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
       ...(change ? { change } : {}),
       ...(op.note ? { note: op.note } : {}),
       ...(checked ? { existingSubscribers: checked.classification, existingSubscribersVerified: checked.verified } : {}),
+      ...(moves ? { movesExistingSubscribers: true } : {}),
       ...(checked?.ifMigrated ? { ifMigrated: checked.ifMigrated } : {}),
       ...(note?.proceeds?.after !== undefined ? { proceeds: note.proceeds.after } : {}),
       ...(note?.proceeds?.before !== undefined ? { proceedsBefore: note.proceeds.before } : {}),
@@ -168,6 +179,7 @@ export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
     manualActions: changeSet.manualActions ?? [],
     priceChanges: changeSet.priceChanges ?? [],
     byExistingSubscribers: countBy(effective, (c) => c),
+    movesExistingSubscribers: movers,
     noteMismatches,
     dataFreshness: changeSet.dataFreshness ?? [],
     playOffers: changeSet.ops.filter(isOfferOp).filter(isPlayOfferOp).map((op) => {
@@ -260,6 +272,11 @@ export function formatPlanSummary(summary: PlanSummary): string {
         : 'No changes: every territory is already at its target.'
       : `${summary.opCount} changes (${describeCounts(summary.byKind)})`,
     ...(summary.opCount > 0 ? [`Plan hash: ${summary.changeSetHash} (what "pricingkit apply --confirm" needs once you have reviewed this plan)`] : []),
+    ...(summary.movesExistingSubscribers.length > 0
+      ? [
+          `WARNING: ${summary.movesExistingSubscribers.length} App Store ${summary.movesExistingSubscribers.length === 1 ? 'change moves' : 'changes move'} EXISTING SUBSCRIBERS to the new price (preserveCurrentPrice: false): ${summary.movesExistingSubscribers.map((m) => `${m.territory} (${m.opId})`).join(', ')}. An increase may need their consent.`,
+        ]
+      : []),
   ];
   type Row = PlanSummary['products'][number]['ops'][number];
   const section = (pick: (op: Row) => boolean) => {
@@ -269,11 +286,11 @@ export function formatPlanSummary(summary: PlanSummary): string {
       // Proceeds, tax and existing-subscriber columns only for plans that carry the notes
       const withProceeds = rows.some((r) => r.proceeds !== undefined || r.proceedsBefore !== undefined);
       const withTax = rows.some((r) => r.tax !== undefined);
-      const withSubscribers = rows.some((r) => r.existingSubscribers !== undefined);
+      const withSubscribers = rows.some((r) => r.existingSubscribers !== undefined || r.movesExistingSubscribers);
       lines.push('', product.key);
       lines.push(
         table([
-          ['Op', 'Territory', 'Kind', 'Before', 'After', 'Change', ...(withProceeds ? ['Proceeds*'] : []), ...(withTax ? ['Tax*'] : []), ...(withSubscribers ? ['Existing subscribers*'] : [])],
+          ['Op', 'Territory', 'Kind', 'Before', 'After', 'Change', ...(withProceeds ? ['Proceeds*'] : []), ...(withTax ? ['Tax*'] : []), ...(withSubscribers ? ['Existing subscribers'] : [])],
           ...rows.map((op) => [
             op.id,
             op.territory,
@@ -287,8 +304,9 @@ export function formatPlanSummary(summary: PlanSummary): string {
           ]),
         ])
       );
-      if (withProceeds || withTax || withSubscribers) {
-        lines.push('  * planner notes, not covered by the plan hash. Existing subscribers is recomputed from each op; "(unverified)" marks a scheduled change, shown as noted.');
+      if (withProceeds || withTax) lines.push('  * planner notes, not covered by the plan hash.');
+      if (withSubscribers) {
+        lines.push('  Existing subscribers is computed from each op (covered by the hash); "(unverified)" marks a scheduled change, shown as its note says.');
       }
       const waits = [...new Set(rows.filter((r) => r.dependsOn?.length).map((r) => `${r.id} after ${r.dependsOn!.join(', ')}`))];
       if (waits.length > 0) lines.push(`  Applied only once its base prices are: ${waits.join('; ')}`);
@@ -368,9 +386,31 @@ const SUBSCRIBER_LABELS: Record<string, string> = {
 const MIGRATION_LABELS: Record<string, string> = { 'no-consent': 'no consent', 'opt-out-possible': 'opt-out possible', 'opt-in-required': 'opt-in' };
 
 function subscribersCell(op: PlanSummary['products'][number]['ops'][number]): string {
-  if (!op.existingSubscribers) return '';
+  const moves = op.movesExistingSubscribers ? 'MOVES EXISTING SUBSCRIBERS' : '';
+  if (!op.existingSubscribers) return moves;
+  if (moves) return `${moves}: ${SUBSCRIBER_LABELS[op.existingSubscribers] ?? op.existingSubscribers}${op.existingSubscribersVerified === false ? ' (unverified)' : ''}`;
   const label = `${SUBSCRIBER_LABELS[op.existingSubscribers] ?? op.existingSubscribers}${op.existingSubscribersVerified === false ? ' (unverified)' : ''}`;
   return op.ifMigrated ? `${label} (migrating: ${MIGRATION_LABELS[op.ifMigrated] ?? op.ifMigrated})` : label;
+}
+
+/**
+ * The existing-subscriber class of an immediate subscription price change,
+ * from the op alone (before, after, preserveCurrentPrice), for plans without
+ * planner notes. Assumes no recent increase and the non-annual threshold, as
+ * the planner does without consent context.
+ */
+function classifyFromOp(op: BasePriceOp, createdAt: string) {
+  if (op.kind !== 'setPrice' || !op.after || op.target.product.type !== 'subscription') return undefined;
+  const c = classifyPriceChange({
+    platform: op.platform,
+    productType: op.target.product.type,
+    territory: op.target.territory,
+    current: op.before,
+    after: op.after,
+    effectiveDate: createdAt.slice(0, 10),
+    ...(op.options?.preserveCurrentPrice !== undefined ? { preserveCurrentPrice: op.options.preserveCurrentPrice } : {}),
+  });
+  return { classification: c.classification as string, ifMigrated: c.ifMigrated as string | undefined, verified: true, mismatch: undefined as { stored: string; recomputed: string } | undefined };
 }
 
 /**

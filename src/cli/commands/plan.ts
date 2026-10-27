@@ -36,14 +36,13 @@ import {
   type FreshnessEntry,
   type PriceNoteProductInput,
 } from '@/lib/pricing';
-import { appSelection, stringFlag } from '../args';
+import { appSelection, sameApp, stringFlag } from '../args';
 import { appleAdapter, playAdapter, readOnly, writeOutputFile, type CommandContext, type CommandResult, type PriceReader } from '../context';
 import { inlineMultiplierFiles, inlinePricesFiles, readSpecText, type CsvImport } from '../spec-file';
 import { csvImportOutcomes, formatCsvOutcomes, offerImportStates, withCsvWarnings } from '../csv-report';
 import { CliError, EXIT_CHANGES, EXIT_ERROR, EXIT_OK, UsageError } from '../errors';
 import { BASE_PRICE_NOTE } from './apply';
 import { formatPlanSummary, summarizeChangeSet } from './diff';
-import { sameApp } from './drift';
 import { table } from '../format';
 import { planWorkspaceCommand } from './workspace';
 
@@ -413,7 +412,7 @@ export function formatSyncPlan(plan: OfferSyncPlan): string {
         : e.action === 'none'
           ? `in step with its rule${e.pricedAgainst === 'planTargets' ? " at this plan's base prices" : ''}`
           : e.action === 'notSynced'
-            ? 'syncWithBase is false: not synced (drift still checks it)'
+            ? 'syncWithBase is false: not synced'
             : e.action === 'followsBase'
               ? 'follows base automatically (Play relative discount)'
               : `needs manual action (${e.manual?.code})`;

@@ -10,8 +10,6 @@
 //     depend on (`dependsOn`). Offers the store can't re-price (offer codes,
 //     win-back and introductory offers) are listed as manual actions with the
 //     reason; the planner never deletes or re-creates an offer.
-//   - checkRulesDrift checks every offer in the file against its rule and
-//     returns one combined report.
 //
 // Scheduled base prices (Apple, a future startDate): an offer price change
 // takes effect as soon as it is applied, so re-deriving an offer against a
@@ -39,12 +37,10 @@ import {
 import { compareDecimal, isDecimalString, normalizeDecimal, type Decimal } from './decimal';
 import { productKey, type AppRef, type ProductPriceState, type ProductRef } from './model';
 import {
-  checkOfferDrift,
   defaultOfferBasis,
   deriveOfferPrices,
   OfferRuleError,
   type OfferDerivation,
-  type OfferDriftReport,
   type OfferPreviewRow,
   type PriceLadder,
 } from './offer-derivation';
@@ -62,7 +58,6 @@ import {
 import { appRefSchema, productRefSchema } from './refs';
 import type { SnapMode } from './snap';
 import type { PlayOfferPreview, PlayPreviewRow } from './play-offer-plan';
-import type { PlayOfferDriftReport } from './play-offer-sync';
 
 // ---------------------------------------------------------------------------
 // The rules file
@@ -103,7 +98,7 @@ export interface OfferRule {
   phase?: number;
   /** Territories the rule covers (default: all of the offer's) */
   territories?: 'all' | string[];
-  /** Re-derive the offer when base prices change. false: drift checks it, sync leaves it alone. */
+  /** Re-derive the offer when base prices change. false: sync leaves it alone. */
   syncWithBase: boolean;
   /** Flag a snapped price further than this fraction from its target (default "0.05") */
   deviationThreshold?: Decimal;
@@ -303,9 +298,7 @@ export interface OfferSyncProduct {
   offers: StoreOffer[];
   /**
    * Territories whose price points were read, when only some were (adapters
-   * read them only for offers a rule can price). A drift check reports a
-   * territory outside it where the offer has no price as missing, not as
-   * unresolved for lack of price points.
+   * read them only for offers a rule can price).
    */
   ladderTerritories?: string[];
 }
@@ -332,7 +325,7 @@ export interface OfferSyncEntry {
    * updatePrices - the plan re-prices the offer (opId)
    * none         - its prices already match the rule
    * manual       - see `manual`
-   * notSynced    - syncWithBase is false: drift checks it, sync leaves it alone
+   * notSynced    - syncWithBase is false: sync leaves it alone
    * followsBase  - Play relative discount: the offer follows the base price by itself
    */
   action: 'updatePrices' | 'none' | 'manual' | 'notSynced' | 'followsBase';
@@ -454,7 +447,7 @@ export function planOfferSync(input: PlanOfferSyncInput): OfferSyncPlan {
     const resolved = resolveOfferRule(rule.pricing, state);
     entry.rule = resolved;
 
-    // Sync keeps the offer's own territories in step; it doesn't add territories (drift lists them as missing)
+    // Sync keeps the offer's own territories in step; it doesn't add territories
     const offerTerritories = Object.keys(state.prices).sort();
     const wanted = rule.territories === undefined || rule.territories === 'all' ? offerTerritories : [...rule.territories].sort();
     const scope = wanted.filter((t) => state.prices[t]);
@@ -474,7 +467,7 @@ export function planOfferSync(input: PlanOfferSyncInput): OfferSyncPlan {
       deriveScope = scope.filter((t) => !held.includes(t));
       manual(
         'BASE_SCHEDULED',
-        `The plan schedules new base prices for ${held.length} of this offer's territories (${listOf(held)}) from ${listOf(dates, 3)}. Offer prices change as soon as they are applied, so those territories keep their current offer price${deriveScope.length > 0 ? ' (the others are re-priced in this plan)' : ''}. Sync again on or after ${earliest(dates)} (the drift check flags the offer then), or plan with scheduled base prices derived now (CLI: --scheduled-base now) to change them immediately.`,
+        `The plan schedules new base prices for ${held.length} of this offer's territories (${listOf(held)}) from ${listOf(dates, 3)}. Offer prices change as soon as they are applied, so those territories keep their current offer price${deriveScope.length > 0 ? ' (the others are re-priced in this plan)' : ''}. Sync again on or after ${earliest(dates)}, or plan with scheduled base prices derived now (CLI: --scheduled-base now) to change them immediately.`,
         held
       );
       if (deriveScope.length === 0) continue;
@@ -526,7 +519,7 @@ export function planOfferSync(input: PlanOfferSyncInput): OfferSyncPlan {
     if (storeScheduled.length > 0) {
       const dates = storeScheduled.map((t) => data.base.territories[t]!.scheduled!.startDate ?? '').filter(Boolean);
       entry.warnings.push(
-        `${storeScheduled.length} of this offer's territories already have a scheduled base price${dates.length ? ` (from ${earliest(dates)})` : ''} (${listOf(storeScheduled)}). The offer is priced against today's base price there and will drift when the scheduled price takes effect; sync again then.`
+        `${storeScheduled.length} of this offer's territories already have a scheduled base price${dates.length ? ` (from ${earliest(dates)})` : ''} (${listOf(storeScheduled)}). The offer is priced against today's base price there and will be out of step when the scheduled price takes effect; sync again then.`
       );
     }
     if (policy === 'deriveNow' && scheduledOps.length > 0) {
@@ -602,107 +595,4 @@ export function planOfferSync(input: PlanOfferSyncInput): OfferSyncPlan {
 
 function canonicalApp(app: AppRef): string {
   return 'bundleId' in app ? `apple:${app.bundleId}` : `google:${app.packageName}`;
-}
-
-// ---------------------------------------------------------------------------
-// Drift across every offer in a rules file
-
-export const RULES_DRIFT_KIND = 'pricingkit.rulesDrift' as const;
-export const RULES_DRIFT_SCHEMA_VERSION = 1 as const;
-
-export interface RulesDriftEntry {
-  product: ProductRef;
-  kind: OfferKind;
-  key: string;
-  syncWithBase: boolean;
-  /**
-   * inSync   - every checked territory matches
-   * drifted  - the offer's report is out of sync (see `report`)
-   * notFound - the product has no such offer
-   * error    - the rule can't be checked against this offer (`error`)
-   */
-  status: 'inSync' | 'drifted' | 'notFound' | 'error';
-  report?: OfferDriftReport | PlayOfferDriftReport;
-  error?: { message: string; code: string };
-}
-
-export interface RulesDriftReport {
-  kind: typeof RULES_DRIFT_KIND;
-  schemaVersion: typeof RULES_DRIFT_SCHEMA_VERSION;
-  checkedAt: string;
-  app: AppRef;
-  /** True when every offer in the rules file is in sync */
-  inSync: boolean;
-  summary: { offers: number; inSync: number; drifted: number; notFound: number; errors: number };
-  offers: RulesDriftEntry[];
-  /** What this report doesn't cover */
-  notChecked?: string[];
-}
-
-export interface RulesDriftInput {
-  app: AppRef;
-  rules: OfferRule[];
-  products: OfferSyncProduct[];
-  /** ISO timestamp (tests) */
-  now?: string;
-}
-
-/**
- * Check every offer in a rules file against its rule and today's base
- * prices. One entry per rule, each with its pricingkit.offerDrift report.
- * A rule that can't apply to its offer (a free trial, weeks against months)
- * is an `error` entry, not a thrown error, so the other offers are still
- * reported.
- */
-export function checkRulesDrift(input: RulesDriftInput): RulesDriftReport {
-  const checkedAt = input.now ?? new Date().toISOString();
-  const products = new Map(input.products.map((p) => [productKey(p.product), p]));
-  const offers: RulesDriftEntry[] = input.rules.map((rule) => {
-    const head = { product: rule.product, kind: rule.kind, key: rule.key, syncWithBase: rule.syncWithBase };
-    const data = products.get(productKey(rule.product));
-    if (!data) throw new Error(`checkRulesDrift: no state was passed for ${productKey(rule.product)}`);
-    const matches = findRuleOffer(rule, data.offers);
-    if (matches.length === 0) return { ...head, status: 'notFound' as const };
-    if (matches.length > 1) {
-      return { ...head, status: 'error' as const, error: { code: 'AMBIGUOUS_OFFER', message: `${matches.length} offers match "${rule.key}"; name it by its store ID` } };
-    }
-    const offer = matches[0];
-    try {
-      const report = checkOfferDrift({
-        rule: resolveOfferRule(rule.pricing, offer),
-        offer,
-        billingPeriod: data.billingPeriod,
-        base: data.base,
-        ladders: data.ladders,
-        ...(rule.territories && rule.territories !== 'all' ? { territories: rule.territories } : {}),
-        ...(rule.deviationThreshold ? { deviationThreshold: rule.deviationThreshold } : {}),
-        now: checkedAt,
-      });
-      if (data.ladderTerritories) {
-        const read = new Set(data.ladderTerritories);
-        for (const entry of report.territories) {
-          // Only "no price points" (they weren't read), not e.g. a territory without a base price
-          if (entry.status !== 'unresolved' || entry.actual || read.has(entry.territory) || entry.reason !== `No price points for ${entry.territory}`) continue;
-          entry.status = 'missing';
-          entry.reason = 'The offer has no price in this territory';
-          report.summary.unresolved--;
-          report.summary.missing++;
-        }
-      }
-      return { ...head, status: report.inSync ? ('inSync' as const) : ('drifted' as const), report };
-    } catch (error) {
-      if (!(error instanceof OfferRuleError)) throw error;
-      return { ...head, status: 'error' as const, error: { code: 'OFFER_RULE', message: error.message } };
-    }
-  });
-  const count = (status: RulesDriftEntry['status']) => offers.filter((o) => o.status === status).length;
-  return {
-    kind: RULES_DRIFT_KIND,
-    schemaVersion: RULES_DRIFT_SCHEMA_VERSION,
-    checkedAt,
-    app: input.app,
-    inSync: offers.every((o) => o.status === 'inSync'),
-    summary: { offers: offers.length, inSync: count('inSync'), drifted: count('drifted'), notFound: count('notFound'), errors: count('error') },
-    offers,
-  };
 }

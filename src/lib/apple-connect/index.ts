@@ -14,9 +14,6 @@ export {
   parseAppleRateLimitHeader,
   type AppleApiRequestOptions,
   type AppleRateLimitInfo,
-  createAppleSession,
-  getAppleSessionCredentials,
-  deleteAppleSession,
   testAppleConnection,
   getAppIdForBundleId,
 } from './client';

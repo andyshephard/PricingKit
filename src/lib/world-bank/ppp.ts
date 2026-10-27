@@ -285,16 +285,42 @@ function processWorldBankResponse(data: unknown): PPPData[] {
   return pppData;
 }
 
-// Calculate PPP multipliers relative to US
-export async function getPPPMultipliers(forceRefresh = false): Promise<PPPMultipliers> {
-  // Check cache
-  if (!forceRefresh && cachedPPPData) {
-    const age = Date.now() - cachedPPPData.fetchedAt.getTime();
-    if (age < CACHE_DURATION_MS) {
-      return cachedPPPData;
-    }
-  }
+/** How long a failed PPP fetch is remembered (no new request meanwhile) */
+export const PPP_FAILURE_CACHE_MS = 5 * 60 * 1000;
+/** A forced refresh is honoured at most this often per instance */
+export const PPP_MIN_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+let pppInFlight: Promise<PPPMultipliers> | null = null;
+let pppLastFailure: { at: number; error: unknown } | null = null;
 
+/** Test-only: forget cached PPP data, failures and in-flight requests */
+export function resetPPPCacheForTests(): void {
+  cachedPPPData = null;
+  pppInFlight = null;
+  pppLastFailure = null;
+}
+
+/**
+ * PPP multipliers relative to the US, cached 24 hours. Concurrent callers
+ * share one in-flight request; after a failure no request is sent for 5
+ * minutes (cached data, if any, is served meanwhile; else the same error);
+ * `forceRefresh` is honoured at most once per 10 minutes per instance.
+ */
+export function getPPPMultipliers(forceRefresh = false): Promise<PPPMultipliers> {
+  const age = cachedPPPData ? Date.now() - cachedPPPData.fetchedAt.getTime() : Infinity;
+  const refresh = forceRefresh && age >= PPP_MIN_REFRESH_INTERVAL_MS;
+  if (cachedPPPData && age < CACHE_DURATION_MS && !refresh) return Promise.resolve(cachedPPPData);
+  if (pppLastFailure && Date.now() - pppLastFailure.at < PPP_FAILURE_CACHE_MS) {
+    return cachedPPPData ? Promise.resolve(cachedPPPData) : Promise.reject(pppLastFailure.error);
+  }
+  if (!pppInFlight) {
+    pppInFlight = loadPPPMultipliers().finally(() => {
+      pppInFlight = null;
+    });
+  }
+  return pppInFlight;
+}
+
+async function loadPPPMultipliers(): Promise<PPPMultipliers> {
   try {
     const pppData = await fetchPPPData();
 
@@ -338,10 +364,12 @@ export async function getPPPMultipliers(forceRefresh = false): Promise<PPPMultip
       baseYear,
       fetchedAt: new Date(),
     };
+    pppLastFailure = null;
 
     return cachedPPPData;
   } catch (error) {
     console.error('Failed to fetch PPP data from World Bank:', error);
+    pppLastFailure = { at: Date.now(), error };
 
     // Return cached data if available, even if stale
     if (cachedPPPData) {

@@ -26,11 +26,13 @@ const MULTI_VALUE_SEPARATOR = '|';
 /**
  * Escape a single CSV cell. Quotes cells containing delimiters, quotes or
  * line breaks, and neutralizes spreadsheet formula injection by prefixing
- * cells that start with =, +, @, tab/CR, or "-" (unless a plain number).
+ * cells that start with =, +, @, tab, CR, LF, their full-width forms
+ * (＝ ＋ ＠ －, which some spreadsheets treat the same), or "-" (unless a
+ * plain number).
  */
 export function escapeCsvCell(value: string): string {
   let cell = value;
-  if (/^[=+@\t\r]/.test(cell) || (cell.startsWith('-') && !/^-\d+(\.\d+)?$/.test(cell))) {
+  if (/^[=+@\t\r\n\uFF1D\uFF0B\uFF20\uFF0D]/.test(cell) || (cell.startsWith('-') && !/^-\d+(\.\d+)?$/.test(cell))) {
     cell = `'${cell}`;
   }
   if (/[",\r\n]/.test(cell) || cell !== cell.trim()) {

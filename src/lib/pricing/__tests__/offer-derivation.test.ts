@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import {
-  checkOfferDrift,
   defaultOfferBasis,
   deriveOfferPrices,
   offerMultiplier,
@@ -9,7 +8,6 @@ import {
   type PercentOfCurrentRule,
   type PriceLadder,
   type ProductPriceState,
-  type StoreOffer,
   type TerritoryPriceState,
 } from '@/lib/pricing';
 
@@ -245,153 +243,5 @@ describe('deriveOfferPrices validity flags', () => {
   it('produces plain JSON', () => {
     const result = deriveOfferPrices(input());
     expect(JSON.parse(JSON.stringify(result))).toEqual(result);
-  });
-});
-
-describe('checkOfferDrift', () => {
-  const offer = (prices: StoreOffer['prices'], extra: Partial<StoreOffer> = {}): StoreOffer => ({
-    kind: 'apple.promo',
-    storeId: 'promo-1',
-    key: 'example_half',
-    mode: 'PAY_UP_FRONT',
-    duration: 'P1Y',
-    periods: 1,
-    prices,
-    ...extra,
-  });
-  const state = base(territory('US', 'USD', '59.99'), territory('GB', 'GBP', '27.99'), territory('DE', 'EUR', '29.99'), territory('FR', 'EUR', '41.99'));
-  const ladders = {
-    US: ladder('US', 'USD', ['29.95', '29.99', '30']),
-    GB: ladder('GB', 'GBP', ['13.95', '13.99', '14']),
-    DE: ladder('DE', 'EUR', ['14.99', '15.49']),
-    FR: ladder('FR', 'EUR', ['20.99', '21.49']),
-  };
-
-  it('reports matching, mismatched, missing and extra territories', () => {
-    const report = checkOfferDrift({
-      rule: half,
-      billingPeriod: 'P1Y',
-      base: state,
-      ladders,
-      now: '2030-01-01T00:00:00.000Z',
-      offer: offer({
-        US: { currency: 'USD', amount: '29.99', pricePointId: 'pp-US-29.99' },
-        GB: { currency: 'GBP', amount: '12.99', pricePointId: 'old-GB' },
-        // FR missing
-        DE: { currency: 'EUR', amount: '14.99', pricePointId: 'pp-DE-14.99' },
-        CA: { currency: 'CAD', amount: '22.99', pricePointId: 'pp-CA' },
-      }),
-    });
-    const status = Object.fromEntries(report.territories.map((t) => [t.territory, t.status]));
-    expect(status).toEqual({ CA: 'extra', DE: 'match', FR: 'missing', GB: 'mismatch', US: 'match' });
-    expect(report.summary).toEqual({ match: 2, mismatch: 1, missing: 1, extra: 1, unresolved: 0, unreadable: 0 });
-    expect(report.inSync).toBe(false);
-    const gb = report.territories.find((t) => t.territory === 'GB')!;
-    expect(gb.expected).toMatchObject({ amount: '13.99', pricePointId: 'pp-GB-13.99', exactTarget: '13.995', currentPrice: '27.99' });
-    expect(gb.actual).toMatchObject({ amount: '12.99' });
-    expect(report.territories.find((t) => t.territory === 'FR')!.expected).toMatchObject({ amount: '20.99' });
-    expect(report).toMatchObject({ kind: 'pricingkit.offerDrift', schemaVersion: 1, checkedAt: '2030-01-01T00:00:00.000Z' });
-    expect(JSON.parse(JSON.stringify(report))).toEqual(report);
-  });
-
-  it('compares amounts when either side has no price point ID', () => {
-    const report = checkOfferDrift({
-      rule: half,
-      billingPeriod: 'P1Y',
-      base: base(territory('US', 'USD', '59.99')),
-      ladders: { US: ladder('US', 'USD', ['29.99']) },
-      offer: offer({ US: { currency: 'USD', amount: '29.990' } }),
-    });
-    expect(report.territories[0].status).toBe('match');
-    expect(report.inSync).toBe(true);
-  });
-
-  it('reports territories it cannot derive or read instead of guessing', () => {
-    const report = checkOfferDrift({
-      rule: half,
-      billingPeriod: 'P1Y',
-      base: base(territory('US', 'USD', '59.99'), territory('GB', 'GBP', null), territory('DE', 'EUR', '29.99')),
-      ladders: { US: ladder('US', 'USD', ['29.99']), DE: ladder('DE', 'EUR', ['14.99']) },
-      offer: offer(
-        { US: { currency: 'USD', amount: '29.99', pricePointId: 'pp-US-29.99' }, GB: { currency: 'GBP', amount: '13.99' } },
-        { territoryProblems: { DE: 'price p9 in DE has no price point' }, problems: ['price p7 has no territory'] }
-      ),
-    });
-    const status = Object.fromEntries(report.territories.map((t) => [t.territory, t.status]));
-    expect(status).toEqual({ DE: 'unreadable', GB: 'unresolved', US: 'match' });
-    expect(report.territories.find((t) => t.territory === 'GB')!.reason).toMatch(/no current price/);
-    expect(report.problems).toEqual(['price p7 has no territory']);
-    expect(report.inSync).toBe(false);
-  });
-
-  it('limits the check to the listed territories; the rest of the offer is out of scope and can still be in sync', () => {
-    const report = checkOfferDrift({
-      rule: half,
-      billingPeriod: 'P1Y',
-      base: state,
-      ladders,
-      territories: ['US'],
-      offer: offer({ US: { currency: 'USD', amount: '29.99', pricePointId: 'pp-US-29.99' }, GB: { currency: 'GBP', amount: '13.99', pricePointId: 'pp-GB-13.99' } }),
-    });
-    expect(report.territories.map((t) => [t.territory, t.status])).toEqual([['US', 'match']]);
-    expect(report.outOfScope).toEqual(['GB']);
-    expect(report.summary.extra).toBe(0);
-    expect(report.inSync).toBe(true);
-  });
-
-  it('without a territory list, offer territories the base has no price for are extra', () => {
-    const report = checkOfferDrift({
-      rule: half,
-      billingPeriod: 'P1Y',
-      base: base(territory('US', 'USD', '59.99')),
-      ladders: { US: ladder('US', 'USD', ['29.99']) },
-      offer: offer({ US: { currency: 'USD', amount: '29.99', pricePointId: 'pp-US-29.99' }, GB: { currency: 'GBP', amount: '13.99' } }),
-    });
-    expect(report.territories.map((t) => [t.territory, t.status])).toEqual([
-      ['GB', 'extra'],
-      ['US', 'match'],
-    ]);
-    expect(report.outOfScope).toBeUndefined();
-    expect(report.inSync).toBe(false);
-  });
-
-  it('is never in sync when nothing was compared', () => {
-    const report = checkOfferDrift({ rule: half, billingPeriod: 'P1Y', base: base(), ladders: {}, offer: offer({}) });
-    expect(report.territories).toEqual([]);
-    expect(report.inSync).toBe(false);
-  });
-
-  it('reports an unreadable price outside the rule territories as unreadable, not extra', () => {
-    const report = checkOfferDrift({
-      rule: half,
-      billingPeriod: 'P1Y',
-      base: base(territory('US', 'USD', '59.99')),
-      ladders: { US: ladder('US', 'USD', ['29.99']) },
-      offer: offer({ US: { currency: 'USD', amount: '29.99', pricePointId: 'pp-US-29.99' } }, { territoryProblems: { CA: 'price p3 in CA has no currency' } }),
-    });
-    expect(report.territories.find((t) => t.territory === 'CA')).toEqual({
-      territory: 'CA',
-      status: 'unreadable',
-      reason: 'price p3 in CA has no currency (a territory the rule does not cover)',
-    });
-    expect(report.summary.extra).toBe(0);
-  });
-
-  it('lists an unreadable price outside a territory list as out of scope', () => {
-    const report = checkOfferDrift({
-      rule: half,
-      billingPeriod: 'P1Y',
-      base: state,
-      ladders,
-      territories: ['US'],
-      offer: offer({ US: { currency: 'USD', amount: '29.99', pricePointId: 'pp-US-29.99' } }, { territoryProblems: { CA: 'price p3 in CA has no currency' } }),
-    });
-    expect(report.territories.map((t) => t.territory)).toEqual(['US']);
-    expect(report.outOfScope).toEqual(['CA']);
-    expect(report.inSync).toBe(true);
-  });
-
-  it('refuses an offer whose mode or duration was unreadable', () => {
-    expect(() => checkOfferDrift({ rule: half, billingPeriod: 'P1Y', base: state, ladders, offer: offer({}, { duration: null }) })).toThrow(OfferRuleError);
   });
 });

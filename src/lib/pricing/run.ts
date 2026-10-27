@@ -19,7 +19,7 @@ import {
 import { numberOps } from './diff';
 import { invertOp } from './inverse';
 import { anyOfferStateSchema, invertOfferOp, isOfferOp, type AnyOfferState } from './offer-ops';
-import { appRefSchema, priceValueSchema } from './changeset';
+import { appRefSchema, confirmHashSchema, priceValueSchema } from './changeset';
 import type { AppRef, PriceValue } from './model';
 
 export const RUN_SCHEMA_VERSION = 1 as const;
@@ -150,7 +150,7 @@ const runSchema = z
     kind: z.literal(RUN_KIND),
     id: z.string().min(1),
     changeSetId: z.string().min(1),
-    changeSetHash: z.string().regex(/^[0-9a-f]{16}$/),
+    changeSetHash: confirmHashSchema,
     app: appRefSchema,
     startedAt: z.string(),
     updatedAt: z.string(),
@@ -262,6 +262,7 @@ export function buildUndoChangeSet(
     const inverse = invertOp(op as BasePriceOp);
     if ('notReversible' in inverse) notReversible.push({ opId: op.id, reason: record.status === 'failed' ? `If it took effect: ${inverse.notReversible}` : inverse.notReversible });
     else {
+      if (inverse.warning) caveats.push({ index: inverses.length, message: inverse.warning });
       inverseOf.set(op.id, inverses.length);
       inverses.push(inverse.op);
     }

@@ -1,46 +1,34 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import {
-  googlePlayFetch,
-  getSessionCredentials,
-} from '@/lib/google-play/client';
-import {
-  GOOGLE_PACKAGE_NAME_COOKIE,
-  GOOGLE_SESSION_COOKIE,
-  SESSION_COOKIE_MAX_AGE,
-} from '@/lib/session';
-
-const COOKIE_MAX_AGE = SESSION_COOKIE_MAX_AGE;
+import { googlePlayFetch } from '@/lib/google-play/client';
+import { COOKIE_NAMES, readSessionCookie, SESSION_COOKIE_MAX_AGE, writeCookie } from '@/lib/session';
+import { readJsonBody, rejectCrossSite, SMALL_BODY_LIMIT } from '@/lib/request-guard';
+import { packageNameSchema } from '@/lib/validation';
 
 export async function POST(request: NextRequest) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   const cookieStore = await cookies();
-  const sessionId = cookieStore.get(GOOGLE_SESSION_COOKIE)?.value;
-  if (!sessionId) {
-    return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-  }
-
-  const credentials = await getSessionCredentials(sessionId);
+  const credentials = await readSessionCookie(cookieStore, 'google');
   if (!credentials) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
   }
 
-  let body: { packageName?: unknown };
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json(
-      { error: 'Invalid JSON in request body' },
-      { status: 400 }
-    );
-  }
+  const read = await readJsonBody(request, SMALL_BODY_LIMIT);
+  if (!read.ok) return read.response;
+  const body = (typeof read.body === 'object' && read.body !== null ? read.body : {}) as { packageName?: unknown };
 
-  const packageName = body.packageName;
-  if (typeof packageName !== 'string' || packageName.trim() === '') {
+  if (typeof body.packageName !== 'string' || body.packageName.trim() === '') {
     return NextResponse.json(
       { error: 'Missing packageName in request body' },
       { status: 400 }
     );
   }
+  const parsedPackage = packageNameSchema.safeParse(body.packageName);
+  if (!parsedPackage.success) {
+    return NextResponse.json({ error: 'Invalid package name' }, { status: 400 });
+  }
+  const packageName = parsedPackage.data;
 
   try {
     await googlePlayFetch(
@@ -68,7 +56,7 @@ export async function POST(request: NextRequest) {
     if (error.code === 404) {
       return NextResponse.json(
         {
-          error: `App not found. Verify the package name "${packageName}" is correct and the app exists in Play Console.`,
+          error: 'App not found. Check the package name and that the app exists in Play Console.',
         },
         { status: 404 }
       );
@@ -85,13 +73,7 @@ export async function POST(request: NextRequest) {
   // a missing permission surfaces on the first real edit via the route-level 403
   // handlers.
 
-  cookieStore.set(GOOGLE_PACKAGE_NAME_COOKIE, packageName, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    maxAge: COOKIE_MAX_AGE,
-    path: '/',
-  });
+  writeCookie(cookieStore, COOKIE_NAMES.googlePackage, packageName, SESSION_COOKIE_MAX_AGE);
 
   return NextResponse.json({ ok: true, packageName });
 }
