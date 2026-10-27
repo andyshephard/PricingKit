@@ -12,7 +12,8 @@ Free, open-source regional pricing tool for the App Store and Google Play. Set P
 - **Bulk updates** - Update prices across multiple products/regions at once, with skipped items and regions reported
 - **Price export** - Download a product's or subscription's current prices as CSV or JSON before you change them
 - **Plan, diff, apply (library)** - Build a reviewable JSON plan of price changes, apply it idempotently within a request budget, resume a partial run and undo it from its log (see [Plans](#plans-plan-diff-apply))
-- **Offers in step with base prices** - A checked-in rules file says which App Store offers follow "X% of each territory's price"; one command checks them all for drift, and sync plans re-price them against new base prices (see [sync](#keeping-offers-in-step-with-base-prices-sync))
+- **Google Play offers** - List, plan, preview, apply, resume and undo Play subscription offers: phases (free, relative or absolute discount, fixed price), eligibility (new customers, upgrades, developer-determined), offer tags and regions (see [Google Play offers](#google-play-subscription-offers))
+- **Offers in step with base prices** - A checked-in rules file says which offers follow which rule (App Store: "X% of each territory's price"; Google Play: also Play's own discounts and fixed prices); one command checks them all for drift, and sync plans re-price them against new base prices (see [sync](#keeping-offers-in-step-with-base-prices-sync))
 - **Currency conversion** - Automatic exchange rate lookups; regions without a rate are flagged and never priced
 - **Multiple pricing strategies** - PPP (World Bank), Big Mac Index or Netflix Index for regional pricing
 - **Public Index Checker** - Compare regional prices across strategies at `/index-checker` (no auth required)
@@ -221,6 +222,86 @@ dialog. With them the CLI can:
 
 Use the CLI for every other offer kind too.
 
+### Google Play subscription offers
+
+A Play offer belongs to one base plan and is found by its offer ID. It has one or two phases, each
+priced per region with one of: Play's relative discount (`"0.5"` = 50% off, follows the base price
+by itself), an absolute discount, a fixed price, or free. Its eligibility is a new-customer rule
+("never had any subscription in the app" / "never had this subscription"), an upgrade rule, or
+none (developer-determined: the app decides who sees it). Tags (`offerTags`) are passed to the app
+by the billing library, for example for RevenueCat (`rc-customer-center`, `rc-ignore-offer`).
+
+Plan Play offers with the same offer plan spec, for a `packageName` app. Eligibility is always
+spelled out: PricingKit never assumes one.
+
+```json
+{
+  "kind": "pricingkit.offerPlanSpec", "schemaVersion": 1, "app": { "packageName": "com.example.app" },
+  "offers": [
+    {
+      "id": "annual-half-off", "kind": "play.offer",
+      "productRef": { "platform": "google", "type": "subscription", "productId": "com.example.pro", "basePlanId": "annual" },
+      "mode": "PAY_UP_FRONT", "duration": "P1Y", "territories": "all", "syncWithBase": false,
+      "pricing": { "type": "play.relativeDiscount", "fraction": "0.5" },
+      "eligibility": { "type": "play.targeting", "rule": { "type": "developerDetermined" } },
+      "tags": ["rc-customer-center", "rc-ignore-offer"]
+    },
+    {
+      "id": "new-customer-trial", "kind": "play.offer",
+      "productRef": { "platform": "google", "type": "subscription", "productId": "com.example.pro", "basePlanId": "annual" },
+      "mode": "FREE_TRIAL", "duration": "P1W", "territories": "all", "syncWithBase": false,
+      "pricing": { "type": "free" },
+      "eligibility": { "type": "play.targeting", "rule": { "type": "acquisition", "scope": "anySubscriptionInApp" } }
+    }
+  ]
+}
+```
+
+- **One phase per spec offer.** `PAY_UP_FRONT` is one recurrence of `duration`, `PAY_AS_YOU_GO`
+  is `periods` recurrences of `duration`, `FREE_TRIAL` is free. Existing two-phase offers are read,
+  listed, checked for drift and kept in step, but a spec creates single-phase offers only.
+- **Pricing:** `play.relativeDiscount` (native: follows the base price), `play.absoluteDiscount`
+  (`amounts` per region, in the region's currency), `fixed` (`prices` per region) or
+  `percentOfCurrent` (each region's own base price times the percent, prorated over the phase,
+  made a valid price by Play's own price conversion and written as a fixed price). `snap` doesn't
+  apply on Play.
+- **Eligibility:** `{ "type": "developerDetermined" }`, `{ "type": "acquisition", "scope":
+  "anySubscriptionInApp" | "thisSubscription" }` or `{ "type": "upgrade", "scope": "thisSubscription" |
+  { "specificSubscriptionInApp": "<product id>" }, "billingPeriodDuration"?, "oncePerUser"? }`.
+- **Regions:** `"all"` is every region of the base plan. The offer is open to new subscribers
+  where the base plan is, and not in locations Play launches later (no `otherRegionsConfig`).
+- **State:** a created offer is activated (`play.state: "DRAFT"` leaves it a draft). A planned
+  offer that already matches and is a draft or inactive is activated.
+- **Preview:** `pricingkit plan` prints each offer's eligibility, phases and tags, and per region the
+  base price, the base price over the phase, the offer price (an estimate for discounts: Play works
+  those out itself) and the discount. Regions it can't price are listed and left out.
+- **Changes:** an existing offer is patched (prices, eligibility, tags); regions the spec leaves
+  out keep their price. Changing its phase durations or recurrences is refused: create a new offer ID.
+- **Lifecycle (library):** `PlayAdapter.planOfferLifecycle` plans activating, deactivating or
+  deleting one offer. Play deletes draft offers only, and deleting needs `force.deleteOffers`
+  (CLI `--force-delete`): it is irreversible.
+- **Undo:** a created (active) offer is deactivated, never deleted (Play deletes drafts only); a
+  draft the run created but couldn't activate is deleted; patches are reversed; a deactivation is
+  re-activated.
+- **Safety:** the same as for App Store offers: `confirm` must be the plan's hash, ops are found by
+  offer ID so a create that took effect is never sent twice (a create answered with 409 counts only
+  if the existing offer is exactly the planned one; one whose activation failed resumes with the
+  activation alone), runs resume and undo, and every request is charged to the budget. A plan for
+  another package is refused with `APP_MISMATCH` before anything is read, and every base plan is
+  checked to be one of the app's.
+- **Strict reads:** anything Play returns that PricingKit can't hold exactly (an unknown field, a
+  region priced two ways, a phase that misses a region) is shown as a problem, and such an offer is
+  never written to.
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS=~/keys/service-account.json
+npx pricingkit offers --package-name com.example.app --subscription com.example.pro [--base-plan annual]
+npx pricingkit plan --spec play-offers.json --out play-plan.json
+npx pricingkit apply play-plan.json --confirm <hash>
+```
+
+The web app lists a subscription's Play offers (read-only) on its page under the base plans.
+
 Before reading or writing a subscription, PricingKit checks it belongs to the plan's app (its
 group must be one of the app's subscription groups). App Store Connect API keys work across a
 team's apps, so a subscription ID copied from another app is refused with `APP_MISMATCH`.
@@ -248,8 +329,20 @@ a file in your repository and PricingKit uses it to check and re-derive the offe
   pay-up-front offers then use `totalOverDuration`, others `perPeriod`. Optional: `territories`
   (default: all of the offer's), `deviationThreshold` (default `"0.05"`).
 - `syncWithBase: false` keeps an offer in the drift check but out of sync plans.
-- App Store offers only. PricingKit doesn't read Google Play offers yet, so a rules file for a Play
-  app is refused. (Play offers priced with a relative discount follow the base price by themselves.)
+- **Google Play** (a rules file for a `packageName` app, `kind: "play.offer"`, `product` the base
+  plan, `key` the offer ID). `pricing` may also be `play.relativeDiscount` (`fraction`),
+  `play.absoluteDiscount` (`amounts`) or `fixed` (`prices`); `phase` (1 or 2) says which phase of a
+  two-phase offer the rule prices (default: the only one that isn't free).
+  - `play.relativeDiscount` follows the base price by itself: drift checks only the fraction, and
+    sync lists the offer as "follows base automatically" (it plans a patch only if the store's
+    fraction differs from the rule).
+  - `percentOfCurrent` offers have fixed prices, so they drift when a base price changes; sync
+    re-derives them against the new base prices (Play's price for each region's target: about one
+    request per region) and patches the phase prices.
+  - `fixed` and `play.absoluteDiscount`: drift checks the prices or amounts; sync patches them back
+    to the rule and leaves (and lists) a region where they are no longer below the base price. An
+    absolute discount keeps the same amount off a new base price.
+  - Play has no scheduled base prices, so `--scheduled-base` doesn't apply.
 
 **Drift.** `pricingkit drift --rules offer-rules.json` checks every offer in the file against its
 rule and today's base prices (about 25 requests per subscription whose offers cover 175
@@ -325,10 +418,10 @@ Only `apply` writes to a store, and only with `--confirm <plan hash>`.
 | `export` | Current (and scheduled) prices of an App Store subscription or a Google Play base plan, as a `pricingkit.state` snapshot. `--out <file>` also writes it. |
 | `plan --spec <file>` | With an offer plan spec (`pricingkit.offerPlanSpec`), plans creating or re-pricing App Store offers and prints the plan hash. Otherwise: reads a pricing spec, snaps its targets to real store prices and writes the plan (`pricingkit.changeset`). A dry run: it only reads. The default file, `pricingkit-plan.json` (gitignored), is never replaced unless you pass `--force`; `--out <file>` names the file and replaces it. `--state-out <file>` saves the prices it planned against. |
 | `diff <plan.json>` | Human-readable summary of a plan: changes per product and territory with before, after and percent change, skipped territories by reason, warnings. No store requests. |
-| `offers` | An App Store subscription's introductory, promotional, offer code and win-back offers with each territory's price (`--kind` filters). |
-| `apply <plan.json> --confirm <hash>` | Applies an App Store offer plan. `--confirm` must be the plan's hash (shown by `plan` and `diff`). Saves the run log after every step (`--run-out`, default `<plan>.run.json` next to the plan file, never overwritten) and continues one with `--resume <run.json>`. Deleting offers needs `--force-delete`. |
+| `offers` | An App Store subscription's introductory, promotional, offer code and win-back offers with each territory's price (`--kind` filters); or a Google Play subscription's offers (`--package-name`, `--base-plan` for one base plan) with state, eligibility, tags and each phase's price per region. |
+| `apply <plan.json> --confirm <hash>` | Applies an offer plan, App Store or Google Play (the app named in the plan). `--confirm` must be the plan's hash (shown by `plan` and `diff`). Saves the run log after every step (`--run-out`, default `<plan>.run.json` next to the plan file, never overwritten) and continues one with `--resume <run.json>`. Deleting offers needs `--force-delete`. |
 | `undo <plan.json> <run.json>` | Writes the plan that undoes a run (`--out`, default `<plan>.undo.json` next to the plan file, replaced only with `--force`) and prints its summary, hash and anything that can't be reversed. Offline: no credentials, no store requests. Apply it with `apply --confirm`, plus `--force-delete` when it deletes offers. |
-| `drift` | Checks an App Store offer against "`--percent` of each territory's current price" (`--basis perPeriod\|totalOverDuration`, `--snap nearest\|floor\|ceil`, `--threshold`) and prints a `pricingkit.offerDrift` report. `--territories GB,US` checks only those territories: the offer's others are listed in `outOfScope` and don't count against it. |
+| `drift` | Checks an App Store offer against "`--percent` of each territory's current price" (`--basis perPeriod\|totalOverDuration`, `--snap nearest\|floor\|ceil`, `--threshold`) and prints a `pricingkit.offerDrift` report. `--territories GB,US` checks only those territories: the offer's others are listed in `outOfScope` and don't count against it. On Google Play (`--package-name --subscription --base-plan --offer`): `--percent <n>` or `--relative-discount <0..1>`, printing a `pricingkit.playOfferDrift` report. |
 | `drift --rules <rules.json>` | Checks every offer in an offer rules file and prints one `pricingkit.rulesDrift` report. See [sync](#keeping-offers-in-step-with-base-prices-sync). |
 | `plan --rules <rules.json> [--spec <spec.json>]` | Plans keeping `syncWithBase` offers in step: against current base prices, or with `--spec`, against the prices that base-price plan sets (one plan, base ops first). `--scheduled-base hold\|now` (default `hold`). Offers the store can't re-price are listed as manual actions. |
 
@@ -347,7 +440,7 @@ npx pricingkit plan --spec pricing.json --rules offer-rules.json --out plan.json
 
 **Shared options.** `--json` prints machine-readable JSON on stdout: the document itself
 (`pricingkit.state`, `pricingkit.changeset`, `pricingkit.planSummary`, `pricingkit.offers` or
-`pricingkit.offerDrift`, `pricingkit.rulesDrift`), or `{"error": {"message", "code", "status"}}` on failure. Store client
+`pricingkit.offerDrift`, `pricingkit.playOfferDrift`, `pricingkit.rulesDrift`), or `{"error": {"message", "code", "status"}}` on failure. Store client
 logs and the request count (when any requests were sent) go to stderr. `--budget <n>` caps the
 store requests one run may send (default 1000, leaving room within App Store Connect's 3600 per
 hour for anything else using the same key). Every command runs inside a `RequestBudget`, and a
