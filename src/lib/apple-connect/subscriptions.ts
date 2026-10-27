@@ -618,9 +618,11 @@ export async function applySubscriptionPriceChanges(
         ctx
       );
 
-    // Only a future-dated change replaces the existing scheduled price
-    const existing = startDate ? scheduledPrices[territoryCode] : undefined;
-    const previous: ScheduledPriceSnapshot | undefined =
+    // The territory's existing scheduled price, if any. Only a future-dated
+    // change replaces (deletes) it; an immediate change leaves it in place but
+    // it is still named if Apple refuses the create with a 409.
+    const existing = scheduledPrices[territoryCode];
+    const scheduled: ScheduledPriceSnapshot | undefined =
       existing?.subscriptionPriceId && existing.pricePointId
         ? {
             subscriptionPriceId: existing.subscriptionPriceId,
@@ -630,6 +632,7 @@ export async function applySubscriptionPriceChanges(
             currency: existing.currency,
           }
         : undefined;
+    const previous = startDate ? scheduled : undefined;
 
     try {
       await create();
@@ -637,15 +640,15 @@ export async function applySubscriptionPriceChanges(
       const createFailure = describeError(createError);
       // Nothing was deleted, so the previous scheduled price (if any) is untouched
       const error =
-        previous && createFailure.status === 409
-          ? `${createFailure.message} (a scheduled price already exists for ${territoryCode}: ${describeScheduled(previous)}. If this is the conflict, clear the scheduled price first, then apply again.)`
+        scheduled && createFailure.status === 409
+          ? `${createFailure.message} (a scheduled price already exists for ${territoryCode}: ${describeScheduled(scheduled)}. If this is the conflict, clear the scheduled price first, then apply again.)`
           : createFailure.message;
       return {
         territoryCode,
         status: 'failed',
         error,
         errorStatus: createFailure.status,
-        ...(previous ? { previousScheduled: previous } : {}),
+        ...(scheduled ? { previousScheduled: scheduled } : {}),
       };
     }
 

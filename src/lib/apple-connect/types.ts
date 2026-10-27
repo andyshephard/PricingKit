@@ -399,6 +399,11 @@ export interface NormalizedAppleProduct {
   state: AppleInAppPurchaseState;
   baseTerritory?: string; // Alpha-3 territory code of the base price (e.g., 'GBR', 'USA')
   prices: Record<string, AppleProductPrice>; // Territory code -> price info
+  /**
+   * Set when the list could not read this product's price. BASE_TERRITORY_UNKNOWN:
+   * the price schedule names no base territory, so no territory is guessed.
+   */
+  priceUnavailableReason?: 'BASE_TERRITORY_UNKNOWN';
   localizations: Record<string, { name: string; description?: string }>;
 }
 

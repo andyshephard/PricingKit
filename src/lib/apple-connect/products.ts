@@ -132,8 +132,13 @@ export async function listInAppPurchases(
         // console.log('[Apple] No price schedule found for product', product.id);
         return;
       }
-      // Get the base territory for this product (default to USA if not found)
-      const baseTerritory = allBaseTerritoryMap.get(product.id) || 'USA';
+      // Never guess a base territory: reading another territory's price would
+      // show it as the product's price. Flag the product and skip the read.
+      const baseTerritory = allBaseTerritoryMap.get(product.id);
+      if (!baseTerritory) {
+        product.priceUnavailableReason = 'BASE_TERRITORY_UNKNOWN';
+        return;
+      }
       // console.log('[Apple] Fetching price for product', product.id, 'using schedule', priceScheduleId, 'base territory', baseTerritory);
       const basePrice = await getProductBasePriceBySchedule(credentials, priceScheduleId, baseTerritory, ctx);
       if (basePrice) {

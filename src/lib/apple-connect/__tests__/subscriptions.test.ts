@@ -265,6 +265,40 @@ describe('applySubscriptionPriceChanges', () => {
     expect(outcomes[0].error).toMatch(/clear the scheduled price first/);
   });
 
+  it('names the scheduled price on a 409 for an immediate change too, and deletes nothing', async () => {
+    const calls = recordCalls((call) => {
+      if (call.method === 'POST') {
+        throw new AppleApiError(409, 'ENTITY_ERROR', 'Conflict', 'Rejected');
+      }
+      return {};
+    });
+
+    const outcomes = await applySubscriptionPriceChanges(
+      credentials,
+      'sub-1',
+      { FR: { pricePointId: 'new-pp-fr' } },
+      { FR: scheduledFR },
+      noDelay
+    );
+
+    expect(calls.map((c) => c.method)).toEqual(['POST']);
+    expect(outcomes[0]).toMatchObject({ status: 'failed', errorStatus: 409 });
+    expect(outcomes[0].error).toMatch(/4\.99 EUR from 2099-01-01/);
+  });
+
+  it('leaves a scheduled price in place when an immediate change succeeds', async () => {
+    const calls = recordCalls(() => ({}));
+    const outcomes = await applySubscriptionPriceChanges(
+      credentials,
+      'sub-1',
+      { FR: { pricePointId: 'new-pp-fr' } },
+      { FR: scheduledFR },
+      noDelay
+    );
+    expect(calls.map((c) => c.method)).toEqual(['POST']);
+    expect(outcomes).toEqual([{ territoryCode: 'FR', status: 'created' }]);
+  });
+
   it('reports a plain 409 when no scheduled price exists', async () => {
     const calls = recordCalls((call) => {
       if (call.method === 'POST') {
