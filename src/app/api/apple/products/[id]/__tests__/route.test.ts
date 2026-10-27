@@ -19,6 +19,8 @@ const getInAppPurchase = vi.fn();
 const getInAppPurchasePrices = vi.fn();
 const getBaseTerritoryForProduct = vi.fn();
 const replaceInAppPurchaseManualPrices = vi.fn();
+const resolvePPPPricesToPricePoints = vi.fn();
+const updateInAppPurchasePrices = vi.fn();
 vi.mock('@/lib/apple-connect', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/apple-connect')>();
   return {
@@ -27,6 +29,8 @@ vi.mock('@/lib/apple-connect', async (importOriginal) => {
     getInAppPurchasePrices: (...args: unknown[]) => getInAppPurchasePrices(...args),
     getBaseTerritoryForProduct: (...args: unknown[]) => getBaseTerritoryForProduct(...args),
     replaceInAppPurchaseManualPrices: (...args: unknown[]) => replaceInAppPurchaseManualPrices(...args),
+    resolvePPPPricesToPricePoints: (...args: unknown[]) => resolvePPPPricesToPricePoints(...args),
+    updateInAppPurchasePrices: (...args: unknown[]) => updateInAppPurchasePrices(...args),
   };
 });
 
@@ -44,6 +48,8 @@ beforeEach(() => {
   getInAppPurchasePrices.mockReset();
   getBaseTerritoryForProduct.mockReset();
   replaceInAppPurchaseManualPrices.mockReset();
+  resolvePPPPricesToPricePoints.mockReset();
+  updateInAppPurchasePrices.mockReset();
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
@@ -147,6 +153,47 @@ describe('PATCH /api/apple/products/[id]', () => {
     getInAppPurchase.mockResolvedValue({ ...product });
     getBaseTerritoryForProduct.mockResolvedValue(null);
     const response = await patch({ GB: { pricePointId: 'pp-gb' }, FR: { pricePointId: 'pp-fr' } });
+    expect(response.status).toBe(422);
+    expect(replaceInAppPurchaseManualPrices).not.toHaveBeenCalled();
+  });
+
+  it('calculated (PPP) prices go through the same merge, so untouched territories keep their prices', async () => {
+    getInAppPurchase.mockResolvedValue({ ...product });
+    getInAppPurchasePrices.mockResolvedValue({});
+    getBaseTerritoryForProduct.mockResolvedValue('USA');
+    resolvePPPPricesToPricePoints.mockResolvedValue({
+      resolved: [
+        { territoryId: 'USA', pricePointId: 'pp-usa' },
+        { territoryId: 'GBR', pricePointId: 'pp-gbr' },
+      ],
+      skipped: ['FRA: no cached tier data for EUR'],
+    });
+    replaceInAppPurchaseManualPrices.mockResolvedValue({ sent: 2, kept: 3, keptScheduled: [] });
+
+    const response = await patch({
+      USA: { currencyCode: 'USD', units: '4', nanos: 990000000 },
+      GBR: { currencyCode: 'GBP', units: '3', nanos: 990000000 },
+      FRA: { currencyCode: 'EUR', units: '4', nanos: 490000000 },
+    });
+    expect(response.status).toBe(200);
+    expect(updateInAppPurchasePrices).not.toHaveBeenCalled();
+    expect(replaceInAppPurchaseManualPrices).toHaveBeenCalledTimes(1);
+    const [, , changes, base] = replaceInAppPurchaseManualPrices.mock.calls[0];
+    expect(changes).toEqual({ USA: { pricePointId: 'pp-usa' }, GBR: { pricePointId: 'pp-gbr' } });
+    expect(base).toBe('USA');
+    const body = await response.json();
+    expect(body.updated).toBe(2);
+    expect(body.skipped).toEqual(['FRA: no cached tier data for EUR']);
+  });
+
+  it('refuses calculated prices when the base territory could not be resolved', async () => {
+    getInAppPurchase.mockResolvedValue({ ...product });
+    getBaseTerritoryForProduct.mockResolvedValue('USA');
+    resolvePPPPricesToPricePoints.mockResolvedValue({ resolved: [{ territoryId: 'GBR', pricePointId: 'pp-gbr' }], skipped: ['USA: none'] });
+    const response = await patch({
+      USA: { currencyCode: 'USD', units: '4' },
+      GBR: { currencyCode: 'GBP', units: '3' },
+    });
     expect(response.status).toBe(422);
     expect(replaceInAppPurchaseManualPrices).not.toHaveBeenCalled();
   });

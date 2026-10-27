@@ -5,7 +5,6 @@ import {
   getInAppPurchase,
   getBaseTerritoryForProduct,
   getInAppPurchasePrices,
-  updateInAppPurchasePrices,
   replaceInAppPurchaseManualPrices,
   toAppleTerritoryId,
   resolvePPPPricesToPricePoints,
@@ -223,14 +222,24 @@ export async function PATCH(
       }
 
 
-      // Update all prices at once
-      await updateInAppPurchasePrices(
-        auth.credentials,
-        product.id,
-        result.resolved,
-        baseTerritory,
-        ctx
+      // The base territory's own price must be among the resolved ones;
+      // otherwise the schedule would silently keep its old base price
+      const resolvedBase = result.resolved.some(
+        (r) => r.territoryId === baseTerritory || toAppleTerritoryId(r.territoryId) === toAppleTerritoryId(baseTerritory)
       );
+      if (!resolvedBase) {
+        return NextResponse.json(
+          { error: `Could not resolve a price point for the base territory ${baseTerritory}; nothing was changed.`, skipped: result.skipped },
+          { status: 422 }
+        );
+      }
+
+      // One schedule: the resolved territories change, every other
+      // territory keeps its manual prices (and scheduled prices stay)
+      const changes: Record<string, { pricePointId: string }> = {};
+      for (const { territoryId, pricePointId } of result.resolved) changes[territoryId] = { pricePointId };
+      const merged = await replaceInAppPurchaseManualPrices(auth.credentials, product.id, changes, baseTerritory, ctx);
+      keptScheduled = merged.keptScheduled;
 
       updatedCount = result.resolved.length;
     } else {
