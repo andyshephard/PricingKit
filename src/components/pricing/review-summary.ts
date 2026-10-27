@@ -55,9 +55,15 @@ export function changePercent(change: ReviewChange): string {
   return `${rounded > 0 ? '+' : ''}${rounded.toFixed(2)}%`;
 }
 
-function csvCell(value: string): string {
-  // Quote every cell; neutralise spreadsheet formulas.
-  const safe = /^[=+\-@\t\r]/.test(value) && !/^[-+]?\d/.test(value) ? `'${value}` : value;
+/** A whole cell that is just a number (optionally signed, a percentage): a spreadsheet can't run it */
+const PLAIN_NUMBER = /^[-+]?\d+(\.\d+)?%?$/;
+
+/** Quotes every cell, and neutralises any that a spreadsheet could read as a formula */
+export function csvCell(value: string): string {
+  // = + - @ start a formula; a leading tab or CR can hide one. Only a cell that
+  // is entirely a plain number (e.g. "-1", "+5.00%") keeps its sign as is:
+  // "-1+HYPERLINK(...)" starts like a number but is a formula.
+  const safe = /^[=+\-@\t\r]/.test(value) && !PLAIN_NUMBER.test(value) ? `'${value}` : value;
   return `"${safe.replace(/"/g, '""')}"`;
 }
 

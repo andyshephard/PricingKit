@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { changePercent, countChanges, planCsv, planFileName, type ReviewChange } from '../review-summary';
+import { changePercent, countChanges, csvCell, planCsv, planFileName, type ReviewChange } from '../review-summary';
 
 const change = (id: string, before: number | null, after: number | null, extra: Partial<ReviewChange> = {}): ReviewChange => ({
   id,
@@ -52,6 +52,19 @@ describe('planCsv', () => {
     const csv = planCsv([{ id: '=HYPERLINK("x")', label: '@cmd', before: '-1', after: '+2', note: 'a"b' }]);
     expect(csv).toContain(`"'=HYPERLINK(""x"")","'@cmd","-1","+2"`);
     expect(csv).toContain('"a""b"');
+  });
+
+  it('neutralises a cell that only starts like a number', () => {
+    expect(csvCell('-1+HYPERLINK("http://example.invalid","x")')).toBe(`"'-1+HYPERLINK(""http://example.invalid"",""x"")"`);
+    expect(csvCell('+1-2')).toBe(`"'+1-2"`);
+    expect(csvCell('\t=1+1')).toBe(`"'\t=1+1"`);
+    expect(csvCell('\r-5')).toBe(`"'\r-5"`);
+    expect(csvCell('@SUM(A1)')).toBe(`"'@SUM(A1)"`);
+    // Plain numbers and percentages keep their sign
+    expect(csvCell('-1')).toBe('"-1"');
+    expect(csvCell('+12.50')).toBe('"+12.50"');
+    expect(csvCell('-11.11%')).toBe('"-11.11%"');
+    expect(csvCell('9.99 USD')).toBe('"9.99 USD"');
   });
 });
 
