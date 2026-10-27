@@ -277,6 +277,16 @@ spelled out: PricingKit never assumes one.
   those out itself) and the discount. Regions it can't price are listed and left out.
 - **Changes:** an existing offer is patched (prices, eligibility, tags); regions the spec leaves
   out keep their price. Changing its phase durations or recurrences is refused: create a new offer ID.
+  The preview and `pricingkit diff` show the state, eligibility and tags before and after, and the
+  plan warns by name ("removes tag rc-ignore-offer", "eligibility A → B"). A spec that leaves out
+  a tag the offer has is refused (`TAG_REMOVAL`) unless it sets `"play": { "allowTagRemoval": true }`.
+- **Relative discounts** are the share taken off, as the Android Publisher reference describes
+  `relativeDiscount` ("a value of 0.8 represents an 80% discount"). Until that is confirmed on a test
+  app, the plan warns for any fraction other than 0.5.
+- **Percent of current** regions where Play's price is further from the target than
+  `play.deviationThreshold` (default `"0.05"`; `deviationThreshold` in a rules file) are left out,
+  and `pricingkit plan` exits 1. Fixed prices and amounts off may not have more decimals than the
+  region's currency.
 - **Lifecycle (library):** `PlayAdapter.planOfferLifecycle` plans activating, deactivating or
   deleting one offer. Play deletes draft offers only, and deleting needs `force.deleteOffers`
   (CLI `--force-delete`): it is irreversible.
@@ -284,9 +294,12 @@ spelled out: PricingKit never assumes one.
   draft the run created but couldn't activate is deleted; patches are reversed; a deactivation is
   re-activated.
 - **Safety:** the same as for App Store offers: `confirm` must be the plan's hash, ops are found by
-  offer ID so a create that took effect is never sent twice (a create answered with 409 counts only
-  if the existing offer is exactly the planned one; one whose activation failed resumes with the
-  activation alone), runs resume and undo, and every request is charged to the budget. A plan for
+  offer ID so a create that took effect is never sent twice (creates and activations are retried on
+  429 only, never after a 5xx or a timeout; a failed create counts as "may have applied" and the next
+  read or a resume decides; a create answered with 409 counts only if the existing offer is exactly
+  the planned one; one whose activation failed resumes with the activation alone; undo deletes the
+  draft a failed create may have left, and lists an activation that got no answer as not
+  reversible), runs resume and undo, and every request is charged to the budget. A plan for
   another package is refused with `APP_MISMATCH` before anything is read, and every base plan is
   checked to be one of the app's.
 - **Strict reads:** anything Play returns that PricingKit can't hold exactly (an unknown field, a
@@ -453,6 +466,10 @@ spent budget stops the run with an error rather than a partial result.
 | `0` | OK. For `plan` and `diff`: no changes. For `drift`: every territory matches. |
 | `1` | Error: bad arguments, invalid spec or plan, missing credentials, a store error, or a spent request budget. |
 | `2` | Something to act on: `plan`/`diff` found changes (or, for sync plans, manual actions), or `drift` found the offer out of sync (any mismatch, missing, extra, unresolved or unreadable territory among those checked). `drift --rules`: any offer drifted or missing; when none did but one couldn't be checked, the exit code is `1`. |
+
+**App pins.** Set `PRICINGKIT_EXPECT_BUNDLE_ID` and/or `PRICINGKIT_EXPECT_PACKAGE` and the CLI
+refuses any other App Store or Google Play app (from a flag, a spec, a rules file or a plan) with
+`APP_NOT_EXPECTED`, before loading credentials or sending anything. Useful in CI jobs made for one app.
 
 **Credentials** come only from environment variables, never from flags or files in the repo:
 
