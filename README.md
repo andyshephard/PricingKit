@@ -18,6 +18,8 @@ Free, open-source regional pricing tool for the App Store and Google Play. Set P
 - **Currency conversion** - Automatic exchange rate lookups; regions without a rate are flagged and never priced
 - **Multiple pricing strategies** - PPP (World Bank), Big Mac Index, Netflix Index or your own per-territory multipliers (Custom) for regional pricing
 - **Pricing quality** - Target what you receive (proceeds, net of tax and commission) instead of the customer price; every planned change says what existing subscribers see (decrease, new subscribers only, notified, or needs consent); reference data shows its age and stale PPP data is capped or inflated (see [Pricing quality](#pricing-quality))
+- **Several apps, both stores** - A workspace file covers several App Store bundles and Google Play packages: one command plans, diffs, applies, undoes and checks drift for all of them, one plan per app. Parity mappings tie an App Store subscription to a Play base plan so one target drives both, and `pricingkit parity` reports where their prices differ (see [Workspaces](#workspaces-several-apps-and-both-stores))
+- **CSV prices** - Export base prices and offers per territory as a versioned CSV, edit them in a spreadsheet, and plan them back as fixed targets, checked against real price points (see [Prices CSV](#prices-csv))
 - **Public Index Checker** - Compare regional prices across strategies at `/index-checker` (no auth required)
 - **Search & filter** - Find products by SKU/product ID or name
 
@@ -437,6 +439,11 @@ Only `apply` writes to a store, and only with `--confirm <plan hash>`.
 | `drift` | Checks an App Store offer against "`--percent` of each territory's current price" (`--basis perPeriod\|totalOverDuration`, `--snap nearest\|floor\|ceil`, `--threshold`) and prints a `pricingkit.offerDrift` report. `--territories GB,US` checks only those territories: the offer's others are listed in `outOfScope` and don't count against it. On Google Play (`--package-name --subscription --base-plan --offer`): `--percent <n>` or `--relative-discount <0..1>`, printing a `pricingkit.playOfferDrift` report. |
 | `drift --rules <rules.json>` | Checks every offer in an offer rules file and prints one `pricingkit.rulesDrift` report. See [sync](#keeping-offers-in-step-with-base-prices-sync). |
 | `plan --rules <rules.json> [--spec <spec.json>]` | Plans keeping `syncWithBase` offers in step: against current base prices, or with `--spec`, against the prices that base-price plan sets (one plan, base ops first). `--scheduled-base hold\|now` (default `hold`). Offers the store can't re-price are listed as manual actions. |
+| `plan --workspace <file>` | Plans every app of a [workspace](#workspaces-several-apps-and-both-stores): one plan file per app (and per offer plan spec) plus a `workspace-plan.json` index with one hash, in `--out-dir` (default `pricingkit-plans`). |
+| `diff/apply/undo --workspace-plan <index>` | The same commands across a workspace plan: every plan under its app, applied in order (each with its own adapter and run log; `--resume-runs` continues), undone newest first. |
+| `drift --workspace <file>` | Checks the rules file of every app in a workspace; one `pricingkit.workspaceDrift` report. |
+| `parity --workspace <file>` | Compares the App Store and Google Play prices of every mapped subscription per territory (read-only); exit 2 on a gap above the threshold. |
+| `export ... --format csv [--offers]` | Current prices (and with `--offers`, offer prices) as a [prices CSV](#prices-csv); `--workspace <file>` exports every product a workspace names. |
 | `mcp` | Runs an [MCP server](#agents-pricingkit-mcp) over stdio for agents: read and plan tools, and a tool that returns the `apply` command for a person to run. |
 
 Spec and rules files may be JSON or YAML (a `.yaml` / `.yml` name); plans, run logs and state
@@ -458,6 +465,102 @@ npx pricingkit export --bundle-id com.example.app --in-app com.example.app.coins
 npx pricingkit offer deactivate --bundle-id com.example.app --subscription 1234567890 \
   --kind apple.offerCode --offer SPRING50 --out end-spring.json
 ```
+
+### Workspaces: several apps and both stores
+
+A workspace (`pricingkit.workspace` v1, JSON or YAML) lists apps on both stores. Each app names
+its own spec, rules file and offer plan spec (paths relative to the workspace file, inside the
+working directory), or gives its spec products inline. Parity mappings tie an App Store
+subscription to a Google Play base plan:
+
+```yaml
+kind: pricingkit.workspace
+schemaVersion: 1
+apps:
+  - id: ios
+    app: { bundleId: com.example.app }
+    spec: pricing/ios.yaml          # a pricingkit.spec
+    rules: pricing/ios-rules.yaml   # a pricingkit.offerRules (optional)
+    offers: pricing/ios-offers.yaml # a pricingkit.offerPlanSpec (optional)
+  - id: android
+    app: { packageName: com.example.app }
+    products:                       # or the spec's products inline
+      - product: { platform: google, type: subscription, productId: pro, basePlanId: monthly }
+        targets: { type: percentOfCurrent, percent: "105" }
+parity:
+  - id: annual
+    apple: { bundleId: com.example.app, subscription: "1234567890" }
+    play: { packageName: com.example.app, subscription: pro, basePlan: annual }
+    target: { type: strategy, strategy: ppp, base: { amount: "49.99" } }
+    baseTerritory: US               # per product, never app-wide
+    threshold: "0.05"               # parity gap allowed, a fraction of the lower price
+```
+
+**One plan per app, not one combined plan.** `plan --workspace` writes an ordinary plan file per
+app (`<id>.json`: its spec and rules, like `plan --spec --rules`) and one per offer plan spec
+(`<id>.offers.json`), plus `workspace-plan.json`, an index listing them in apply order with each
+plan's app and hash and one workspace hash over them all. We chose this over one plan whose ops
+each carry their app because every safety check PricingKit has is per plan and per app: a plan's
+hash covers its app, `apply` builds the adapter for that app only and the executor refuses
+another app's plan (`verifyApp`) or product (`verifyProduct`), run logs, resume and undo work per
+plan, and the plan format stays the one older PricingKit versions read. A plan never holds ops for
+two apps, so no op can run with another app's credentials, and `diff --workspace-plan` lists
+every app the run will touch before the per-app details.
+
+- `apply --workspace-plan <index> --confirm <workspace hash>` checks, before anything is read,
+  that every plan file still has the hash the index records and is for the app it lists, and that
+  every app passes the `PRICINGKIT_EXPECT_*` pins. It then applies the plans one by one (each with
+  its own run log next to it) and stops at the first that doesn't complete. `--resume-runs`
+  continues from the logs; `--force` replaces them.
+- `undo --workspace-plan <index>` writes an undo plan per applied plan, newest first, and
+  `workspace-plan.undo.json` to apply the same way.
+- The pins take lists: `PRICINGKIT_EXPECT_BUNDLE_ID=com.example.app,com.example.other`.
+- Credentials stay per store: one App Store Connect key (`ASC_*`) for every bundle and one
+  service account (`GOOGLE_*`) for every package. Products are checked to belong to their app
+  before their prices are read (App Store Connect keys reach every app of a team).
+- **Parity.** Each mapping with a `target` adds that target to both apps' specs; each store snaps
+  it separately (App Store price points, Play's price conversion). The plan output ends with the
+  parity report on the planned prices; `pricingkit parity --workspace` reports the current ones,
+  read-only. Per territory: `same`, `withinThreshold`, `gap`, `notComparable` (the stores bill
+  different currencies; never converted), `appleOnly`, `playOnly` or `unreadable`. Prices are
+  compared as each store lists them (both stores show tax-inclusive prices in most territories
+  and tax-exclusive ones in a few, such as the United States).
+
+### Prices CSV
+
+`pricingkit export ... --format csv [--offers]` (or `--workspace <file> --format csv`) writes a
+`pricingkit.prices` CSV. The web app's "Export prices" menu offers the same file ("CSV for import").
+
+```csv
+# pricingkit.prices v1
+app,platform,product,base_plan,offer_kind,offer_key,territory,currency,price,proceeds
+com.example.app,apple,1234567890,,,,GB,GBP,44.99,36.62
+com.example.app,apple,1234567890,,apple.promo,retention_half,GB,GBP,22.99,18.71
+com.example.app,google,pro,annual,,,GB,GBP,49.99,
+```
+
+| Column | Meaning |
+| --- | --- |
+| `app` | Bundle ID or package name |
+| `platform` | `apple` or `google` |
+| `product` | App Store: numeric subscription ID. Google Play: product ID |
+| `base_plan` | Google Play base plan ID (empty on the App Store and for one-time products) |
+| `offer_kind`, `offer_key` | Empty for a base price; otherwise the offer's kind and key (promo offer code, offer code name, win-back offer ID, Play offer ID) |
+| `territory`, `currency`, `price` | ISO alpha-2, ISO 4217 and the customer price as a plain decimal |
+| `proceeds` | Information only (App Store proceeds); ignored on import |
+
+The first line names the format and version; columns may come in any order. Exported offers are
+every App Store offer and Google Play offers with a single phase priced per region.
+
+Import by naming the file in a spec: `targets: { type: fixed, pricesFile: prices.csv }` in a
+`pricingkit.spec` product, or `pricing: { type: fixed, pricesFile: offers.csv }` in an offer plan
+spec offer (not introductory offers, which have no key). The rows for that app, product (and
+offer) become the fixed prices; the plan then snaps them like any target and lists every row that
+wasn't planned exactly as written: snapped to another valid price, or not imported and why (also
+as plan warnings, so `diff` shows them). An offer row whose currency isn't the territory's is
+refused. The file gets the same checks as `multipliersFile` (relative to the spec, inside the
+working directory, a regular file) and a 5 MB cap. Errors give the line and column, never a
+cell's contents. Exporting and importing an unchanged file plans no changes.
 
 ### Base prices from the CLI
 
@@ -690,7 +793,9 @@ read-only call). The spec never names price point IDs.
   strategy, with the same maths as the web app's bulk pricing:
   `{ "type": "strategy", "strategy": "ppp", "base": { "territory": "US", "amount": "9.99" }, "rounding": "nearest-99" }`.
   `strategy` is `ppp` (World Bank PPP), `bigmac`, `netflix` or `direct` (plain currency
-  conversion); `base.currency` defaults to the base territory's current currency; `rounding` is
+  conversion); `base.territory` may be left out when the product gives its own `"baseTerritory"`
+  (the base territory is per product: two products of one app may use different ones, and there
+  is no app-wide default); `base.currency` defaults to the base territory's current currency; `rounding` is
   `none` (App Store default: snapping picks the price point), `nearest-99` (Google Play default)
   or `round-up`; `territories` defaults to every priced territory. The built-in indexes and
   fallback exchange rates make the plan reproducible offline; `exchangeRates`
