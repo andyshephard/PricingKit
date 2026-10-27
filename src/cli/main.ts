@@ -20,6 +20,7 @@ import { diffCommand } from './commands/diff';
 import { undoCommand } from './commands/undo';
 import { driftCommand } from './commands/drift';
 import { exportCommand } from './commands/export';
+import { offerCommand } from './commands/offer';
 import { offersCommand } from './commands/offers';
 import { planCommand } from './commands/plan';
 
@@ -30,6 +31,7 @@ const HANDLERS: Record<CommandName, (ctx: CommandContext) => Promise<CommandResu
   plan: planCommand,
   diff: diffCommand,
   offers: offersCommand,
+  offer: offerCommand,
   drift: driftCommand,
   apply: applyCommand,
   undo: undoCommand,

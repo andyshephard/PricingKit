@@ -4,7 +4,7 @@
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { UsageError } from './errors';
 
-export const COMMANDS = ['export', 'plan', 'diff', 'offers', 'drift', 'apply', 'undo'] as const;
+export const COMMANDS = ['export', 'plan', 'diff', 'offers', 'offer', 'drift', 'apply', 'undo'] as const;
 export type CommandName = (typeof COMMANDS)[number];
 
 type OptionSpec = NonNullable<ParseArgsConfig['options']>;
@@ -34,6 +34,17 @@ const OPTIONS: Record<CommandName, OptionSpec> = {
   },
   diff: { ...COMMON, plan: { type: 'string' } },
   offers: { ...COMMON, ...APP, subscription: { type: 'string' }, 'base-plan': { type: 'string' }, kind: { type: 'string' } },
+  offer: {
+    ...COMMON,
+    ...APP,
+    subscription: { type: 'string' },
+    'base-plan': { type: 'string' },
+    kind: { type: 'string' },
+    offer: { type: 'string' },
+    'end-date': { type: 'string' },
+    out: { type: 'string', short: 'o' },
+    force: { type: 'boolean' },
+  },
   drift: {
     ...COMMON,
     ...APP,
@@ -62,7 +73,7 @@ const OPTIONS: Record<CommandName, OptionSpec> = {
   undo: { ...COMMON, out: { type: 'string', short: 'o' }, force: { type: 'boolean' } },
 };
 
-const ALLOWS_POSITIONAL: Partial<Record<CommandName, true>> = { diff: true, apply: true, undo: true };
+const ALLOWS_POSITIONAL: Partial<Record<CommandName, true>> = { diff: true, offer: true, apply: true, undo: true };
 
 export type Flags = Record<string, string | boolean | undefined>;
 
@@ -167,6 +178,8 @@ Commands:
   diff     Human-readable summary of a plan file
   offers   List a subscription's offers: App Store offers with their prices per territory, or
            Google Play offers with their phases, eligibility, tags and regions
+  offer    Plan deactivating, activating or deleting one existing offer (writes a plan file
+           for "apply"); App Store and Google Play
   drift    Check offers against their rules (one offer, or every offer in a rules file with
            --rules); App Store and Google Play
   apply    Apply a reviewed plan, App Store or Google Play (needs --confirm <plan hash>; base
@@ -274,6 +287,39 @@ each phase's price per region. Anything Play returns that PricingKit can't
 read exactly is listed as a problem.
 
 ${SHARED_HELP}`,
+  offer: `Usage:
+  pricingkit offer deactivate|activate|delete --bundle-id <id> --subscription <subscription id>
+                   --kind <kind> --offer <offer key> [--end-date YYYY-MM-DD]
+                   [--out <plan.json>] [--force]
+  pricingkit offer deactivate|activate|delete --package-name <name> --subscription <product id>
+                   --base-plan <id> --offer <offer id> [--out <plan.json>] [--force]
+
+Plans one lifecycle change of an existing offer and writes it as a plan file
+(default pricingkit-plan.json, never replaced without --force or --out). A dry
+run: it only reads. Apply it like any plan, after review:
+  pricingkit apply <plan.json> --confirm <plan hash> [--force-delete]
+
+App Store (--kind apple.offerCode, apple.intro, apple.winBack or apple.promo):
+  deactivate  offer codes: switch off; introductory and win-back offers: set
+              the end date (--end-date, required)
+  activate    offer codes: switch on; introductory and win-back offers: clear
+              the end date
+  delete      introductory, promotional and win-back offers (offer codes can't
+              be deleted through the API). Applying needs --force-delete:
+              App Store Connect doesn't report redemptions.
+  Promotional offers have no active switch: stop presenting them, or delete.
+  --offer is the offer's key as "pricingkit offers" lists it (promotional:
+  offer code; offer code: name; win-back: offer ID; introductory: its key).
+Google Play (--offer is the offer ID):
+  deactivate  an active offer; subscribers who took it keep it
+  activate    a draft or inactive offer
+  delete      draft offers only; irreversible, so applying needs --force-delete
+
+Anything the store doesn't allow (e.g. deleting an active Play offer) is
+refused with the reason and no plan is written (OFFER_LIFECYCLE_REFUSED).
+Exit code 2 when a plan was written.
+
+${SHARED_HELP}`,
   drift: `Usage:
   pricingkit drift --rules <rules.json>
   pricingkit drift --bundle-id <id> --subscription <subscription id>
@@ -314,7 +360,7 @@ ${SHARED_HELP}`,
   pricingkit apply <plan.json> --confirm <plan hash> --resume <run.json>
                    [--force-delete] [--allow-base-prices]
 
-Applies a plan made by "pricingkit plan" (or "undo"),
+Applies a plan made by "pricingkit plan" (or "undo", or "offer"),
 App Store or Google Play: the app comes from the plan.
 A plan that changes base prices (a base-price spec, or --spec with --rules)
 also needs --allow-base-prices: base prices go first and an offer derived
