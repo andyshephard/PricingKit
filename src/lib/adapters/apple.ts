@@ -25,7 +25,10 @@ import {
   type SnapMode,
   type TerritoryPriceState,
   appleSubscriptionPeriodToIso,
+  assertDerivableOffer,
   checkOfferDrift,
+  defaultOfferBasis,
+  OfferRuleError,
   deriveOfferPrices,
   type AppleOfferKind,
   type BillingPeriod,
@@ -382,21 +385,23 @@ export class AppleAdapter implements PlatformAdapter {
   }
 
   /**
-   * Preview a percent-of-current offer: reads the current prices, the
-   * billing period and each territory's price points, then derives the
-   * offer price per territory. Reads only.
+   * Preview a percent-of-current offer. Refuses a rule that can't apply
+   * (free trial, weeks against months, bad percent) after reading only the
+   * billing period; then reads the current prices and each territory's
+   * price points and derives the offer price per territory. Reads only.
    */
   async previewOffer(
     product: ProductRef,
     options: { rule: PercentOfCurrentRule; mode: OfferMode; duration: OfferDuration; territories?: 'all' | string[]; deviationThreshold?: Decimal }
   ): Promise<OfferDerivation> {
-    const base = await this.fetchState(product);
+    const offer = { mode: options.mode, duration: options.duration };
     const billingPeriod = await this.fetchBillingPeriod(product);
-    const wanted = options.territories === undefined || options.territories === 'all' ? Object.keys(base.territories) : options.territories;
-    const ladders = await this.fetchPriceLadders(product, wanted);
+    assertDerivableOffer(options.rule, offer, billingPeriod);
+    const base = await this.fetchState(product);
+    const ladders = await this.fetchPriceLadders(product, this.ladderTerritories(base, options.territories));
     return deriveOfferPrices({
       rule: options.rule,
-      offer: { mode: options.mode, duration: options.duration },
+      offer,
       billingPeriod,
       base,
       ladders,
@@ -408,20 +413,39 @@ export class AppleAdapter implements PlatformAdapter {
   /**
    * Check an existing offer against its rule: which territories' offer
    * prices no longer match the rule applied to today's base prices. Returns
-   * null when the subscription has no such offer. Reads only.
+   * null when the subscription has no such offer. An offer the rule can't
+   * apply to (free trial, unknown mode or duration, weeks against months)
+   * is refused with OfferRuleError before any base price or price point is
+   * read. Without a basis, a pay-up-front offer is checked over its whole
+   * duration and any other offer per billing period. Reads only.
    */
   async checkOfferDrift(
     product: ProductRef,
-    options: { kind: AppleOfferKind; offer: string; rule: PercentOfCurrentRule; territories?: 'all' | string[]; deviationThreshold?: Decimal }
+    options: {
+      kind: AppleOfferKind;
+      offer: string;
+      rule: Omit<PercentOfCurrentRule, 'basis'> & { basis?: PercentOfCurrentRule['basis'] };
+      territories?: 'all' | string[];
+      deviationThreshold?: Decimal;
+    }
   ): Promise<OfferDriftReport | null> {
     const offer = await this.fetchOffer(product, options.kind, options.offer);
     if (!offer) return null;
-    const base = await this.fetchState(product);
+    if (offer.mode === null || offer.duration === null || offer.mode === 'FREE_TRIAL') {
+      // Same refusal the core gives, before spending requests on prices and ladders
+      throw new OfferRuleError(
+        offer.mode === 'FREE_TRIAL'
+          ? `Offer ${offer.key} is a free trial; it has no price to check`
+          : `Offer ${offer.key} has an unknown mode or duration; its rule can't be checked`
+      );
+    }
+    const rule: PercentOfCurrentRule = { ...options.rule, basis: options.rule.basis ?? defaultOfferBasis(offer.mode) };
     const billingPeriod = await this.fetchBillingPeriod(product);
-    const wanted = options.territories === undefined || options.territories === 'all' ? Object.keys(base.territories) : options.territories;
-    const ladders = await this.fetchPriceLadders(product, wanted);
+    assertDerivableOffer(rule, offer, billingPeriod);
+    const base = await this.fetchState(product);
+    const ladders = await this.fetchPriceLadders(product, this.ladderTerritories(base, options.territories));
     return checkOfferDrift({
-      rule: options.rule,
+      rule,
       offer,
       billingPeriod,
       base,
@@ -430,5 +454,9 @@ export class AppleAdapter implements PlatformAdapter {
       deviationThreshold: options.deviationThreshold,
       now: (this.now?.() ?? new Date()).toISOString(),
     });
+  }
+
+  private ladderTerritories(base: ProductPriceState, territories: 'all' | string[] | undefined): string[] {
+    return territories === undefined || territories === 'all' ? Object.keys(base.territories) : territories;
   }
 }

@@ -407,6 +407,68 @@ describe('AppleAdapter.checkOfferDrift', () => {
     expect(budget.used).toBe(server.calls.length);
   });
 
+  const half = { type: 'percentOfCurrent' as const, percent: '50', snap: 'nearest' as const };
+  const priceReads = () => server.calls.filter((c) => c.endpoint.startsWith(`${SUB}/pricePoints`) || c.endpoint.startsWith(`${SUB}/prices`));
+
+  it('refuses a free trial before reading the billing period, base prices or price points', async () => {
+    seedBase(server);
+    const trialKey = 'intro:FREE_TRIAL:ONE_WEEK:1::';
+    await expect(
+      new AppleAdapter({ credentials }).checkOfferDrift(product, { kind: 'apple.intro', offer: trialKey, rule: { ...half, basis: 'perPeriod' } })
+    ).rejects.toThrow(/free trial/);
+    expect(priceReads()).toEqual([]);
+    expect(server.calls.some((c) => c.endpoint === SUB)).toBe(false);
+  });
+
+  it('refuses an offer with an unknown mode or duration before any ladder read', async () => {
+    seedBase(server);
+    server.on(`${SUB}/promotionalOffers`, page([promoOffer('promo-1', 'example_half', 'Half', 'PAY_LATER', 'ONE_YEAR')]));
+    await expect(new AppleAdapter({ credentials }).checkOfferDrift(product, { kind: 'apple.promo', offer: 'example_half', rule: half })).rejects.toThrow(
+      /unknown mode or duration/
+    );
+    expect(priceReads()).toEqual([]);
+  });
+
+  it('refuses weeks against months after reading only the billing period', async () => {
+    seedBase(server);
+    server.on(SUB, { data: { type: 'subscriptions', id: OFFER_SUB_ID, attributes: { productId: 'com.example.app.pro.weekly', subscriptionPeriod: 'ONE_WEEK' } } });
+    // promo-1 is a 1-year pay-up-front offer: totalOverDuration has no exact ratio to a week
+    await expect(new AppleAdapter({ credentials }).checkOfferDrift(product, { kind: 'apple.promo', offer: 'example_half', rule: half })).rejects.toThrow(
+      /no exact duration ratio/
+    );
+    expect(priceReads()).toEqual([]);
+    expect(server.calls.some((c) => c.endpoint === SUB)).toBe(true);
+  });
+
+  it('defaults the basis from the offer mode: pay up front is checked over its whole duration', async () => {
+    seedBase(server);
+    const report = await new AppleAdapter({ credentials }).checkOfferDrift(product, { kind: 'apple.promo', offer: 'example_half', rule: half });
+    expect(report!.rule.basis).toBe('totalOverDuration');
+  });
+
+  it('previewOffer refuses a free trial before reading prices or price points', async () => {
+    seedBase(server);
+    await expect(
+      new AppleAdapter({ credentials }).previewOffer(product, { rule: { ...half, basis: 'perPeriod' }, mode: 'FREE_TRIAL', duration: 'P1W' })
+    ).rejects.toThrow(/free trial/);
+    expect(priceReads()).toEqual([]);
+  });
+
+  it('previewOffer derives every territory from live reads', async () => {
+    seedBase(server);
+    const preview = await new AppleAdapter({ credentials }).previewOffer(product, {
+      rule: { ...half, basis: 'totalOverDuration' },
+      mode: 'PAY_UP_FRONT',
+      duration: 'P1Y',
+    });
+    expect(preview.rows.map((r) => [r.territory, r.snappedPrice])).toEqual([
+      ['DE', '14.99'],
+      ['FR', '20.99'],
+      ['GB', '13.99'],
+      ['US', '29.99'],
+    ]);
+  });
+
   it('returns null for an offer the subscription does not have', async () => {
     seedBase(server);
     const report = await new AppleAdapter({ credentials }).checkOfferDrift(product, {
