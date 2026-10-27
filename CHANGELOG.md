@@ -134,6 +134,7 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 
 ### Security
 
+- Dependencies: Next.js 16.4.3 and `@opennextjs/cloudflare` 1.20.13 (the versions running in the Worker), `zod` 4.6.7 and `yaml` 2.9.1 (no longer pinned to the vulnerable 2.8.2); `wrangler` 4.153 for deploys (it ships a pre-release `miniflare` 5 for local preview); `@types/node` follows Node 22. The new `eslint-config-next` reports two React Compiler rules (`react-hooks/set-state-in-effect`, `react-hooks/immutability`) that existing components break; they are warnings for now.
 - Session cookies are encrypted with a key derived once from `ENCRYPTION_KEY` with HKDF-SHA-256 instead of 100,000 PBKDF2 iterations per request. Existing cookies are still read and re-encrypted on their next request, so nobody is signed out. `ENCRYPTION_KEY` must be a random secret (`openssl rand -base64 32`); a key under 32 characters gets a warning, since HKDF doesn't stretch weak keys.
 - CLI output files (plans, state snapshots, run logs) are always written to a new temporary file and renamed into place; a target that is a symbolic link, not a plain file, or has more than one hard link is refused. The MCP server refuses a `plan` call sent as a notification (no id), decodes UTF-8 split across reads, and `apply_command` says how many ops a resume log already records as done.
 
