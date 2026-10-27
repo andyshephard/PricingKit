@@ -13,6 +13,7 @@ import { AppleAdapter } from '../apple';
 import { FakeOfferStore } from './fake-apple-offer-store';
 import { applyChangeSet, buildChangeSet, parseOfferRules, type OfferOp, type ProductRef } from '@/lib/pricing';
 import { RequestBudget } from '@/lib/utils/request-budget';
+import { getSupportedAppleTerritories } from '@/lib/apple-connect/territories';
 
 const credentials: AppleConnectCredentials = { privateKey: 'unused', keyId: 'TESTKEY123', issuerId: '00000000-0000-0000-0000-000000000000', bundleId: 'com.example.app' };
 const app = { bundleId: 'com.example.app' };
@@ -116,5 +117,79 @@ describe('AppleAdapter.planOfferSync', () => {
     expect(plan.entries.find((e) => e.key === 'CODE50')).toMatchObject({ action: 'none', pricedAgainst: 'planTargets' });
     expect(plan.manualActions).toEqual([]);
     expect(store.writes()).toEqual([]);
+  });
+});
+
+describe('requests spent reading a rules file', () => {
+  const pricePointReads = () => appleApiRequest.mock.calls.filter(([, path]) => String(path).endsWith('/pricePoints'));
+
+  it('reads no price points for missing or free-trial offers, and sync skips products without syncWithBase rules', async () => {
+    store.seedIntro(B, 'USA', { offerMode: 'FREE_TRIAL', duration: 'ONE_WEEK' }, null);
+    const r = parseOfferRules({
+      kind: 'pricingkit.offerRules',
+      schemaVersion: 1,
+      app,
+      offers: [
+        { product: subA, kind: 'apple.promo', key: 'example_annual_50', pricing: half, syncWithBase: false },
+        { product: subB, kind: 'apple.promo', key: 'no_such_offer', pricing: half, syncWithBase: true },
+        { product: subB, kind: 'apple.intro', key: 'intro:FREE_TRIAL:ONE_WEEK:1::', pricing: half, syncWithBase: true },
+      ],
+    });
+    const plan = await adapter().planOfferSync({ rules: r });
+    expect(plan.entries.map((e) => [e.key, e.action, e.manual?.code])).toEqual([
+      ['example_annual_50', 'notSynced', undefined],
+      ['no_such_offer', 'manual', 'OFFER_NOT_FOUND'],
+      ['intro:FREE_TRIAL:ONE_WEEK:1::', 'manual', 'RULE_NOT_APPLICABLE'],
+    ]);
+    // A has only a syncWithBase: false rule: not read at all; B has nothing priceable: no price points
+    expect(appleApiRequest.mock.calls.some(([, path]) => String(path).includes(A))).toBe(false);
+    expect(pricePointReads()).toEqual([]);
+  });
+
+  it("reads price points only for the offer's territories; a base territory the offer lacks is reported missing", async () => {
+    store.offers = store.offers.filter((o) => o.subscriptionId !== A);
+    store.seedPromo(A, 'example_annual_50', {}, { USA: '24.99' }); // no GBR price
+    const report = await adapter().checkRulesDrift(
+      parseOfferRules({ kind: 'pricingkit.offerRules', schemaVersion: 1, app, offers: [{ product: subA, kind: 'apple.promo', key: 'example_annual_50', pricing: half, syncWithBase: true }] })
+    );
+    expect(pricePointReads().map(([, , options]) => (options as { queryParams: Record<string, string> }).queryParams['filter[territory]'])).toEqual(['USA']);
+    const entry = report.offers[0].report!.territories.find((t) => t.territory === 'GB')!;
+    expect(entry).toMatchObject({ status: 'missing', reason: 'The offer has no price in this territory' });
+    expect(report.offers[0].report!.summary).toMatchObject({ match: 1, missing: 1, unresolved: 0 });
+  });
+
+  it('one subscription in 175 territories: drift and on-demand sync each send 25 requests', async () => {
+    const territories = getSupportedAppleTerritories();
+    expect(territories).toHaveLength(175);
+    const big = new FakeOfferStore().addTerritories(territories);
+    const SUB = '9500000175';
+    big.addSubscription(
+      SUB,
+      'ONE_YEAR',
+      Object.fromEntries(territories.map((t) => [t.alpha3, '9.99'])),
+      Object.fromEntries(territories.map((t) => [t.alpha3, ['4.99', '9.99']]))
+    );
+    big.seedPromo(SUB, 'example_annual_50', {}, Object.fromEntries(territories.map((t) => [t.alpha3, '4.99'])));
+    appleApiRequest.mockImplementation(big.handle);
+    const r = parseOfferRules({
+      kind: 'pricingkit.offerRules',
+      schemaVersion: 1,
+      app,
+      offers: [{ product: { platform: 'apple', type: 'subscription', id: SUB }, kind: 'apple.promo', key: 'example_annual_50', pricing: half, syncWithBase: true }],
+    });
+
+    const driftBudget = new RequestBudget();
+    const report = await new AppleAdapter({ credentials, budget: driftBudget, now: () => new Date('2030-03-01T12:00:00Z') }).checkRulesDrift(r);
+    expect(report.inSync).toBe(true);
+    expect(report.offers[0].report!.summary.match).toBe(175);
+    // 3 app ownership + 1 billing period + 1 base prices + 2 offer list and prices + 18 price point reads (10 territories each)
+    expect(pricePointReads()).toHaveLength(18);
+    expect(driftBudget.used).toBe(25);
+
+    const syncBudget = new RequestBudget();
+    const plan = await new AppleAdapter({ credentials, budget: syncBudget, now: () => new Date('2030-03-01T12:00:00Z') }).planOfferSync({ rules: r });
+    expect(plan.changeSet.ops).toEqual([]);
+    expect(syncBudget.used).toBe(25);
+    expect(big.writes()).toEqual([]);
   });
 });

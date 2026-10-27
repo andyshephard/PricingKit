@@ -252,7 +252,9 @@ a file in your repository and PricingKit uses it to check and re-derive the offe
   app is refused. (Play offers priced with a relative discount follow the base price by themselves.)
 
 **Drift.** `pricingkit drift --rules offer-rules.json` checks every offer in the file against its
-rule and today's base prices and prints one `pricingkit.rulesDrift` report (each offer's
+rule and today's base prices (about 25 requests per subscription whose offers cover 175
+territories: price points are read only for the territories of offers a rule can price) and prints
+one `pricingkit.rulesDrift` report (each offer's
 `pricingkit.offerDrift` report inside). Exit code 2 when any offer drifted or doesn't exist; 1 when
 nothing drifted but an offer couldn't be checked (for example a rule on a free trial); 0 when all
 are in sync. This is what a weekly CI job runs (`examples/github-actions/drift.yml`).

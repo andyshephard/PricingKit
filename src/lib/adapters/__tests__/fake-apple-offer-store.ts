@@ -77,8 +77,15 @@ export class FakeOfferStore {
   promoCap = 10;
   /** bundleId -> { app ID, its subscription group IDs }. Every subscription defaults to com.example.app's group. */
   apps = new Map<string, { id: string; groups: string[] }>([['com.example.app', { id: 'app-1', groups: ['group-1'] }]]);
+  /** Territories the store knows (alpha-3 -> alpha-2 and currency); addTerritories adds more */
+  territories: Record<string, { alpha2: string; currency: string }> = { ...TERRITORIES };
   /** When set, an intro offer created without a start date reads back with this one (as Apple may fill it in) */
   fillIntroStartDate?: string;
+
+  addTerritories(list: Array<{ alpha3: string; alpha2: string; currency: string }>): this {
+    for (const t of list) this.territories[t.alpha3] = { alpha2: t.alpha2, currency: t.currency };
+    return this;
+  }
 
   /** A subscription whose ladder in every territory is `ladder` (customer prices) */
   addSubscription(id: string, period: string, base: Record<string, string>, ladder: Record<string, string[]>, group = 'group-1'): this {
@@ -142,7 +149,7 @@ export class FakeOfferStore {
       })),
       included: [
         ...[...used].map((id) => ({ type: 'subscriptionPricePoints', id, attributes: { customerPrice: this.points.get(id)!.customerPrice, proceeds: this.points.get(id)!.proceeds } })),
-        ...[...new Set(prices.map((p) => p.alpha3))].map((t) => ({ type: 'territories', id: t, attributes: { currency: TERRITORIES[t].currency } })),
+        ...[...new Set(prices.map((p) => p.alpha3))].map((t) => ({ type: 'territories', id: t, attributes: { currency: this.territories[t].currency } })),
       ],
       links: { self: `${API}/x` },
     };
@@ -204,7 +211,7 @@ export class FakeOfferStore {
         })),
         included: [
           ...entries.map((e) => ({ type: 'subscriptionPricePoints', id: e.pid, attributes: { customerPrice: this.points.get(e.pid)!.customerPrice, proceeds: this.points.get(e.pid)!.proceeds } })),
-          ...entries.map((e) => ({ type: 'territories', id: e.alpha3, attributes: { currency: TERRITORIES[e.alpha3].currency } })),
+          ...entries.map((e) => ({ type: 'territories', id: e.alpha3, attributes: { currency: this.territories[e.alpha3].currency } })),
         ],
         links: { self: `${API}/x` },
       };
@@ -214,7 +221,7 @@ export class FakeOfferStore {
       const pts = [...this.points.values()].filter((p) => p.id.startsWith(`pp-${m![1]}-`) && wanted.includes(p.alpha3));
       return {
         data: pts.map((p) => ({ type: 'subscriptionPricePoints', id: p.id, attributes: { customerPrice: p.customerPrice, proceeds: p.proceeds }, relationships: { territory: { data: { type: 'territories', id: p.alpha3 } } } })),
-        included: wanted.filter((t) => TERRITORIES[t]).map((t) => ({ type: 'territories', id: t, attributes: { currency: TERRITORIES[t].currency } })),
+        included: wanted.filter((t) => this.territories[t]).map((t) => ({ type: 'territories', id: t, attributes: { currency: this.territories[t].currency } })),
         links: { self: `${API}/x` },
       };
     }

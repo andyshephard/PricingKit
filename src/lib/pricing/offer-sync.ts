@@ -265,6 +265,13 @@ export interface OfferSyncProduct {
   ladders: Record<string, PriceLadder>;
   /** The product's offers (at least every kind the rules name) */
   offers: StoreOffer[];
+  /**
+   * Territories whose price points were read, when only some were (adapters
+   * read them only for offers a rule can price). A drift check reports a
+   * territory outside it where the offer has no price as missing, not as
+   * unresolved for lack of price points.
+   */
+  ladderTerritories?: string[];
 }
 
 export interface PlanOfferSyncInput {
@@ -629,6 +636,17 @@ export function checkRulesDrift(input: RulesDriftInput): RulesDriftReport {
         ...(rule.deviationThreshold ? { deviationThreshold: rule.deviationThreshold } : {}),
         now: checkedAt,
       });
+      if (data.ladderTerritories) {
+        const read = new Set(data.ladderTerritories);
+        for (const entry of report.territories) {
+          // Only "no price points" (they weren't read), not e.g. a territory without a base price
+          if (entry.status !== 'unresolved' || entry.actual || read.has(entry.territory) || entry.reason !== `No price points for ${entry.territory}`) continue;
+          entry.status = 'missing';
+          entry.reason = 'The offer has no price in this territory';
+          report.summary.unresolved--;
+          report.summary.missing++;
+        }
+      }
       return { ...head, status: report.inSync ? ('inSync' as const) : ('drifted' as const), report };
     } catch (error) {
       if (!(error instanceof OfferRuleError)) throw error;

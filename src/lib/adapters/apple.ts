@@ -53,6 +53,7 @@ import {
   type OfferPlanInput,
   type OfferSpec,
   checkRulesDrift,
+  findRuleOffer,
   planOfferSync,
   productKey,
   ruleProducts,
@@ -579,25 +580,52 @@ export class AppleAdapter implements PlatformAdapter {
   // Sync and drift from a rules file (reads only)
 
   /**
-   * Everything sync and drift need for each product a rules file names,
-   * each read once: app ownership, billing period, base prices (or the
-   * state a base plan was made against, from `states`), the offers of every
-   * kind the rules name, and each base territory's price points. Reads only.
+   * What sync and drift need for each product a rules file names, each read
+   * once: app ownership, billing period, base prices (or the state a base
+   * plan was made against, from `states`) and the offers of every kind the
+   * rules name. Price points, the expensive read (one request per 10
+   * territories), are read only for offers a rule can price (found, known
+   * terms, not a free trial), and only for their territories:
+   *   sync  - the offer's territories within the rule's `territories`
+   *   drift - the offer's territories, or the rule's list when it has one
+   *           (a listed territory the offer lacks is reported as missing)
+   * For 'sync', products without a syncWithBase rule aren't read at all.
+   * `ladderTerritories` records what was read. Reads only.
    */
-  async readRuleProducts(rules: OfferRules, states: ProductPriceState[] = []): Promise<OfferSyncProduct[]> {
+  async readRuleProducts(
+    rules: OfferRules,
+    options: { states?: ProductPriceState[]; purpose?: 'sync' | 'drift' } = {}
+  ): Promise<OfferSyncProduct[]> {
     this.assertApp(rules.app);
+    const purpose = options.purpose ?? 'drift';
+    const active = purpose === 'sync' ? rules.offers.filter((r) => r.syncWithBase) : rules.offers;
     const out: OfferSyncProduct[] = [];
-    for (const product of ruleProducts(rules)) {
+    for (const product of ruleProducts({ offers: active })) {
       const id = subscriptionId(product);
       const key = productKey(product);
+      const productRules = active.filter((r) => productKey(r.product) === key);
       await this.verifyProduct(product);
       const billingPeriod = await this.fetchBillingPeriod(product);
-      const base = states.find((s) => productKey(s.product) === key) ?? (await this.fetchState(product));
-      const kinds = [...new Set(rules.offers.filter((r) => productKey(r.product) === key).map((r) => r.kind as AppleOfferKind))];
+      const base = options.states?.find((s) => productKey(s.product) === key) ?? (await this.fetchState(product));
       const offers: StoreOffer[] = [];
-      for (const kind of kinds) offers.push(...(await listSubscriptionOffersOfKind(this.credentials, id, kind, this.ctx)));
-      const ladders = await this.fetchPriceLadders(product, Object.keys(base.territories));
-      out.push({ product, billingPeriod, base, ladders, offers });
+      for (const kind of [...new Set(productRules.map((r) => r.kind as AppleOfferKind))]) {
+        offers.push(...(await listSubscriptionOffersOfKind(this.credentials, id, kind, this.ctx)));
+      }
+      const wanted = new Set<string>();
+      for (const rule of productRules) {
+        const matches = findRuleOffer(rule, offers);
+        if (matches.length !== 1) continue; // missing or ambiguous: reported without pricing
+        const offer = matches[0];
+        if (!offer.mode || !offer.duration || offer.mode === 'FREE_TRIAL') continue; // the rule can't price it
+        const own = [...Object.keys(offer.prices), ...Object.keys(offer.territoryProblems ?? {})];
+        const list = rule.territories && rule.territories !== 'all' ? rule.territories : undefined;
+        const territories = !list ? own : purpose === 'drift' ? list : own.filter((t) => list.includes(t));
+        // A territory without a base price can't be priced; its price points aren't needed
+        for (const t of territories) if (base.territories[t]) wanted.add(t);
+      }
+      const ladderTerritories = [...wanted].sort();
+      const ladders = ladderTerritories.length > 0 ? await this.fetchPriceLadders(product, ladderTerritories) : {};
+      out.push({ product, billingPeriod, base, ladders, offers, ladderTerritories });
     }
     return out;
   }
@@ -617,7 +645,7 @@ export class AppleAdapter implements PlatformAdapter {
     createdAt?: string;
     description?: string;
   }): Promise<OfferSyncPlan> {
-    const products = await this.readRuleProducts(input.rules, input.states);
+    const products = await this.readRuleProducts(input.rules, { purpose: 'sync', ...(input.states ? { states: input.states } : {}) });
     return planOfferSync({
       app: input.rules.app,
       rules: input.rules.offers,
@@ -632,7 +660,7 @@ export class AppleAdapter implements PlatformAdapter {
 
   /** Check every offer in a rules file against its rule; one combined pricingkit.rulesDrift report. Reads only. */
   async checkRulesDrift(rules: OfferRules): Promise<RulesDriftReport> {
-    const products = await this.readRuleProducts(rules);
+    const products = await this.readRuleProducts(rules, { purpose: 'drift' });
     return checkRulesDrift({ app: rules.app, rules: rules.offers, products, now: (this.now?.() ?? new Date()).toISOString() });
   }
 

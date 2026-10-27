@@ -92,9 +92,10 @@ jobs:
         run: |
           set +e
           # Text report for people; add --json for the machine-readable pricingkit.rulesDrift report.
-          # Reading price points costs about one request per territory per subscription: raise
-          # --budget if the rules file covers many subscriptions (App Store Connect allows 3600 an hour).
-          npx pricingkit drift --rules "$RULES" --budget 1500 > "$RUNNER_TEMP/drift.txt"
+          # About 25 requests per subscription whose offers cover all 175 territories (price points
+          # are read 10 territories per request, only for offers a rule can price). Raise --budget
+          # for a rules file covering more than about ten subscriptions.
+          npx pricingkit drift --rules "$RULES" --budget 300 > "$RUNNER_TEMP/drift.txt"
           code=$?
           set -e
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
