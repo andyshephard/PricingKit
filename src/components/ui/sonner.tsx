@@ -11,7 +11,7 @@ import { useResolvedTheme } from "@/components/theme/theme"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 
 const Toaster = ({ ...props }: ToasterProps) => {
-  // next-themes is a dependency but not mounted; the Atlas theme hook is the source of truth.
+  // The Atlas theme hook (components/theme) is the one source of the current theme.
   const theme = useResolvedTheme() ?? "system"
 
   return (

@@ -115,6 +115,7 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 
 ### Removed
 
+- The unused `next-themes` dependency (the theme toggle never used it).
 - **Offer drift checks.** The `pricingkit drift` command (one offer, `--rules` and `--workspace`), the `pricingkit.offerDrift`, `pricingkit.playOfferDrift`, `pricingkit.rulesDrift` and `pricingkit.workspaceDrift` reports and their exit codes, `GET /api/apple/subscriptions/{id}/offers/drift`, the web app's "Check against rule" view, the MCP `drift` tool and the library's `checkOfferDrift`, `checkRulesDrift`, `checkPlayRulesDrift` and adapter `checkOfferDrift` / `checkRulesDrift` are gone. Rules files stay: `pricingkit plan --rules` still re-prices `syncWithBase` offers after base price changes (and a plan with no ops means every synced offer is in step), and "Update prices to rule" in the web app plans a re-price from the rule you enter. `syncWithBase: false` rules are now simply ignored.
 - **The example GitHub Actions workflows** (`examples/github-actions/`: a weekly drift check, plan on pull request, apply on merge) are gone. Workflows that hold store credentials need more care than a copied template gives them (who can read repository secrets, which runs a resume trusts), so PricingKit no longer ships them. The CLI's exit codes still let you build your own.
 
