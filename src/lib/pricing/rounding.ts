@@ -134,3 +134,8 @@ export function applyRounding(
   const closest99 = nearestWhole - 0.01;
   return closest99 < 0.99 ? 0.99 : closest99;
 }
+
+/** Fraction digits the stores accept for a currency (0 for JPY, KRW, CFA francs, ...). */
+export function currencyScale(currencyCode: string): number {
+  return isZeroDecimalCurrency(currencyCode) ? 0 : 2;
+}
