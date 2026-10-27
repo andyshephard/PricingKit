@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { ChevronRight, Home } from 'lucide-react';
 import { getPlatformFromPath } from '@/lib/utils/platform-routes';
+import { cn } from '@/lib/utils';
 
 const pathNames: Record<string, string> = {
   dashboard: 'Dashboard',
@@ -47,8 +48,9 @@ export function Breadcrumbs() {
         <Home className="h-4 w-4" aria-hidden="true" />
       </Link>
 
-      {breadcrumbs.map((crumb) => (
-        <span key={crumb.href} className="flex items-center gap-1">
+      {breadcrumbs.map((crumb, index) => (
+        // Phones show only the last two levels
+        <span key={crumb.href} className={cn('flex min-w-0 items-center gap-1', index < breadcrumbs.length - 2 && 'hidden sm:flex')}>
           <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           {crumb.isLast ? (
             <span aria-current="page" className="truncate font-semibold">{crumb.name}</span>

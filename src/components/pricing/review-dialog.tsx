@@ -105,7 +105,7 @@ export function ReviewDialog({
         <div className="grid grid-cols-3 gap-3 px-6 py-4 sm:px-7">
           {figures.map((f) => (
             <div key={f.label} className="min-w-0 rounded-xl bg-background p-3.5">
-              <p className="truncate text-xs text-muted-foreground">{f.label}</p>
+              <p className="text-xs leading-tight text-muted-foreground sm:truncate">{f.label}</p>
               <p className="mt-1 text-[22px] font-extrabold">{f.value}</p>
             </div>
           ))}
@@ -120,7 +120,9 @@ export function ReviewDialog({
               <thead className="sr-only">
                 <tr>
                   <th scope="col">Item</th>
-                  <th scope="col">Before and after</th>
+                  <th scope="col" className="hidden sm:table-cell">
+                    Before and after
+                  </th>
                   <th scope="col">Change</th>
                 </tr>
               </thead>
@@ -136,8 +138,12 @@ export function ReviewDialog({
                             {c.note}
                           </span>
                         )}
+                        {/* Phones: before and after under the name, two columns in all */}
+                        <span className="mt-0.5 block font-mono text-[13px] font-normal text-muted-foreground sm:hidden">
+                          {c.before} <span aria-hidden="true">→</span> <span className="text-foreground">{c.after}</span>
+                        </span>
                       </th>
-                      <td className="px-3.5 py-2.5 font-mono whitespace-nowrap text-muted-foreground">
+                      <td className="hidden px-3.5 py-2.5 font-mono whitespace-nowrap text-muted-foreground sm:table-cell">
                         {c.before} <span aria-label="to">→</span> <span className="text-foreground">{c.after}</span>
                       </td>
                       <td className={cn('px-3.5 py-2.5 text-right font-mono whitespace-nowrap', pct.startsWith('-') ? 'text-change' : 'text-soft')}>

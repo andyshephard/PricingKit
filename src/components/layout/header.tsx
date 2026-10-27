@@ -25,9 +25,9 @@ const SIGN_OUT_ENDPOINTS = ['/api/auth', '/api/apple/auth', '/api/settings/excha
 
 /**
  * The app screens' top bar: breadcrumb, then the page's search and refresh
- * (when it has them) and Sign out. On phones it wraps: the search takes its
- * own full-width row. The theme toggle lives in the sidebar, which is on
- * screen at every width.
+ * (when it has them) and Sign out. On phones it wraps: the breadcrumb gets
+ * its own row above the search and buttons. The theme toggle lives in the
+ * sidebar, which is on screen at every width.
  */
 export function Header({
   onRefresh,
@@ -67,12 +67,13 @@ export function Header({
 
   return (
     <header className="sticky top-0 z-10 flex flex-wrap items-center gap-x-3 gap-y-2 border-b bg-header px-4 py-2.5 sm:px-8 lg:px-10">
-      <div className="min-w-0 flex-1">
+      {/* Phones: the breadcrumb on its own row, then search and buttons */}
+      <div className="w-full min-w-0 sm:w-auto sm:flex-1">
         <Breadcrumbs />
       </div>
 
       {hasSearch && (
-        <label className="order-last flex w-full items-center gap-2 rounded-full border border-border bg-background px-3.5 py-2 text-sm text-muted-foreground focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ring sm:order-none sm:w-64">
+        <label className="flex min-w-0 flex-1 items-center gap-2 rounded-full border border-border bg-background px-3.5 py-2 text-sm text-muted-foreground focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ring sm:w-64 sm:flex-none">
           <Search className="size-4 shrink-0" aria-hidden="true" />
           <input
             type="search"
@@ -85,7 +86,7 @@ export function Header({
         </label>
       )}
 
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="ml-auto flex shrink-0 items-center gap-2">
         {onRefresh && (
           <button type="button" className={iconButton} onClick={onRefresh} disabled={isRefreshing} aria-label="Refresh" title="Refresh">
             <RefreshCw className={cn('size-4', isRefreshing && 'animate-spin')} aria-hidden="true" />

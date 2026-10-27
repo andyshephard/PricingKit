@@ -388,8 +388,8 @@ export function AppleOfferRuleDialog({
           warning={
             skipped.length > 0 || (result.changeSet.warnings?.length ?? 0) > 0 ? (
               <>
-                {skipped.length > 0 && <>{skipped.length} territories are left out (no usable price). </>}
-                {(result.changeSet.warnings?.length ?? 0) > 0 && <>{result.changeSet.warnings!.length} warnings: see the preview.</>}
+                {skipped.length > 0 && <>{skipped.length} {skipped.length === 1 ? 'territory is' : 'territories are'} left out (no usable price). </>}
+                {(result.changeSet.warnings?.length ?? 0) > 0 && <>{result.changeSet.warnings!.length} {result.changeSet.warnings!.length === 1 ? 'warning' : 'warnings'}: see the preview.</>}
               </>
             ) : undefined
           }
