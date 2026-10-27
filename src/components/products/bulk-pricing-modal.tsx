@@ -27,6 +27,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { ReviewDialog } from '@/components/pricing/review-dialog';
 import { Badge } from '@/components/ui/badge';
 import {
   Tooltip,
@@ -234,7 +235,7 @@ export function BulkPricingModal({
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [hasInitializedSelection, setHasInitializedSelection] = useState(false);
   const [updateSummary, setUpdateSummary] = useState<{
-    changing: Array<{ name: string; old: string; new: string; regionCode: string; isRequired: boolean }>;
+    changing: Array<{ name: string; old: string; new: string; regionCode: string; isRequired: boolean ; oldAmount: number | null; newAmount: number }>;
     staying: Array<{ name: string; price: string; regionCode: string }>;
   } | null>(null);
   const [sortConfig, setSortConfig] = useState<{
@@ -595,6 +596,8 @@ export function BulkPricingModal({
       old: string;
       new: string;
       isRequired: boolean;
+      oldAmount: number | null;
+      newAmount: number;
     }> = [];
     const staying: Array<{
       name: string;
@@ -631,7 +634,9 @@ export function BulkPricingModal({
           regionCode: region.code,
           old: currentPrice ? formatMoney(currentPrice) : 'None',
           new: formatMoney(newPriceItem.price),
-          isRequired
+          isRequired,
+          oldAmount: currentPrice ? moneyToNumber(currentPrice) : null,
+          newAmount: moneyToNumber(newPriceItem.price),
         });
       } else {
         staying.push({
@@ -1298,80 +1303,30 @@ export function BulkPricingModal({
           </Button>
         </DialogFooter>
 
-        {/* Confirmation Dialog */}
-        <Dialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
-          <DialogContent className="sm:max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
-            <DialogHeader className="flex-shrink-0 text-left">
-              <DialogTitle>Confirm Price Changes</DialogTitle>
-              <DialogDescription asChild>
-                <div className="text-sm text-muted-foreground">
-                  Review the updates before applying them to {selectedRegions.size} regions.
-                  {platform === 'apple' && (
-                    <div className="mt-2 text-amber-600 dark:text-amber-500 font-medium italic">
-                      Note: For Apple Products, any regions NOT selected will revert to automatic pricing.
-                    </div>
-                  )}
-                </div>
-              </DialogDescription>
-            </DialogHeader>
-
-            <div className="flex-1 min-h-[300px] py-4 overflow-hidden border-y my-2">
-              <ScrollArea className="h-[50vh] pr-4">
-                <div className="space-y-6">
-                  {/* Section: Changing */}
-                  <div>
-                    <h4 className="font-semibold text-sm mb-2 text-primary flex items-center gap-2 sticky top-0 bg-background py-1 z-10">
-                      <span className="w-2 h-2 rounded-full bg-blue-500" />
-                      Updating ({updateSummary?.changing.length})
-                    </h4>
-                    <div className="grid grid-cols-1 gap-1 pl-4">
-                      {updateSummary?.changing.map(item => (
-                        <div key={item.regionCode} className="text-xs flex justify-between border-b border-muted/30 py-1">
-                          <div className="flex flex-col">
-                            <span className="font-medium">{item.name} ({item.regionCode})</span>
-                            {item.isRequired && (
-                              <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold uppercase">Required Base Region</span>
-                            )}
-                          </div>
-                          <span className="font-mono self-center">
-                            <span className="text-muted-foreground line-through">{item.old}</span>
-                            <span className="mx-2 text-muted-foreground">→</span>
-                            <span className="font-bold text-blue-600 dark:text-blue-400">{item.new}</span>
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Section: Staying */}
-                  <div>
-                    <h4 className="font-semibold text-sm mb-2 text-muted-foreground flex items-center gap-2 sticky top-0 bg-background py-1 z-10">
-                      <span className="w-2 h-2 rounded-full bg-gray-300" />
-                      No Change ({updateSummary?.staying.length})
-                    </h4>
-                    <div className="grid grid-cols-1 gap-1 pl-4 opacity-70 text-muted-foreground">
-                      {updateSummary?.staying.map(item => (
-                        <div key={item.regionCode} className="text-xs flex justify-between py-1 border-b border-muted/10">
-                          <span>{item.name} ({item.regionCode})</span>
-                          <span className="font-mono">{item.price}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </ScrollArea>
-            </div>
-
-            <DialogFooter className="flex-shrink-0 gap-2 sm:gap-0">
-              <Button variant="outline" onClick={() => setShowConfirmDialog(false)}>
-                Cancel
-              </Button>
-              <Button onClick={executeApply}>
-                Confirm and Apply
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        {/* Review step (Atlas ReviewDialog) */}
+        <ReviewDialog
+          open={showConfirmDialog}
+          onOpenChange={setShowConfirmDialog}
+          context={product.sku}
+          changes={(updateSummary?.changing ?? []).map((item) => ({
+            id: item.regionCode,
+            label: item.name,
+            before: item.old,
+            after: item.new,
+            beforeAmount: item.oldAmount,
+            afterAmount: item.newAmount,
+            note: item.isRequired ? 'Base region' : undefined,
+          }))}
+          unchangedCount={updateSummary?.staying.length}
+          warning={
+            platform === 'apple'
+              ? 'For App Store products, regions you did not select go back to automatic pricing.'
+              : undefined
+          }
+          planSubject={product.sku}
+          applying={isApplying}
+          onApply={executeApply}
+        />
       </DialogContent>
     </Dialog>
   );

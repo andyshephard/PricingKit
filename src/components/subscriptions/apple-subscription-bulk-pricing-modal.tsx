@@ -28,6 +28,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { ReviewDialog } from '@/components/pricing/review-dialog';
 import { Badge } from '@/components/ui/badge';
 import {
   Tooltip,
@@ -178,7 +179,7 @@ export function AppleSubscriptionBulkPricingModal({
   const [pppFetched, setPppFetched] = useState(false);
   const [exchangeRatesFetched, setExchangeRatesFetched] = useState(false);
   const [updateSummary, setUpdateSummary] = useState<{
-    changing: Array<{ name: string; old: string; new: string; regionCode: string }>;
+    changing: Array<{ name: string; old: string; new: string; regionCode: string; oldAmount: number | null; newAmount: number }>;
     staying: Array<{ name: string; price: string; regionCode: string }>;
   } | null>(null);
   const [sortConfig, setSortConfig] = useState<{
@@ -591,6 +592,8 @@ export function AppleSubscriptionBulkPricingModal({
       regionCode: string;
       old: string;
       new: string;
+      oldAmount: number | null;
+      newAmount: number;
     }> = [];
     const staying: Array<{
       name: string;
@@ -611,7 +614,9 @@ export function AppleSubscriptionBulkPricingModal({
           name: territory.name,
           regionCode: territory.alpha2,
           old: currentPriceFormatted,
-          new: formatPrice(previewItem.tierPrice, previewItem.currency)
+          new: formatPrice(previewItem.tierPrice, previewItem.currency),
+          oldAmount: currentPriceData ? parseFloat(currentPriceData.customerPrice) : null,
+          newAmount: previewItem.tierPrice,
         });
       } else {
         staying.push({
@@ -1314,75 +1319,30 @@ export function AppleSubscriptionBulkPricingModal({
           </Button>
         </DialogFooter>
 
-        {/* Confirmation Dialog */}
-        <Dialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
-          <DialogContent className="sm:max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
-            <DialogHeader className="flex-shrink-0 text-left">
-              <DialogTitle>Confirm Price Changes</DialogTitle>
-              <DialogDescription asChild>
-                <div className="text-sm text-muted-foreground">
-                  Review the updates before applying them to {selectedRegions.size} regions.
-                  {isApproved && startDate && (
-                    <div className="mt-2 text-primary font-medium">
-                      New prices will take effect on {startDate}.
-                    </div>
-                  )}
-                </div>
-              </DialogDescription>
-            </DialogHeader>
-
-            <div className="flex-1 min-h-[300px] py-4 overflow-hidden border-y my-2">
-              <ScrollArea className="h-[50vh] pr-4">
-                <div className="space-y-6">
-                  {/* Section: Changing */}
-                  <div>
-                    <h4 className="font-semibold text-sm mb-2 text-primary flex items-center gap-2 sticky top-0 bg-background py-1 z-10">
-                      <span className="w-2 h-2 rounded-full bg-blue-500" />
-                      Updating ({updateSummary?.changing.length})
-                    </h4>
-                    <div className="grid grid-cols-1 gap-1 pl-4">
-                      {updateSummary?.changing.map(item => (
-                        <div key={item.regionCode} className="text-xs flex justify-between border-b border-muted/30 py-1">
-                          <span className="font-medium">{item.name} ({item.regionCode})</span>
-                          <span className="font-mono">
-                            <span className="text-muted-foreground line-through">{item.old}</span>
-                            <span className="mx-2 text-muted-foreground">→</span>
-                            <span className="font-bold text-blue-600 dark:text-blue-400">{item.new}</span>
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Section: Staying */}
-                  <div>
-                    <h4 className="font-semibold text-sm mb-2 text-muted-foreground flex items-center gap-2 sticky top-0 bg-background py-1 z-10">
-                      <span className="w-2 h-2 rounded-full bg-gray-300" />
-                      No Change ({updateSummary?.staying.length})
-                    </h4>
-                    <div className="grid grid-cols-1 gap-1 pl-4 opacity-70 text-muted-foreground">
-                      {updateSummary?.staying.map(item => (
-                        <div key={item.regionCode} className="text-xs flex justify-between py-1 border-b border-muted/10">
-                          <span>{item.name} ({item.regionCode})</span>
-                          <span className="font-mono">{item.price}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </ScrollArea>
-            </div>
-
-            <DialogFooter className="flex-shrink-0 gap-2 sm:gap-0">
-              <Button variant="outline" onClick={() => setShowConfirmDialog(false)}>
-                Cancel
-              </Button>
-              <Button onClick={executeApply}>
-                Confirm and Apply
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        {/* Review step (Atlas ReviewDialog) */}
+        <ReviewDialog
+          open={showConfirmDialog}
+          onOpenChange={setShowConfirmDialog}
+          context={subscription.name || subscription.productId}
+          changes={(updateSummary?.changing ?? []).map((item) => ({
+            id: item.regionCode,
+            label: item.name,
+            before: item.old,
+            after: item.new,
+            beforeAmount: item.oldAmount,
+            afterAmount: item.newAmount,
+          }))}
+          unchangedCount={updateSummary?.staying.length}
+          warning={isApproved && startDate ? <>New prices take effect on {startDate}.</> : undefined}
+          note={
+            preserveCurrentPrice
+              ? 'Existing subscribers keep their current price; new prices apply to new subscribers. Decreases reach everyone.'
+              : 'Existing subscribers move to the new prices too. Apple notifies them of any increase.'
+          }
+          planSubject={subscription.productId}
+          applying={isSaving}
+          onApply={executeApply}
+        />
       </DialogContent>
     </Dialog>
   );
