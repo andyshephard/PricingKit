@@ -441,7 +441,7 @@ export async function serveMcp(options: McpServerOptions & { input: NodeJS.Reada
 
   let buffer = '';
   let dropping = false; // inside an over-long line: skip to its end
-  // Bytes are decoded with a StringDecoder, so a multibyte character split across two chunks survives
+  // Bytes are decoded with a StringDecoder, so a multibyte character split across two reads survives
   const decoder = new StringDecoder('utf8');
   for await (const chunk of options.input) {
     if (closed) break;
