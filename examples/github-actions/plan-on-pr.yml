@@ -1,0 +1,185 @@
+# Example: plan pricing changes on every pull request, with the pricingkit CLI.
+#
+# Documentation only. This file is NOT active in the PricingKit repo. To use
+# it, copy it to .github/workflows/ in your own repository, next to
+# apply-on-merge.yml (the two work together), and set:
+#
+#   Repository secrets (read-only keys are enough here: plan never writes)
+#     ASC_KEY_ID, ASC_ISSUER_ID, ASC_PRIVATE_KEY       App Store Connect, or
+#     GOOGLE_SERVICE_ACCOUNT_JSON                       Google Play
+#   Repository variables
+#     PRICINGKIT_SPEC    base-price or offer spec, e.g. pricing/spec.yaml (optional
+#                        when PRICINGKIT_RULES is set)
+#     PRICINGKIT_RULES   offer rules file, e.g. pricing/offer-rules.yaml (optional)
+#     PRICINGKIT_PLAN    the plan file committed with the change and applied on
+#                        merge, e.g. pricing/plan.json
+#     PRICINGKIT_EXPECT_BUNDLE_ID / PRICINGKIT_EXPECT_PACKAGE   (recommended) the
+#                        only app these jobs may touch
+#
+# The flow (pricing as code):
+#   1. In a branch, edit the spec or rules, then run locally
+#        npx pricingkit plan --spec pricing/spec.yaml [--rules ...] --out pricing/plan.json --force
+#      and commit the spec and pricing/plan.json together.
+#   2. This workflow posts a comment on the pull request with
+#        - the committed plan (what apply-on-merge.yml will apply) and its hash
+#        - a fresh plan made now from the spec against the store's current
+#          prices, so a reviewer can see whether the committed plan is stale
+#   3. Merging to main runs apply-on-merge.yml, which waits for a reviewer
+#      of the protected environment and applies the committed plan with its hash.
+#
+# Change the paths below to where your pricing files live (GitHub doesn't
+# allow variables in `paths`).
+#
+# SECURITY
+# - Triggered by `pull_request`, never `pull_request_target`: the plan job
+#   runs code from the pull request, so it must not see write credentials.
+#   Pull requests from forks get no secrets and the plan job fails; that's
+#   intended.
+# - The plan job has the secrets and read-only repository access; the comment
+#   job can write pull request comments and has no secrets.
+# - The comment contains prices and product IDs. In a public repository it is
+#   public.
+
+name: Pricing plan
+
+on:
+  pull_request:
+    paths:
+      - "pricing/**" # REPLACE with the folder of your spec, rules and plan files
+
+permissions: {}
+
+concurrency:
+  group: pricing-plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      exit_code: ${{ steps.plan.outputs.exit_code }}
+    steps:
+      - name: Check out the pull request (spec, rules and plan files)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          persist-credentials: false
+
+      - name: Check out PricingKit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: andyshephard/PricingKit
+          # Pin the full commit SHA of a PricingKit version you have reviewed
+          ref: 0000000000000000000000000000000000000000 # REPLACE with a reviewed commit SHA
+          path: pricingkit
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: pricingkit/.nvmrc
+          cache: npm
+          cache-dependency-path: pricingkit/package-lock.json
+
+      - name: Install
+        working-directory: pricingkit
+        run: npm ci --no-audit --no-fund
+
+      - name: Plan (read-only) and describe the committed plan
+        id: plan
+        working-directory: pricingkit
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          PRICINGKIT_EXPECT_BUNDLE_ID: ${{ vars.PRICINGKIT_EXPECT_BUNDLE_ID }}
+          PRICINGKIT_EXPECT_PACKAGE: ${{ vars.PRICINGKIT_EXPECT_PACKAGE }}
+          REPO: ${{ github.workspace }}/repo
+          SPEC: ${{ vars.PRICINGKIT_SPEC }}
+          RULES: ${{ vars.PRICINGKIT_RULES }}
+          PLAN: ${{ vars.PRICINGKIT_PLAN }}
+        run: |
+          set +e
+          out="$RUNNER_TEMP/comment.md"
+          args=()
+          [ -n "$SPEC" ] && args+=(--spec "$REPO/$SPEC")
+          [ -n "$RULES" ] && args+=(--rules "$REPO/$RULES")
+          {
+            echo '## Pricing plan'
+            echo
+            if [ -n "$PLAN" ] && [ -f "$REPO/$PLAN" ]; then
+              echo "### Committed plan \`$PLAN\` (applied on merge, after approval)"
+              echo '```'
+              # Offline: reads the file only. Prints the plan hash apply will confirm.
+              npx pricingkit diff "$REPO/$PLAN" 2>&1
+              echo '```'
+            else
+              echo "No committed plan file (\`${PLAN:-PRICINGKIT_PLAN not set}\`): nothing will be applied on merge."
+            fi
+            echo
+            echo '### Fresh plan from the spec, against current store prices'
+            echo '```'
+          } > "$out"
+          # plan exits 0 (nothing to change), 2 (changes) or 1 (error)
+          npx pricingkit plan "${args[@]}" --out "$RUNNER_TEMP/fresh-plan.json" --budget 1000 >> "$out" 2>&1
+          code=$?
+          echo '```' >> "$out"
+          if [ "$code" = "2" ]; then
+            echo 'If the fresh plan differs from the committed one, re-run `pricingkit plan` locally and commit the new plan file.' >> "$out"
+          fi
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          cat "$out" >> "$GITHUB_STEP_SUMMARY"
+          set -e
+          if [ "$code" != "0" ] && [ "$code" != "2" ]; then
+            echo "::error::pricingkit plan failed with exit code $code"
+          fi
+
+      - name: Keep the comment for the comment job
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pricing-plan-comment
+          path: ${{ runner.temp }}/comment.md
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Fail on a plan error
+        if: steps.plan.outputs.exit_code != '0' && steps.plan.outputs.exit_code != '2'
+        run: exit 1
+
+  comment:
+    needs: plan
+    if: always() && needs.plan.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Fetch the comment written by the plan job
+        id: fetch
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pricing-plan-comment
+          path: ${{ runner.temp }}/c
+
+      - name: Post or update the plan comment
+        if: steps.fetch.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          body="$RUNNER_TEMP/c/comment.md"
+          # GitHub comments hold at most 65536 characters
+          if [ "$(wc -c < "$body")" -gt 60000 ]; then
+            head -c 60000 "$body" > "$body.cut"
+            printf '\n```\n(truncated: see the job summary)\n' >> "$body.cut"
+            body="$body.cut"
+          fi
+          # One comment per pull request, updated on each push (--edit-last edits this
+          # workflow token's last comment on the pull request)
+          gh pr comment "$PR" --edit-last --body-file "$body" 2>/dev/null || gh pr comment "$PR" --body-file "$body"

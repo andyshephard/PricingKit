@@ -8,6 +8,8 @@
 #     ASC_KEY_ID         App Store Connect API key ID
 #     ASC_ISSUER_ID      App Store Connect issuer ID
 #     ASC_PRIVATE_KEY    Contents of the AuthKey_XXXX.p8 file
+#   or, for a Google Play app,
+#     GOOGLE_SERVICE_ACCOUNT_JSON   the service account key JSON
 #
 #   Repository variables (... > Variables)
 #     PRICINGKIT_RULES   path of the rules file in your repository,
@@ -15,7 +17,7 @@
 #
 # The rules file names the app, every offer to check (product, kind, key) and
 # the percent-of-current rule each one follows, so one run checks them all.
-# App Store offers only: Google Play offers aren't supported yet.
+# A rules file for a Google Play app (packageName) checks its Play offers.
 #
 # What it does: runs `pricingkit drift --rules`.
 #   exit 0  every offer in sync: the run passes
@@ -88,6 +90,7 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           RULES: ${{ github.workspace }}/repo/${{ vars.PRICINGKIT_RULES }}
         run: |
           set +e
