@@ -10,6 +10,7 @@ import type {
   AppleTerritory,
 } from './types';
 import { appleApiRequest, getAppIdForBundleId } from './client';
+import { appleListPages } from './pagination';
 import { alpha3ToAlpha2, UNSUPPORTED_IAP_TERRITORIES } from './territories';
 import { findClosestTierForCurrency, hasTierData } from './price-tier-data';
 import { ApiError, getErrorStatus, toApiError } from '../utils/api-error';
@@ -40,8 +41,6 @@ export async function listInAppPurchases(
   const allProducts: NormalizedAppleProduct[] = [];
   const allPriceScheduleMap = new Map<string, string>();
   const allBaseTerritoryMap = new Map<string, string>(); // productId → base territory code
-  let nextUrl: string | null = `/apps/${appId}/inAppPurchasesV2`;
-
   // Include related data in the request - including price schedule
   const queryParams = {
     include: 'inAppPurchaseLocalizations,iapPriceSchedule',
@@ -52,29 +51,11 @@ export async function listInAppPurchases(
     'fields[inAppPurchasePriceSchedules]': 'baseTerritory',
   };
 
-  const MAX_PAGES = 100;
-  let pageCount = 0;
-  while (nextUrl) {
-    if (++pageCount > MAX_PAGES) {
-      console.warn('[Apple] listInAppPurchases - Hit max page limit, stopping pagination');
-      break;
-    }
-    // Handle pagination - if nextUrl contains full URL, extract path
-    const currentUrl = nextUrl;
-    const endpoint: string = currentUrl.startsWith('http')
-      ? new URL(currentUrl).pathname.replace('/v1', '')
-      : currentUrl;
-
-    // console.log('[Apple] listInAppPurchases - Fetching endpoint:', endpoint);
-
-    const response: AppleApiListResponse<AppleInAppPurchase> = await appleApiRequest<
-      AppleApiListResponse<AppleInAppPurchase>
-    >(credentials, endpoint, {
-      queryParams: currentUrl.includes('?') ? undefined : queryParams,
-    });
-
-    // console.log('[Apple] listInAppPurchases - Raw response data count:', response.data?.length ?? 0);
-
+  for await (const response of appleListPages<AppleInAppPurchase>(
+    credentials,
+    `/apps/${appId}/inAppPurchasesV2`,
+    { queryParams }
+  )) {
     // Build a map of price schedule IDs and base territories from included data
     // Note: Apple's API returns price schedules in `included` but not in product relationships
     // The price schedule ID appears to match the product ID
@@ -128,9 +109,6 @@ export async function listInAppPurchases(
         allBaseTerritoryMap.set(productId, baseTerritory);
       }
     }
-
-    // Check for next page
-    nextUrl = response.links?.next ?? null;
   }
 
   // Fetch base territory prices for all products in parallel
@@ -926,64 +904,23 @@ export async function getInAppPurchasePricePointsForTerritory(
     // Fetch price points for this specific IAP filtered by territory
     // The endpoint is /inAppPurchases/{id}/pricePoints (similar to subscriptions)
     const allPricePoints: Array<{ id: string; customerPrice: string }> = [];
-    let nextUrl: string | null = `/inAppPurchases/${inAppPurchaseId}/pricePoints`;
     const queryParams = {
       'filter[territory]': territoryCode,
       'fields[inAppPurchasePricePoints]': 'customerPrice,proceeds',
       limit: '200',
     };
 
-    const MAX_PRICE_POINT_PAGES = 100;
-    let pricePointPageCount = 0;
-    while (nextUrl) {
-      if (++pricePointPageCount > MAX_PRICE_POINT_PAGES) {
-        console.warn(`[Apple] getInAppPurchasePricePointsForTerritory - Hit max page limit for ${territoryCode}`);
-        break;
-      }
-      const currentUrl = nextUrl;
-      const endpoint: string = currentUrl.startsWith('http')
-        ? (() => {
-            const url = new URL(currentUrl);
-            return url.pathname.replace(/^\/v[12]/, '') + url.search;
-          })()
-        : currentUrl;
-
-      const useQueryParams = !currentUrl.includes('?');
-      /* console.log(`[Apple IAP Pagination Debug]`, {
-        currentUrl,
-        endpoint,
-        useQueryParams,
-      }); */
-
-      type IAPPricePointResponse = AppleApiListResponse<{
-        id: string;
-        type: string;
-        attributes: { customerPrice: string; proceeds: string };
-      }>;
-
-      const response: IAPPricePointResponse = await appleApiRequest<IAPPricePointResponse>(
-        credentials,
-        endpoint,
-        {
-          queryParams: useQueryParams ? queryParams : undefined,
-          apiVersion: 'v2',
-        }
-      );
-
-      /* console.log(`[Apple IAP Pagination Debug] Response:`, {
-        dataCount: response.data.length,
-        hasNextLink: !!response.links?.next,
-        nextLink: response.links?.next ?? 'none',
-      }); */
-
+    for await (const response of appleListPages<{
+      id: string;
+      type: string;
+      attributes: { customerPrice: string; proceeds: string };
+    }>(credentials, `/inAppPurchases/${inAppPurchaseId}/pricePoints`, { queryParams, apiVersion: 'v2' })) {
       for (const pp of response.data) {
         allPricePoints.push({
           id: pp.id,
           customerPrice: pp.attributes.customerPrice,
         });
       }
-
-      nextUrl = response.links?.next ?? null;
     }
 
     // console.log(`[Apple] Found ${allPricePoints.length} IAP price points for ${territoryCode}`);

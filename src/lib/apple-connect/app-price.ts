@@ -1,11 +1,11 @@
 import type {
   AppleConnectCredentials,
   AppleApiResponse,
-  AppleApiListResponse,
   AppleProductPrice,
   AppleTerritory,
 } from './types';
 import { appleApiRequest, getAppIdForBundleId } from './client';
+import { appleListPages } from './pagination';
 import { UNSUPPORTED_IAP_TERRITORIES } from './territories';
 import { getAvailablePricePoints, findClosestPricePoint } from './products';
 import { ApiError } from '../utils/api-error';
@@ -118,11 +118,6 @@ async function fetchPaginatedPrices(
   basePath: string
 ): Promise<Record<string, AppleProductPrice>> {
   const prices: Record<string, AppleProductPrice> = {};
-  let nextUrl: string | null = basePath;
-  const seenUrls = new Set<string>();
-  const MAX_PAGES = 20;
-  let pageCount = 0;
-
   const queryParams = {
     include: 'appPricePoint,territory',
     limit: '200',
@@ -131,30 +126,11 @@ async function fetchPaginatedPrices(
     'fields[territories]': 'currency',
   };
 
-  while (nextUrl) {
-    if (++pageCount > MAX_PAGES) {
-      console.warn(`[Apple] fetchPaginatedPrices - Hit max page limit for ${basePath}`);
-      break;
-    }
-
-    if (seenUrls.has(nextUrl)) break;
-    seenUrls.add(nextUrl);
-
-    const currentUrl: string = nextUrl;
-    const endpoint: string = currentUrl.startsWith('http')
-      ? new URL(currentUrl).pathname.replace('/v1', '')
-      : currentUrl;
-
-    const response = await appleApiRequest<
-      AppleApiListResponse<{
-        id: string;
-        type: string;
-        attributes: { startDate?: string; endDate?: string };
-      }>
-    >(credentials, endpoint, {
-      queryParams: currentUrl.includes('?') ? undefined : queryParams,
-    });
-
+  for await (const response of appleListPages<{
+    id: string;
+    type: string;
+    attributes: { startDate?: string; endDate?: string };
+  }>(credentials, basePath, { queryParams, maxPages: 20 })) {
     // Build lookups from included data
     const pricePoints = new Map<string, { customerPrice: string; proceeds: string }>();
     const territories = new Map<string, { currency: string }>();
@@ -205,8 +181,6 @@ async function fetchPaginatedPrices(
         };
       }
     }
-
-    nextUrl = response.links?.next ?? null;
   }
 
   return prices;
