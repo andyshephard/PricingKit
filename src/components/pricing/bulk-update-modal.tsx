@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { Loader2, CheckCircle2, XCircle } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -57,6 +57,7 @@ interface BulkUpdateResult {
     oldPrice: string;
     newPrice: string;
   }>;
+  skippedRegions?: Array<{ regionCode: string; reason: string }>;
 }
 
 interface BulkUpdateModalProps {
@@ -111,8 +112,8 @@ export function BulkUpdateModal({
       const items = selectedIds.map((id) => ({
         type,
         id,
-        // For subscriptions, we'd need to handle base plans
-        // This simplified version targets all base plans
+        // No basePlanId: /api/bulk expands each subscription to all of its
+        // base plans and returns one result per base plan
       }));
 
       const response = await fetch('/api/bulk', {
@@ -137,13 +138,30 @@ export function BulkUpdateModal({
 
       setResults(result.results);
 
-      if (result.failed === 0) {
-        toast.success(`Successfully updated ${result.successful} items`);
+      // Subscription results are per base plan
+      const unit = type === 'product' ? 'item' : 'base plan';
+
+      const skippedRegions: number = result.skippedRegions ?? 0;
+      const skippedNote = skippedRegions > 0
+        ? `, ${skippedRegions} region${skippedRegions !== 1 ? 's' : ''} skipped`
+        : '';
+
+      if (result.successful === 0) {
+        // Never report "Successfully updated 0 items"
+        toast.error(
+          `No ${unit}s were updated (${result.failed} failed${skippedNote})`
+        );
+      } else if (result.failed > 0) {
+        toast.warning(
+          `Updated ${result.successful} ${unit}s, ${result.failed} failed${skippedNote}`
+        );
+        onSuccess();
+      } else if (skippedRegions > 0) {
+        toast.warning(`Updated ${result.successful} ${unit}s${skippedNote}`);
         onSuccess();
       } else {
-        toast.warning(
-          `Updated ${result.successful} items, ${result.failed} failed`
-        );
+        toast.success(`Successfully updated ${result.successful} ${unit}s`);
+        onSuccess();
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Bulk update failed');
@@ -165,7 +183,9 @@ export function BulkUpdateModal({
           <DialogTitle>Bulk Update Prices</DialogTitle>
           <DialogDescription>
             Update prices for {selectedIds.length} selected{' '}
-            {type === 'product' ? 'products' : 'subscriptions'}
+            {type === 'product'
+              ? 'products'
+              : 'subscriptions (all base plans of each)'}
           </DialogDescription>
         </DialogHeader>
 
@@ -197,6 +217,20 @@ export function BulkUpdateModal({
                     </div>
                     {result.error && (
                       <p className="text-sm text-red-600">{result.error}</p>
+                    )}
+                    {result.skippedRegions && result.skippedRegions.length > 0 && (
+                      <div className="mt-2 space-y-1">
+                        {result.skippedRegions.map((skipped) => (
+                          <div
+                            key={skipped.regionCode}
+                            className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-500"
+                          >
+                            <AlertTriangle className="h-3 w-3" />
+                            <Badge variant="outline">{skipped.regionCode}</Badge>
+                            <span>Skipped: {skipped.reason}</span>
+                          </div>
+                        ))}
+                      </div>
                     )}
                     {result.changes && result.changes.length > 0 && (
                       <div className="mt-2 space-y-1">
@@ -256,7 +290,7 @@ export function BulkUpdateModal({
                       {operationType === 'fixed' &&
                         'Set all selected prices to a fixed value'}
                       {operationType === 'round' &&
-                        'Round prices to the nearest whole number plus decimal'}
+                        'Round prices down to the nearest whole number plus decimal'}
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
@@ -340,8 +374,10 @@ export function BulkUpdateModal({
                         </div>
                       </FormControl>
                       <FormDescription>
-                        Prices will be rounded to the nearest whole number plus
-                        this decimal (e.g., $4.99)
+                        Prices are rounded down to the nearest whole number plus
+                        this decimal, so they never go up (e.g., $5.00 becomes
+                        $4.99). Currencies without decimals (JPY, KRW, ...) round
+                        down to a 9 / 90 ending instead.
                       </FormDescription>
                       <FormMessage />
                     </FormItem>

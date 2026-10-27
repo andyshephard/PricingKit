@@ -5,8 +5,8 @@ import {
   getAppPrices,
   updateAppPriceSchedule,
   resolveAppPricesToPricePoints,
-  AppleApiError,
 } from '@/lib/apple-connect';
+import { appleErrorResponse } from '../_lib/error-response';
 import { regionCodeSchema, currencyCodeSchema } from '@/lib/validation';
 
 // GET /api/apple/app-price — fetch app price schedule + all territory prices
@@ -30,17 +30,7 @@ export async function GET() {
   } catch (error) {
     console.error('Error fetching app price:', error);
 
-    if (error instanceof AppleApiError) {
-      return NextResponse.json(
-        { error: error.detail || 'Failed to fetch app price' },
-        { status: error.statusCode }
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'Failed to fetch app price' },
-      { status: 500 }
-    );
+    return appleErrorResponse(error, 'Failed to fetch app price');
   }
 }
 
@@ -153,16 +143,6 @@ export async function PATCH(request: NextRequest) {
   } catch (error) {
     console.error('Error updating app price:', error);
 
-    if (error instanceof AppleApiError) {
-      return NextResponse.json(
-        { error: error.detail || 'Failed to update app price' },
-        { status: error.statusCode }
-      );
-    }
-
-    return NextResponse.json(
-      { error: `Failed to update app price: ${error instanceof Error ? error.message : String(error)}` },
-      { status: 500 }
-    );
+    return appleErrorResponse(error, 'Failed to update app price');
   }
 }

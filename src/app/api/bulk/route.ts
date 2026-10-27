@@ -11,6 +11,11 @@ import {
   updateBasePlanPrices,
 } from '@/lib/google-play/subscriptions';
 import type { Money, RegionalBasePlanConfig } from '@/lib/google-play/types';
+import { toApiError } from '@/lib/utils/api-error';
+
+type SkippedRegion = { regionCode: string; reason: string };
+
+const NO_EXISTING_PRICE = 'No existing price in this region (bulk update only changes existing prices)';
 
 const bulkOperationSchema = z.object({
   type: z.enum(['fixed', 'percentage', 'round']),
@@ -73,6 +78,8 @@ export async function POST(request: NextRequest) {
         oldPrice: string;
         newPrice: string;
       }>;
+      /** Target regions left unchanged, with the reason */
+      skippedRegions?: SkippedRegion[];
     }> = [];
 
     let stopped = false;
@@ -114,10 +121,14 @@ export async function POST(request: NextRequest) {
             newPrice: string;
           }> = [];
           const newPrices: Record<string, Money> = {};
+          const skippedRegions: SkippedRegion[] = [];
 
           for (const regionCode of targetRegions) {
             const currentPrice = product.prices?.[regionCode];
-            if (!currentPrice) continue;
+            if (!currentPrice) {
+              skippedRegions.push({ regionCode, reason: NO_EXISTING_PRICE });
+              continue;
+            }
 
             const newPrice = calculateNewPrice(currentPrice, operation);
             newPrices[regionCode] = newPrice;
@@ -136,22 +147,34 @@ export async function POST(request: NextRequest) {
             });
           }
 
-          if (Object.keys(newPrices).length > 0) {
-            await updateInAppProductPrices(
-              auth.credentials,
-              auth.packageName,
-              item.id,
-              newPrices
-            );
+          // Nothing to write is a failure, not a successful no-op
+          if (Object.keys(newPrices).length === 0) {
+            results.push({
+              id: item.id,
+              success: false,
+              committed: false,
+              error: 'None of the target regions have an existing price for this product',
+              skippedRegions,
+            });
+            if (stopOnFailure) { stopped = true; }
+            continue;
           }
+
+          await updateInAppProductPrices(
+            auth.credentials,
+            auth.packageName,
+            item.id,
+            newPrices
+          );
 
           results.push({
             id: item.id,
             success: true,
             committed: true,
             changes,
+            ...(skippedRegions.length > 0 ? { skippedRegions } : {}),
           });
-        } else if (item.type === 'subscription' && item.basePlanId) {
+        } else if (item.type === 'subscription') {
           const subscription = await getSubscription(
             auth.credentials,
             auth.packageName,
@@ -170,77 +193,125 @@ export async function POST(request: NextRequest) {
             continue;
           }
 
-          const basePlan = subscription.basePlans?.find(
-            (bp) => bp.basePlanId === item.basePlanId
-          );
+          // Without a basePlanId the item expands to every base plan of the
+          // subscription, each reported as its own result
+          const basePlans = item.basePlanId
+            ? (subscription.basePlans ?? []).filter(
+                (bp) => bp.basePlanId === item.basePlanId
+              )
+            : subscription.basePlans ?? [];
 
-          if (!basePlan) {
+          if (basePlans.length === 0) {
             results.push({
               id: item.id,
               basePlanId: item.basePlanId,
               success: false,
               committed: false,
-              error: 'Base plan not found',
+              error: item.basePlanId
+                ? 'Base plan not found'
+                : 'Subscription has no base plans',
             });
             if (stopOnFailure) { stopped = true; }
             continue;
           }
 
-          const changes: Array<{
-            regionCode: string;
-            oldPrice: string;
-            newPrice: string;
-          }> = [];
-          const newConfigs: RegionalBasePlanConfig[] = [];
+          for (const basePlan of basePlans) {
+            if (stopped) {
+              results.push({
+                id: item.id,
+                basePlanId: basePlan.basePlanId,
+                success: false,
+                committed: false,
+                error: 'Skipped due to earlier failure (stopOnFailure)',
+              });
+              continue;
+            }
 
-          for (const regionCode of targetRegions) {
-            const currentConfig = basePlan.regionalConfigs?.find(
-              (rc) => rc.regionCode === regionCode
-            );
-            if (!currentConfig) continue;
+            try {
+              const changes: Array<{
+                regionCode: string;
+                oldPrice: string;
+                newPrice: string;
+              }> = [];
+              const newConfigs: RegionalBasePlanConfig[] = [];
+              const skippedRegions: SkippedRegion[] = [];
 
-            // Same price maths as products (calculateNewPrice)
-            const newConfig: RegionalBasePlanConfig = {
-              ...currentConfig,
-              price: calculateNewPrice(currentConfig.price, operation),
-            };
-            newConfigs.push(newConfig);
+              for (const regionCode of targetRegions) {
+                const currentConfig = basePlan.regionalConfigs?.find(
+                  (rc) => rc.regionCode === regionCode
+                );
+                if (!currentConfig) {
+                  skippedRegions.push({ regionCode, reason: NO_EXISTING_PRICE });
+                  continue;
+                }
 
-            const oldAmount =
-              parseFloat(currentConfig.price.units) +
-              (currentConfig.price.nanos
-                ? currentConfig.price.nanos / 1_000_000_000
-                : 0);
-            const newAmount =
-              parseFloat(newConfig.price.units) +
-              (newConfig.price.nanos
-                ? newConfig.price.nanos / 1_000_000_000
-                : 0);
+                // Same price maths as products (round never raises, no JPY decimals)
+                const newConfig: RegionalBasePlanConfig = {
+                  ...currentConfig,
+                  price: calculateNewPrice(currentConfig.price, operation),
+                };
+                newConfigs.push(newConfig);
 
-            changes.push({
-              regionCode,
-              oldPrice: `${currentConfig.price.currencyCode} ${oldAmount.toFixed(2)}`,
-              newPrice: `${newConfig.price.currencyCode} ${newAmount.toFixed(2)}`,
-            });
+                const oldAmount =
+                  parseFloat(currentConfig.price.units) +
+                  (currentConfig.price.nanos
+                    ? currentConfig.price.nanos / 1_000_000_000
+                    : 0);
+                const newAmount =
+                  parseFloat(newConfig.price.units) +
+                  (newConfig.price.nanos
+                    ? newConfig.price.nanos / 1_000_000_000
+                    : 0);
+
+                changes.push({
+                  regionCode,
+                  oldPrice: `${currentConfig.price.currencyCode} ${oldAmount.toFixed(2)}`,
+                  newPrice: `${newConfig.price.currencyCode} ${newAmount.toFixed(2)}`,
+                });
+              }
+
+              // Nothing to write is a failure, not a successful no-op
+              if (newConfigs.length === 0) {
+                results.push({
+                  id: item.id,
+                  basePlanId: basePlan.basePlanId,
+                  success: false,
+                  committed: false,
+                  error: 'None of the target regions have an existing price for this base plan',
+                  skippedRegions,
+                });
+                if (stopOnFailure) { stopped = true; }
+                continue;
+              }
+
+              await updateBasePlanPrices(
+                auth.credentials,
+                auth.packageName,
+                item.id,
+                basePlan.basePlanId,
+                newConfigs
+              );
+
+              results.push({
+                id: item.id,
+                basePlanId: basePlan.basePlanId,
+                success: true,
+                committed: true,
+                changes,
+                ...(skippedRegions.length > 0 ? { skippedRegions } : {}),
+              });
+            } catch (error) {
+              // One failing base plan must not hide the outcome of the others
+              results.push({
+                id: item.id,
+                basePlanId: basePlan.basePlanId,
+                success: false,
+                committed: false,
+                error: toApiError(error, 'google').message,
+              });
+              if (stopOnFailure) { stopped = true; }
+            }
           }
-
-          if (newConfigs.length > 0) {
-            await updateBasePlanPrices(
-              auth.credentials,
-              auth.packageName,
-              item.id,
-              item.basePlanId,
-              newConfigs
-            );
-          }
-
-          results.push({
-            id: item.id,
-            basePlanId: item.basePlanId,
-            success: true,
-            committed: true,
-            changes,
-          });
         }
       } catch (error) {
         results.push({
@@ -248,7 +319,7 @@ export async function POST(request: NextRequest) {
           basePlanId: item.basePlanId,
           success: false,
           committed: false,
-          error: error instanceof Error ? error.message : 'Unknown error',
+          error: toApiError(error, 'google').message,
         });
         if (stopOnFailure) { stopped = true; }
       }
@@ -258,13 +329,16 @@ export async function POST(request: NextRequest) {
     const failed = results.filter((r) => !r.success).length;
     const committed = results.filter((r) => r.committed).length;
     const skipped = results.filter((r) => !r.success && r.error?.includes('Skipped')).length;
+    const skippedRegions = results.reduce((n, r) => n + (r.skippedRegions?.length ?? 0), 0);
 
     return NextResponse.json({
-      success: failed === 0,
-      total: items.length,
+      success: failed === 0 && successful > 0,
+      // One result per product / base plan (subscriptions expand to base plans)
+      total: results.length,
       successful,
       failed,
       committed,
+      skippedRegions,
       ...(stopped ? { stoppedEarly: true, skipped } : {}),
       results,
     });

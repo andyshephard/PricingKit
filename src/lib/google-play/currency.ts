@@ -50,28 +50,87 @@ function getCurrencyForRegion(regionCode: string, actualCurrencies?: Record<stri
 }
 
 // Get exchange rate for a currency (USD to local)
-// Prefers dynamic rates from API, falls back to static rates
+// Prefers dynamic rates from API, falls back to static rates.
+// Returns undefined when no rate is known - callers must treat that as an
+// error for the region, never as USD parity.
 function getExchangeRate(
   currencyCode: string,
   dynamicRates?: DynamicExchangeRates
-): number {
+): number | undefined {
+  if (currencyCode === 'USD') return 1;
   // Prefer dynamic rates from API
-  if (dynamicRates?.rates[currencyCode] !== undefined) {
-    return dynamicRates.rates[currencyCode];
+  const dynamicRate = dynamicRates?.rates[currencyCode];
+  if (isUsableRate(dynamicRate)) {
+    return dynamicRate;
   }
   // Fall back to static rates
   const fallbackRate = FALLBACK_EXCHANGE_RATES[currencyCode];
-  if (fallbackRate === undefined) {
-    console.warn(`[Currency] No exchange rate found for ${currencyCode}, defaulting to 1.0 (USD parity)`);
-    return 1.0;
-  }
-  return fallbackRate;
+  return isUsableRate(fallbackRate) ? fallbackRate : undefined;
+}
+
+function isUsableRate(rate: number | undefined): rate is number {
+  return rate !== undefined && Number.isFinite(rate) && rate > 0;
+}
+
+// Project convention: every index multiplier stays within [0.1, 2.0]
+export const MIN_MULTIPLIER = 0.1;
+export const MAX_MULTIPLIER = 2.0;
+
+function clampMultiplier(multiplier: number): number {
+  return Math.max(MIN_MULTIPLIER, Math.min(MAX_MULTIPLIER, multiplier));
 }
 
 
 // Get the actual local currency for a region (what World Bank PPP is based on)
 function getLocalCurrencyForRegion(regionCode: string): string {
   return LOCAL_CURRENCIES[regionCode] || 'USD';
+}
+
+// Currencies with no minor unit on the stores (JPY, KRW, etc.)
+const NO_DECIMAL_CURRENCIES = [
+  'JPY', 'KRW', 'VND', 'IDR', 'CLP', 'PYG', 'HUF', 'COP',
+  'UGX', 'TZS', 'KZT', 'MNT', 'IQD',
+  'XOF', 'XAF', // CFA Francs (West/Central African)
+];
+
+// CFA Francs require rounding to multiples of 100 (Google Play requirement)
+const CFA_FRANCS = ['XOF', 'XAF'];
+
+export function isZeroDecimalCurrency(currencyCode: string): boolean {
+  return NO_DECIMAL_CURRENCIES.includes(currencyCode);
+}
+
+/**
+ * Round a price DOWN to the nearest charm price at or below it, so a
+ * "round" operation never raises a price. Decimal currencies end in
+ * `ending` (12.00 -> 11.99, 12.99 stays 12.99); no-decimal currencies use
+ * the same 9/90 endings as applyRounding (1234 JPY -> 1190) and CFA francs
+ * round down to a multiple of 100. If rounding down would reach zero or
+ * below, the price is returned unchanged.
+ */
+export function roundDownToPriceEnding(
+  price: number,
+  currencyCode: string,
+  ending: number = 0.99
+): number {
+  let result: number;
+  if (CFA_FRANCS.includes(currencyCode)) {
+    result = Math.floor(price / 100) * 100;
+  } else if (isZeroDecimalCurrency(currencyCode)) {
+    if (price >= 1000) {
+      result = Math.floor((price + 10) / 100) * 100 - 10;
+    } else if (price >= 100) {
+      result = Math.floor((price + 1) / 10) * 10 - 1;
+    } else {
+      result = Math.floor(price);
+    }
+  } else {
+    // Work in cents to avoid float drift (12.99 - 0.99 etc.)
+    const cents = Math.round(price * 100);
+    const endingCents = Math.round(ending * 100) % 100;
+    result = (Math.floor((cents - endingCents) / 100) * 100 + endingCents) / 100;
+  }
+  return result > 0 ? result : price;
 }
 
 // Apply rounding based on mode. `tiers` (optional) is the list of allowed
@@ -105,17 +164,8 @@ function applyRounding(
     // Fall through: behave as nearest-99 when no tier list available.
   }
 
-  // For currencies with no decimal places (JPY, KRW, etc.)
-  const noDecimalCurrencies = [
-    'JPY', 'KRW', 'VND', 'IDR', 'CLP', 'PYG', 'HUF', 'COP',
-    'UGX', 'TZS', 'KZT', 'MNT', 'IQD',
-    'XOF', 'XAF', // CFA Francs (West/Central African)
-  ];
-  const isNoDecimal = noDecimalCurrencies.includes(currencyCode);
-
-  // CFA Francs require rounding to multiples of 100 (Google Play requirement)
-  const cfaFrancs = ['XOF', 'XAF'];
-  const isCfaFranc = cfaFrancs.includes(currencyCode);
+  const isNoDecimal = isZeroDecimalCurrency(currencyCode);
+  const isCfaFranc = CFA_FRANCS.includes(currencyCode);
 
   // Round up to next .99 ending (or platform-equivalent for no-decimal currencies).
   if (mode === 'round-up') {
@@ -173,6 +223,22 @@ export interface CalculatedPrice {
   exchangeRate: number;
   /** The PPP-adjusted price in USD (before currency conversion) */
   adjustedUsdPrice: number;
+  /**
+   * Set when no price could be calculated for this region. The price is
+   * zero and must not be applied; show the region as flagged instead.
+   */
+  error?: CalculatedPriceError;
+  /** Human-readable explanation of `error` */
+  errorMessage?: string;
+  /** Non-fatal issues (e.g. minimum price not enforced) */
+  warnings?: string[];
+}
+
+export type CalculatedPriceError = 'MISSING_EXCHANGE_RATE';
+
+/** Drop regions whose price couldn't be calculated (never apply a 0 / parity price) */
+export function filterApplicablePrices<T extends Pick<CalculatedPrice, 'error'>>(prices: T[]): T[] {
+  return prices.filter((p) => !p.error);
 }
 
 // Dynamic PPP data from World Bank API
@@ -215,18 +281,11 @@ export function calculateRegionalPrice(
 
   // Use actual currency from API if available, otherwise fall back to static data
   const currencyCode = getCurrencyForRegion(regionCode, actualCurrencies);
-  const exchangeRate = getExchangeRate(currencyCode, dynamicExchangeRates);
-
-  // Normalize basePrice to USD if it's in a different currency
-  let baseUsdPrice = basePrice;
-  if (baseCurrency !== 'USD') {
-    const baseExchangeRate = getExchangeRate(baseCurrency, dynamicExchangeRates);
-    if (baseExchangeRate && baseExchangeRate !== 0) {
-      baseUsdPrice = basePrice / baseExchangeRate;
-    }
-  }
+  const maybeExchangeRate = getExchangeRate(currencyCode, dynamicExchangeRates);
+  const baseExchangeRate = getExchangeRate(baseCurrency, dynamicExchangeRates);
 
   // Free (0) base price: skip all calculations and return 0 for every region
+  // (free is free in any currency, so a missing rate doesn't matter here)
   if (basePrice === 0) {
     return {
       regionCode,
@@ -235,10 +294,32 @@ export function calculateRegionalPrice(
       rawPrice: 0,
       multiplier: 1.0,
       multiplierSource: 'direct',
-      exchangeRate,
+      exchangeRate: maybeExchangeRate ?? 0,
       adjustedUsdPrice: 0,
     };
   }
+
+  // Without both rates the price would silently be USD parity - flag the region instead
+  if (maybeExchangeRate === undefined || baseExchangeRate === undefined) {
+    const missing = maybeExchangeRate === undefined ? currencyCode : baseCurrency;
+    console.warn(`[Currency] No exchange rate for ${missing}; ${regionCode} not priced`);
+    return {
+      regionCode,
+      currencyCode,
+      price: parseMoney(0, currencyCode),
+      rawPrice: 0,
+      multiplier: 0,
+      multiplierSource: undefined,
+      exchangeRate: 0,
+      adjustedUsdPrice: 0,
+      error: 'MISSING_EXCHANGE_RATE',
+      errorMessage: `No exchange rate available for ${missing}`,
+    };
+  }
+  const exchangeRate = maybeExchangeRate;
+
+  // Normalize basePrice to USD if it's in a different currency
+  const baseUsdPrice = basePrice / baseExchangeRate;
 
   // Use dynamic PPP data if available (try both original and alpha-2 codes), otherwise fall back to static
   const dynamicEntry = dynamicPPPData?.[regionCode] ?? dynamicPPPData?.[alpha2Code];
@@ -289,6 +370,7 @@ export function calculateRegionalPrice(
       const localCurrency = getLocalCurrencyForRegion(alpha2Code);
       const localExchangeRate = dynamicEntry?.marketExchangeRate
         ?? getExchangeRate(localCurrency, dynamicExchangeRates);
+      const hasLocalExchangeRate = localExchangeRate !== undefined;
 
       if (pppConversionFactor !== undefined) {
         // If we have dynamic PPP data, we use the real multiplier (PPP_Factor / Market_Rate)
@@ -303,20 +385,18 @@ export function calculateRegionalPrice(
           baseRealMultiplier = basePppConversionFactor / baseLocalExchangeRate;
         }
 
-        if (currencyCode === localCurrency) {
+        if (currencyCode === localCurrency && hasLocalExchangeRate) {
           // Billing currency matches local currency. Use the snapshot rate for the
           // multiplier denominator; keep the live OER rate for the final output
           // conversion so the displayed price tracks today's market.
           const rawRealMultiplier = pppConversionFactor / localExchangeRate;
-          effectiveMultiplier = rawRealMultiplier / baseRealMultiplier;
+          effectiveMultiplier = clampMultiplier(rawRealMultiplier / baseRealMultiplier);
           calculatedPrice = baseUsdPrice * effectiveMultiplier * exchangeRate;
           multiplierSource = dynamicEntry?.source ?? 'world-bank';
         } else {
           // Billing currency differs from local currency
-          const hasExchangeRate = (dynamicExchangeRates?.rates[localCurrency] !== undefined) ||
-            (FALLBACK_EXCHANGE_RATES[localCurrency] !== undefined);
-          
-          if (localCurrency !== 'USD' && !hasExchangeRate) {
+          if (!hasLocalExchangeRate) {
+            // Can't convert the PPP factor out of the local currency: use the static index
             effectiveMultiplier = pppMultiplier / basePppMultiplier;
             calculatedPrice = baseUsdPrice * effectiveMultiplier * exchangeRate;
             multiplierSource = 'static';
@@ -324,8 +404,8 @@ export function calculateRegionalPrice(
             const pppPriceInLocal = baseUsdPrice * pppConversionFactor;
             const pppPriceInUsd = pppPriceInLocal / localExchangeRate;
             const rawRealMultiplier = pppPriceInUsd / baseUsdPrice;
-            
-            effectiveMultiplier = rawRealMultiplier / baseRealMultiplier;
+
+            effectiveMultiplier = clampMultiplier(rawRealMultiplier / baseRealMultiplier);
 
             // For hyperinflation countries where PPP produces HIGHER prices than base,
             // use a low default multiplier to make apps affordable.
@@ -383,16 +463,25 @@ export function calculateRegionalPrice(
   // Enforce minimum price (minPrice is in local currency, convert if billing currency differs)
   // Get the local currency to check if minPrice needs conversion
   const minPriceLocalCurrency = getLocalCurrencyForRegion(alpha2Code);
-  let adjustedMinPrice = minPrice;
+  let adjustedMinPrice: number | undefined = minPrice;
+  const warnings: string[] = [];
 
   if (currencyCode !== minPriceLocalCurrency) {
     // Convert minPrice from local currency to billing currency
     const minPriceLocalRate = getExchangeRate(minPriceLocalCurrency, dynamicExchangeRates);
-    // minPrice in local / local rate = minPrice in USD, then * billing rate
-    adjustedMinPrice = (minPrice / minPriceLocalRate) * exchangeRate;
+    if (minPriceLocalRate === undefined) {
+      // Don't guess a minimum at USD parity; skip it and say so
+      adjustedMinPrice = undefined;
+      warnings.push(`Minimum price not enforced: no exchange rate for ${minPriceLocalCurrency}`);
+    } else {
+      // minPrice in local / local rate = minPrice in USD, then * billing rate
+      adjustedMinPrice = (minPrice / minPriceLocalRate) * exchangeRate;
+    }
   }
 
-  calculatedPrice = Math.max(calculatedPrice, adjustedMinPrice);
+  if (adjustedMinPrice !== undefined) {
+    calculatedPrice = Math.max(calculatedPrice, adjustedMinPrice);
+  }
 
   // The PPP-adjusted USD price before currency conversion
   const adjustedUsdPrice = baseUsdPrice * effectiveMultiplier;
@@ -406,6 +495,7 @@ export function calculateRegionalPrice(
     multiplierSource,
     exchangeRate,
     adjustedUsdPrice,
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
 

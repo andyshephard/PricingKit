@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect } from 'react';
-import { Calculator, Globe, DollarSign, TrendingDown, Sliders, RefreshCw, Hamburger, Tv, AlertTriangle, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
+import { Calculator, Globe, DollarSign, TrendingDown, RefreshCw, Hamburger, Tv, AlertTriangle, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -143,6 +143,8 @@ interface PreviewPrice {
   noTierData: boolean; // True if no tier data available for this currency
   multiplier: number; // Pricing multiplier applied to base
   multiplierSource?: 'world-bank' | 'big-mac' | 'netflix' | 'static' | 'custom' | 'direct';
+  /** Why no price could be calculated (e.g. missing exchange rate); never applied */
+  error?: string;
 }
 
 export function AppleSubscriptionBulkPricingModal({
@@ -352,6 +354,30 @@ export function AppleSubscriptionBulkPricingModal({
       const alpha3 = alpha2ToAlpha3(calculated.regionCode) || calculated.regionCode;
       const currency = calculated.currencyCode;
 
+      // Get current price for comparison
+      const currentPriceData = subscription.prices[calculated.regionCode];
+      const currentPrice = currentPriceData ? parseFloat(currentPriceData.customerPrice) : null;
+
+      // No exchange rate: flag the region rather than mapping a 0 / parity price to a tier
+      if (calculated.error) {
+        return {
+          territoryCode: calculated.regionCode,
+          territoryAlpha3: alpha3,
+          countryName: territory?.name || calculated.regionCode,
+          currency,
+          idealPrice: 0,
+          tierPrice: 0,
+          tier: null,
+          tierDifference: 0,
+          currentPrice,
+          priceChange: null,
+          noTierData: true,
+          multiplier: calculated.multiplier,
+          multiplierSource: calculated.multiplierSource,
+          error: calculated.errorMessage ?? 'No exchange rate available',
+        };
+      }
+
       // Find closest Apple tier for this price/currency
       const closestTier = findClosestTierForCurrency(calculated.rawPrice, currency);
 
@@ -361,9 +387,6 @@ export function AppleSubscriptionBulkPricingModal({
         ? ((closestTier.price - calculated.rawPrice) / calculated.rawPrice) * 100
         : 0;
 
-      // Get current price for comparison
-      const currentPriceData = subscription.prices[calculated.regionCode];
-      const currentPrice = currentPriceData ? parseFloat(currentPriceData.customerPrice) : null;
       const priceChange = currentPrice !== null
         ? calculatePriceChange(currentPrice, tierPrice)
         : null;
@@ -456,6 +479,8 @@ export function AppleSubscriptionBulkPricingModal({
       const newSelected = new Set<string>();
       
       previewPrices.forEach((preview) => {
+        // Never pre-select a region whose price couldn't be calculated
+        if (preview.error) return;
         // MATCH UI DISPLAY: Only pre-select if rounded change is non-zero
         // Using abs() >= 0.5 to match toFixed(0) rounding behavior seen in the table
         const isDifferent = preview.currentPrice === null || 
@@ -592,8 +617,16 @@ export function AppleSubscriptionBulkPricingModal({
     // Filter to only selected regions
     const selectedPreviewPrices = previewPrices.filter(p => selectedRegions.has(p.territoryCode));
 
+    // Regions with no exchange rate are never applied
+    const regionsWithoutRates = selectedPreviewPrices.filter(p => p.error);
+    if (regionsWithoutRates.length > 0) {
+      toast.warning(`Skipping ${regionsWithoutRates.length} regions without an exchange rate`, {
+        description: regionsWithoutRates.map(p => p.territoryCode).join(', '),
+      });
+    }
+
     // Check for regions without tier data
-    const regionsWithoutTiers = selectedPreviewPrices.filter(p => p.noTierData);
+    const regionsWithoutTiers = selectedPreviewPrices.filter(p => p.noTierData && !p.error);
     if (regionsWithoutTiers.length > 0) {
       toast.warning(`Skipping ${regionsWithoutTiers.length} regions without Apple tier data`);
     }
@@ -619,15 +652,21 @@ export function AppleSubscriptionBulkPricingModal({
         };
       }
 
-      const { resolved, skipped } = await resolveMutation.mutateAsync({
+      const { resolved, skipped, skippedReasons } = await resolveMutation.mutateAsync({
         subscriptionId: subscription.id,
         territories,
       });
 
       const skipCount = skipped.length;
+      const skipDetails = skipped
+        .slice(0, 3)
+        .map((code) => (skippedReasons?.[code] ? `${code}: ${skippedReasons[code]}` : code))
+        .join('; ') + (skipCount > 3 ? ` and ${skipCount - 3} more` : '');
 
       if (Object.keys(resolved).length === 0) {
-        toast.error('Failed to resolve any prices to Apple price points');
+        toast.error('Failed to resolve any prices to Apple price points', {
+          description: skipCount > 0 ? skipDetails : undefined,
+        });
         return;
       }
 
@@ -648,7 +687,9 @@ export function AppleSubscriptionBulkPricingModal({
 
       const successCount = Object.keys(resolved).length;
       if (skipCount > 0) {
-        toast.success(`Updated ${successCount} regions (${skipCount} skipped)`);
+        toast.warning(`Updated ${successCount} regions, ${skipCount} skipped`, {
+          description: skipDetails,
+        });
       } else {
         toast.success(`Updated prices for ${successCount} regions`);
       }
@@ -815,7 +856,7 @@ export function AppleSubscriptionBulkPricingModal({
                 )}
               </div>
               <TooltipProvider delayDuration={200}>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
@@ -916,29 +957,7 @@ export function AppleSubscriptionBulkPricingModal({
                       </p>
                     </TooltipContent>
                   </Tooltip>
-
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
-                        <input
-                          type="radio"
-                          name="strategy"
-                          value="custom"
-                          checked={strategy === 'custom'}
-                          onChange={() => setStrategy('custom')}
-                          className="sr-only"
-                        />
-                        <Sliders className="h-4 w-4 shrink-0" />
-                        <span className="text-sm font-medium truncate">Custom</span>
-                      </label>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" className="max-w-xs">
-                      <p className="font-medium">Custom Multipliers</p>
-                      <p className="text-xs text-muted-foreground">
-                        Define your own regional price multipliers (coming soon).
-                      </p>
-                    </TooltipContent>
-                  </Tooltip>
+                  {/* 'custom' is hidden until per-territory multipliers can be entered */}
                 </div>
               </TooltipProvider>
             </div>
@@ -1113,8 +1132,9 @@ export function AppleSubscriptionBulkPricingModal({
                           return (
                             <TableRow key={preview.territoryCode} className={rowClassName}>
                               <TableCell>
-                                <Checkbox 
-                                  checked={isSelected}
+                                <Checkbox
+                                  checked={isSelected && !preview.error}
+                                  disabled={!!preview.error}
                                   onCheckedChange={() => toggleRegion(preview.territoryCode)}
                                   aria-label={`Select ${preview.territoryCode}`}
                                 />
@@ -1164,7 +1184,19 @@ export function AppleSubscriptionBulkPricingModal({
                                   : '-'}
                               </TableCell>
                               <TableCell className="text-right font-medium">
-                                {preview.noTierData ? (
+                                {preview.error ? (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <span className="inline-flex items-center gap-1 text-xs text-red-600 cursor-help">
+                                        <AlertTriangle className="h-3 w-3" />
+                                        No exchange rate
+                                      </span>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top">
+                                      <p className="text-xs">{preview.error}. This region will not be updated.</p>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                ) : preview.noTierData ? (
                                   <span className="text-red-600">No tier data</span>
                                 ) : (
                                   <Tooltip>

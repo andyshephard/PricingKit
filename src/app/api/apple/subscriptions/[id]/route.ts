@@ -5,11 +5,11 @@ import {
   getSubscription,
   getSubscriptionById,
   getSubscriptionPrices,
-  updateSubscriptionPrice,
+  applySubscriptionPriceChanges,
   deleteSubscriptionPrice,
-  AppleApiError,
 } from '@/lib/apple-connect';
-import { executeWithRateLimit, RateLimitError } from '@/lib/utils/rate-limit';
+import { appleErrorResponse, getAppleErrorMessage } from '../../_lib/error-response';
+import { RateLimitError } from '@/lib/utils/rate-limit';
 import { createNdjsonStream, NDJSON_HEADERS } from '@/lib/utils/ndjson-stream';
 import {
   validateAndDecodeAppleProductId,
@@ -17,13 +17,13 @@ import {
   regionCodeSchema,
 } from '@/lib/validation';
 
-// Check if the ID is a numeric Apple subscription ID (e.g., "6746950587")
+// Check if the ID is a numeric Apple subscription ID (e.g., "1234567890")
 function isNumericSubscriptionId(id: string): boolean {
   return /^\d+$/.test(id);
 }
 
 // GET /api/apple/subscriptions/[id] - Get a single subscription with prices
-// Supports both numeric subscription ID (e.g., "6746950587") and productId (e.g., "com.example.subscription")
+// Supports both numeric subscription ID (e.g., "1234567890") and productId (e.g., "com.example.subscription")
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -79,17 +79,7 @@ export async function GET(
   } catch (error) {
     console.error('Error fetching Apple subscription:', error);
 
-    if (error instanceof AppleApiError) {
-      return NextResponse.json(
-        { error: error.detail || 'Failed to fetch subscription' },
-        { status: error.statusCode }
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'Failed to fetch subscription' },
-      { status: 500 }
-    );
+    return appleErrorResponse(error, 'Failed to fetch subscription');
   }
 }
 
@@ -167,41 +157,12 @@ export async function PATCH(
       );
     }
 
-    // Update prices for each territory with rate limiting to avoid overwhelming Apple's API
     const { prices, preserveCurrentPrice } = result.data;
-    const priceEntries = Object.entries(prices);
 
-    // Fetch current scheduled prices to check for conflicts
-    // Apple only allows one scheduled (future) price per territory
+    // Fetch current scheduled prices: Apple only allows one scheduled (future)
+    // price per territory, so a future-dated change replaces the existing one
     const currentPricesResult = await getSubscriptionPrices(auth.credentials, subscription.id);
     const scheduledPrices = currentPricesResult.scheduled;
-
-    // For each territory being updated with a future startDate, delete existing scheduled price first
-    const deleteTasks: (() => Promise<void>)[] = [];
-
-    for (const [territoryCode, { startDate }] of priceEntries) {
-      if (startDate && scheduledPrices[territoryCode]?.subscriptionPriceId) {
-        deleteTasks.push(() =>
-          deleteSubscriptionPrice(
-            auth.credentials,
-            scheduledPrices[territoryCode].subscriptionPriceId!
-          )
-        );
-      }
-    }
-
-    // Create task functions (not promises) for rate-limited execution
-    const createTasks = priceEntries.map(
-      ([territoryCode, { pricePointId, startDate }]) =>
-        () => updateSubscriptionPrice(
-          auth.credentials,
-          subscription.id,
-          pricePointId,
-          territoryCode,
-          startDate,
-          preserveCurrentPrice
-        )
-    );
 
     // Stream progress back to the client
     const { stream, writer } = createNdjsonStream();
@@ -210,42 +171,51 @@ export async function PATCH(
 
     (async () => {
       try {
-        // Execute deletions first (rate-limited)
-        if (deleteTasks.length > 0) {
-          await executeWithRateLimit(deleteTasks, {
-            concurrency: 2,
-            delayBetweenBatches: 500,
-            maxRetries: 5,
-            retryDelay: 2000,
-            onProgress: (completed, total) => writer.progress(completed, total, 'delete'),
-          });
-        }
+        // Creates first, deletes only after the replacement exists; a failed create deletes nothing
+        const outcomes = await applySubscriptionPriceChanges(
+          credentials,
+          subscriptionId,
+          prices,
+          scheduledPrices,
+          {
+            preserveCurrentPrice,
+            onProgress: (completed, total) => writer.progress(completed, total, 'update'),
+          }
+        );
 
-        // Execute creates with rate limiting
-        await executeWithRateLimit(createTasks, {
-          concurrency: 2,
-          delayBetweenBatches: 500,
-          maxRetries: 5,
-          retryDelay: 2000,
-          onProgress: (completed, total) => writer.progress(completed, total, 'create'),
-        });
+        const failed = outcomes.filter((o) => o.status === 'failed');
+        const warnings = outcomes.filter((o) => o.warning);
 
-        // Fetch updated subscription by its ID
-        const updatedSubscription = await getSubscriptionById(credentials, subscriptionId);
-        if (updatedSubscription) {
-          const updatedPricesResult = await getSubscriptionPrices(
-            credentials,
-            updatedSubscription.id
-          );
-          updatedSubscription.prices = updatedPricesResult.current;
-          updatedSubscription.scheduledPrices = Object.keys(updatedPricesResult.scheduled).length > 0
-            ? updatedPricesResult.scheduled
-            : undefined;
+        // Fetch updated subscription by its ID. The writes are already done, so a
+        // failed refresh is reported alongside the outcomes rather than as a failure
+        let updatedSubscription: Awaited<ReturnType<typeof getSubscriptionById>> = null;
+        let refreshError: string | undefined;
+        try {
+          updatedSubscription = await getSubscriptionById(credentials, subscriptionId);
+          if (updatedSubscription) {
+            const updatedPricesResult = await getSubscriptionPrices(
+              credentials,
+              updatedSubscription.id
+            );
+            updatedSubscription.prices = updatedPricesResult.current;
+            updatedSubscription.scheduledPrices = Object.keys(updatedPricesResult.scheduled).length > 0
+              ? updatedPricesResult.scheduled
+              : undefined;
+          }
+        } catch (error) {
+          console.error('Error refreshing Apple subscription after update:', error);
+          updatedSubscription = null;
+          refreshError = getAppleErrorMessage(error, 'Could not reload prices after the update');
         }
 
         writer.done({
-          success: true,
+          success: failed.length === 0,
+          updatedCount: outcomes.length - failed.length,
+          failedCount: failed.length,
+          warningCount: warnings.length,
+          results: outcomes,
           subscription: updatedSubscription,
+          ...(refreshError ? { refreshError } : {}),
         });
       } catch (error) {
         console.error('Error updating Apple subscription:', error);
@@ -256,10 +226,8 @@ export async function PATCH(
             error.successCount,
             error.totalCount
           );
-        } else if (error instanceof AppleApiError) {
-          writer.error(error.detail || 'Failed to update subscription');
         } else {
-          writer.error('Failed to update subscription');
+          writer.error(getAppleErrorMessage(error, 'Failed to update subscription'));
         }
       }
     })();
@@ -268,17 +236,7 @@ export async function PATCH(
   } catch (error) {
     console.error('Error updating Apple subscription:', error);
 
-    if (error instanceof AppleApiError) {
-      return NextResponse.json(
-        { error: error.detail || 'Failed to update subscription' },
-        { status: error.statusCode }
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'Failed to update subscription' },
-      { status: 500 }
-    );
+    return appleErrorResponse(error, 'Failed to update subscription');
   }
 }
 
@@ -324,16 +282,6 @@ export async function DELETE(
   } catch (error) {
     console.error('Error deleting Apple subscription price:', error);
 
-    if (error instanceof AppleApiError) {
-      return NextResponse.json(
-        { error: error.detail || 'Failed to delete price' },
-        { status: error.statusCode }
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'Failed to delete price' },
-      { status: 500 }
-    );
+    return appleErrorResponse(error, 'Failed to delete price');
   }
 }

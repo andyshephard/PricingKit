@@ -58,7 +58,7 @@ export default function AppleSubscriptionDetailPage({
   const decodedId = decodeURIComponent(id);
 
   const { data, isLoading, error, refetch, isRefetching } =
-    useQuery<AppleSubscriptionResponse>({
+    useQuery<AppleSubscriptionResponse | null>({
       queryKey: ['subscriptions', 'apple', decodedId],
       queryFn: async () => {
         const response = await fetch(
@@ -67,6 +67,10 @@ export default function AppleSubscriptionDetailPage({
         if (!response.ok) {
           if (response.status === 401) {
             throw new Error('401: Unauthorized');
+          }
+          // A genuine 404 is "not found", not a failed load
+          if (response.status === 404) {
+            return null;
           }
           const error = await response.json();
           throw new Error(error.error || 'Failed to fetch subscription');
@@ -211,7 +215,15 @@ export default function AppleSubscriptionDetailPage({
         ) : (
           <Card>
             <CardContent className="py-12 text-center">
-              <p className="text-muted-foreground">Subscription not found</p>
+              {/* Distinguish a failed load from a genuinely missing subscription */}
+              <p className={error ? 'text-destructive' : 'text-muted-foreground'}>
+                {error ? `Could not load subscription: ${error.message}` : 'Subscription not found'}
+              </p>
+              {error && (
+                <Button variant="outline" className="mt-4 mr-2" onClick={() => refetch()}>
+                  Retry
+                </Button>
+              )}
               <Button variant="outline" className="mt-4" asChild>
                 <Link href="/dashboard/apple/subscriptions">
                   Back to Subscriptions

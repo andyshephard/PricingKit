@@ -8,9 +8,9 @@ import {
   updateInAppPurchasePrice,
   updateInAppPurchasePrices,
   resolvePPPPricesToPricePoints,
-  AppleApiError,
   type PPPResolutionResult,
 } from '@/lib/apple-connect';
+import { appleErrorResponse, getAppleErrorMessage } from '../../_lib/error-response';
 import {
   validateAndDecodeAppleProductId,
   ValidationError,
@@ -62,23 +62,13 @@ export async function GET(
       getBaseTerritoryForProduct(auth.credentials, product.id),
     ]);
     product.prices = prices;
-    product.baseTerritory = baseTerritory;
+    product.baseTerritory = baseTerritory ?? undefined;
 
     return NextResponse.json({ product });
   } catch (error) {
     console.error('Error fetching Apple product:', error);
 
-    if (error instanceof AppleApiError) {
-      return NextResponse.json(
-        { error: error.detail || 'Failed to fetch product' },
-        { status: error.statusCode }
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'Failed to fetch product' },
-      { status: 500 }
-    );
+    return appleErrorResponse(error, 'Failed to fetch product');
   }
 }
 
@@ -165,7 +155,8 @@ export async function PATCH(
     }
 
     // Fetch base territory from Apple's dedicated endpoint
-    product.baseTerritory = await getBaseTerritoryForProduct(auth.credentials, product.id);
+    product.baseTerritory =
+      (await getBaseTerritoryForProduct(auth.credentials, product.id)) ?? undefined;
 
     // Update prices
     const { prices } = result.data;
@@ -194,7 +185,9 @@ export async function PATCH(
         );
       }
 
-      // Ensure base territory is included
+      // Ensure base territory is included. Only a product with no price
+      // schedule yet has no base territory (read errors are thrown above);
+      // a new schedule uses USA as its base
       const baseTerritory = product.baseTerritory || 'USA';
       if (!moneyPrices[baseTerritory]) {
         return NextResponse.json(
@@ -254,15 +247,24 @@ export async function PATCH(
       updatedCount = updates.length;
     }
 
-    // Fetch updated product
-    const updatedProduct = await getInAppPurchase(auth.credentials, productId);
-    if (updatedProduct) {
-      const [updatedPrices, updatedBaseTerritory] = await Promise.all([
-        getInAppPurchasePrices(auth.credentials, updatedProduct.id),
-        getBaseTerritoryForProduct(auth.credentials, updatedProduct.id),
-      ]);
-      updatedProduct.prices = updatedPrices;
-      updatedProduct.baseTerritory = updatedBaseTerritory;
+    // Fetch updated product. The write is already done, so a failed refresh
+    // is reported alongside the result rather than as a failure
+    let updatedProduct: Awaited<ReturnType<typeof getInAppPurchase>> = null;
+    let refreshError: string | undefined;
+    try {
+      updatedProduct = await getInAppPurchase(auth.credentials, productId);
+      if (updatedProduct) {
+        const [updatedPrices, updatedBaseTerritory] = await Promise.all([
+          getInAppPurchasePrices(auth.credentials, updatedProduct.id),
+          getBaseTerritoryForProduct(auth.credentials, updatedProduct.id),
+        ]);
+        updatedProduct.prices = updatedPrices;
+        updatedProduct.baseTerritory = updatedBaseTerritory ?? undefined;
+      }
+    } catch (error) {
+      console.error('Error refreshing Apple product after update:', error);
+      updatedProduct = null;
+      refreshError = getAppleErrorMessage(error, 'Could not reload prices after the update');
     }
 
     return NextResponse.json({
@@ -270,20 +272,11 @@ export async function PATCH(
       product: updatedProduct,
       updated: updatedCount,
       skipped: skippedTerritories,
+      ...(refreshError ? { refreshError } : {}),
     });
   } catch (error) {
     console.error('Error updating Apple product:', error);
 
-    if (error instanceof AppleApiError) {
-      return NextResponse.json(
-        { error: error.detail || 'Failed to update product' },
-        { status: error.statusCode }
-      );
-    }
-
-    return NextResponse.json(
-      { error: `Failed to update prices: ${error instanceof Error ? error.message : String(error)}` },
-      { status: 500 }
-    );
+    return appleErrorResponse(error, 'Failed to update prices');
   }
 }

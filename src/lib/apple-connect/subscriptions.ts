@@ -12,7 +12,9 @@ import type {
   AppleTerritory,
 } from './types';
 import { appleApiRequest, getAppIdForBundleId } from './client';
-import { alpha3ToAlpha2 } from './territories';
+import { alpha2ToAlpha3, alpha3ToAlpha2 } from './territories';
+import { ApiError, getErrorStatus, toApiError } from '../utils/api-error';
+import { executeWithRateLimit, type RateLimitOptions } from '../utils/rate-limit';
 
 // List all subscription groups for an app
 export async function listSubscriptionGroups(
@@ -23,7 +25,11 @@ export async function listSubscriptionGroups(
   const appId = await getAppIdForBundleId(credentials);
   if (!appId) {
     console.error('[Apple] listSubscriptionGroups - No app ID found');
-    throw new Error(`App with Bundle ID "${credentials.bundleId}" not found`);
+    throw new ApiError(`App with Bundle ID "${credentials.bundleId}" not found`, {
+      status: 404,
+      code: 'APP_NOT_FOUND',
+      platform: 'apple',
+    });
   }
 
   // console.log('[Apple] listSubscriptionGroups - Got app ID:', appId);
@@ -183,18 +189,16 @@ export async function listSubscriptions(
   return groups.flatMap((g) => g.subscriptions);
 }
 
-// Get a single subscription by productId
+// Get a single subscription by productId.
+// Returns null only when the subscription genuinely doesn't exist; API
+// failures (auth, rate limit, 5xx, network) are thrown as ApiError.
 export async function getSubscription(
   credentials: AppleConnectCredentials,
   productId: string
 ): Promise<NormalizedAppleSubscription | null> {
   try {
-    const appId = await getAppIdForBundleId(credentials);
-    if (!appId) {
-      return null;
-    }
-
-    // First, get all subscription groups to find the subscription
+    // Get all subscription groups to find the subscription
+    // (throws APP_NOT_FOUND if the bundle ID doesn't resolve to an app)
     const groups = await listSubscriptionGroups(credentials);
 
     for (const group of groups) {
@@ -207,8 +211,8 @@ export async function getSubscription(
     }
 
     return null;
-  } catch {
-    return null;
+  } catch (error) {
+    throw toApiError(error, 'apple');
   }
 }
 
@@ -267,12 +271,16 @@ async function getSubscriptionDetails(
       prices: {},
       localizations,
     };
-  } catch {
-    return null;
+  } catch (error) {
+    // A 404 means the subscription doesn't exist; anything else is a real failure
+    if (getErrorStatus(error) === 404) {
+      return null;
+    }
+    throw toApiError(error, 'apple');
   }
 }
 
-// Get a subscription by its Apple subscription ID (numeric ID like "6746950587")
+// Get a subscription by its Apple subscription ID (numeric ID like "1234567890")
 export async function getSubscriptionById(
   credentials: AppleConnectCredentials,
   subscriptionId: string
@@ -491,8 +499,9 @@ export async function getSubscriptionPrices(
     // console.log('[Apple] getSubscriptionPrices - Price points in map:', pricePointsById.size);
     return { current: currentPrices, scheduled: scheduledPrices };
   } catch (error) {
+    // Don't report "no prices" when the read failed
     console.error('[Apple] getSubscriptionPrices - Error:', error);
-    return { current: {}, scheduled: {} };
+    throw toApiError(error, 'apple');
   }
 }
 
@@ -565,9 +574,30 @@ export async function getSubscriptionPricePoints(
     }
 
     return allPricePoints;
-  } catch {
-    return [];
+  } catch (error) {
+    // Don't report "no price points" when the read failed
+    throw toApiError(error, 'apple');
   }
+}
+
+/**
+ * Normalise a territory code to the alpha-3 ID Apple expects on write
+ * endpoints (e.g. "US" -> "USA"). Alpha-3 codes are passed through.
+ * Throws a 400 ApiError for codes that aren't Apple territories.
+ */
+export function toAppleTerritoryId(territoryCode: string): string {
+  const code = territoryCode.trim().toUpperCase();
+  if (code.length === 2) {
+    const alpha3 = alpha2ToAlpha3(code);
+    if (alpha3) return alpha3;
+  } else if (code.length === 3 && alpha3ToAlpha2(code)) {
+    return code;
+  }
+  throw new ApiError(`Unknown Apple territory "${territoryCode}"`, {
+    status: 400,
+    code: 'INVALID_TERRITORY',
+    platform: 'apple',
+  });
 }
 
 // Update subscription price
@@ -603,7 +633,8 @@ export async function updateSubscriptionPrice(
           },
           territory: {
             data: {
-              id: territoryCode,
+              // Apple territory IDs are alpha-3; callers often hold alpha-2
+              id: toAppleTerritoryId(territoryCode),
               type: 'territories',
             },
           },
@@ -625,6 +656,159 @@ export async function deleteSubscriptionPrice(
       method: 'DELETE',
     }
   );
+}
+
+export interface SubscriptionPriceChange {
+  pricePointId: string;
+  startDate?: string;
+}
+
+/** The scheduled price a change would replace, as it was before the change */
+export interface ScheduledPriceSnapshot {
+  subscriptionPriceId: string;
+  pricePointId: string;
+  startDate?: string;
+  customerPrice?: string;
+  currency?: string;
+}
+
+export interface TerritoryPriceOutcome {
+  territoryCode: string;
+  /**
+   * created  - new price added, nothing replaced
+   * replaced - new price added and the previous scheduled price removed
+   * failed   - new price not added; any previous scheduled price is untouched
+   */
+  status: 'created' | 'replaced' | 'failed';
+  error?: string;
+  errorStatus?: number;
+  previousScheduled?: ScheduledPriceSnapshot;
+  /** New price exists but something non-fatal went wrong (e.g. old scheduled price left in place) */
+  warning?: string;
+}
+
+function describeError(error: unknown): { message: string; status?: number } {
+  const apiError = toApiError(error, 'apple');
+  const detail = (apiError as { detail?: unknown }).detail;
+  return {
+    message: typeof detail === 'string' && detail ? detail : apiError.message,
+    status: apiError.status,
+  };
+}
+
+function describeScheduled(previous: ScheduledPriceSnapshot): string {
+  const amount =
+    previous.customerPrice !== undefined
+      ? `${previous.customerPrice}${previous.currency ? ` ${previous.currency}` : ''}`
+      : `price point ${previous.pricePointId}`;
+  return `${amount}${previous.startDate ? ` from ${previous.startDate}` : ''}`;
+}
+
+/**
+ * Apply subscription price changes per territory without ever deleting an
+ * existing scheduled price before its replacement exists.
+ *
+ * For each territory:
+ * 1. Create the new price first. If that works, delete the old scheduled
+ *    price (if any) - a failed delete is reported as a warning, not a failure.
+ * 2. If the create fails, nothing is deleted. Apple answers ordinary
+ *    validation errors with 409 too and documents no error code specific to
+ *    "a scheduled price already exists", so a 409 is never treated as a
+ *    conflict to resolve by deleting. When a scheduled price exists the
+ *    failure says so, and the user can clear it (Clear scheduled) and retry.
+ *
+ * Never throws for per-territory failures; every territory gets an outcome.
+ */
+export async function applySubscriptionPriceChanges(
+  credentials: AppleConnectCredentials,
+  subscriptionId: string,
+  changes: Record<string, SubscriptionPriceChange>,
+  scheduledPrices: Record<string, AppleProductPrice>,
+  options: {
+    preserveCurrentPrice?: boolean;
+    rateLimit?: Pick<RateLimitOptions, 'concurrency' | 'delayBetweenBatches'>;
+    onProgress?: (completed: number, total: number) => void;
+  } = {}
+): Promise<TerritoryPriceOutcome[]> {
+  const { preserveCurrentPrice = true } = options;
+
+  const applyOne = async (
+    territoryCode: string,
+    { pricePointId, startDate }: SubscriptionPriceChange
+  ): Promise<TerritoryPriceOutcome> => {
+    const create = () =>
+      updateSubscriptionPrice(
+        credentials,
+        subscriptionId,
+        pricePointId,
+        territoryCode,
+        startDate,
+        preserveCurrentPrice
+      );
+
+    // Only a future-dated change replaces the existing scheduled price
+    const existing = startDate ? scheduledPrices[territoryCode] : undefined;
+    const previous: ScheduledPriceSnapshot | undefined =
+      existing?.subscriptionPriceId && existing.pricePointId
+        ? {
+            subscriptionPriceId: existing.subscriptionPriceId,
+            pricePointId: existing.pricePointId,
+            startDate: existing.startDate,
+            customerPrice: existing.customerPrice,
+            currency: existing.currency,
+          }
+        : undefined;
+
+    try {
+      await create();
+    } catch (createError) {
+      const createFailure = describeError(createError);
+      // Nothing was deleted, so the previous scheduled price (if any) is untouched
+      const error =
+        previous && createFailure.status === 409
+          ? `${createFailure.message} (a scheduled price already exists for ${territoryCode}: ${describeScheduled(previous)}. If this is the conflict, clear the scheduled price first, then apply again.)`
+          : createFailure.message;
+      return {
+        territoryCode,
+        status: 'failed',
+        error,
+        errorStatus: createFailure.status,
+        ...(previous ? { previousScheduled: previous } : {}),
+      };
+    }
+
+    if (!previous) {
+      return { territoryCode, status: 'created' };
+    }
+
+    // New price exists; now it's safe to remove the one it replaces
+    try {
+      await deleteSubscriptionPrice(credentials, previous.subscriptionPriceId);
+    } catch (deleteError) {
+      // Already gone is fine; anything else leaves both prices scheduled
+      if (getErrorStatus(deleteError) !== 404) {
+        return {
+          territoryCode,
+          status: 'created',
+          previousScheduled: previous,
+          warning: `New price added but the previous scheduled price could not be removed: ${describeError(deleteError).message}`,
+        };
+      }
+    }
+    return { territoryCode, status: 'replaced', previousScheduled: previous };
+  };
+
+  const tasks = Object.entries(changes).map(
+    ([territoryCode, change]) => () => applyOne(territoryCode, change)
+  );
+
+  // Tasks never throw; appleApiRequest retries 429 itself (never 5xx for a create)
+  return executeWithRateLimit(tasks, {
+    concurrency: options.rateLimit?.concurrency ?? 2,
+    delayBetweenBatches: options.rateLimit?.delayBetweenBatches ?? 500,
+    maxRetries: 0,
+    onProgress: options.onProgress,
+  });
 }
 
 // Map subscription period to human-readable string

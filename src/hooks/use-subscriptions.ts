@@ -236,7 +236,7 @@ export function useSubscriptionPricePoints(subscriptionId: string, territoryCode
 // Hook to update Apple subscription prices (with streaming progress)
 export function useUpdateAppleSubscriptionPrices() {
   const queryClient = useQueryClient();
-  const streaming = useStreamingMutation();
+  const streaming = useStreamingMutation<AppleSubscriptionUpdateResult>();
 
   const mutateAsync = async ({
     subscriptionId,
@@ -264,6 +264,11 @@ export function useUpdateAppleSubscriptionPrices() {
     queryClient.invalidateQueries({ queryKey: ['apple', 'subscriptions'] });
     queryClient.invalidateQueries({ queryKey: ['platform-subscriptions', 'apple'] });
 
+    // Per-territory failures arrive in a "done" event; don't treat them as success
+    if (result.success === false) {
+      throw new AppleSubscriptionUpdateError(result);
+    }
+
     return result;
   };
 
@@ -276,10 +281,43 @@ export function useUpdateAppleSubscriptionPrices() {
   };
 }
 
+/** Per-territory result from PATCH /api/apple/subscriptions/[id] */
+export interface AppleTerritoryPriceOutcome {
+  territoryCode: string;
+  status: 'created' | 'replaced' | 'failed';
+  error?: string;
+  warning?: string;
+}
+
+export interface AppleSubscriptionUpdateResult {
+  success: boolean;
+  updatedCount?: number;
+  failedCount?: number;
+  results?: AppleTerritoryPriceOutcome[];
+}
+
+/** Thrown when some territories failed; message lists them */
+export class AppleSubscriptionUpdateError extends Error {
+  constructor(public result: AppleSubscriptionUpdateResult) {
+    const failed = (result.results ?? []).filter((r) => r.status === 'failed');
+    const listed = failed
+      .slice(0, 3)
+      .map((r) => `${r.territoryCode}: ${r.error ?? 'failed'}`)
+      .join('; ');
+    const more = failed.length > 3 ? ` and ${failed.length - 3} more` : '';
+    super(
+      `Updated ${result.updatedCount ?? 0} regions, ${failed.length} failed (${listed}${more})`
+    );
+    this.name = 'AppleSubscriptionUpdateError';
+  }
+}
+
 // Hook to resolve Apple subscription price points in batch (server-side)
 export interface BatchResolvedPricePoints {
   resolved: Record<string, { pricePointId: string; tierPrice: number }>;
   skipped: string[];
+  /** Why each skipped territory couldn't be resolved */
+  skippedReasons?: Record<string, string>;
 }
 
 export function useResolveAppleSubscriptionPricePoints() {

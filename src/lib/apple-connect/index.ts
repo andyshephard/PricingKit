@@ -67,6 +67,11 @@ export {
   getSubscriptionPricePoints,
   updateSubscriptionPrice,
   deleteSubscriptionPrice,
+  applySubscriptionPriceChanges,
+  toAppleTerritoryId,
   formatSubscriptionPeriod,
   type SubscriptionPricesResult,
+  type SubscriptionPriceChange,
+  type ScheduledPriceSnapshot,
+  type TerritoryPriceOutcome,
 } from './subscriptions';

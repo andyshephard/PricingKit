@@ -1,5 +1,6 @@
 import { googlePlayFetch } from './client';
 import type { ServiceAccountCredentials, InAppProduct, Money } from './types';
+import { isZeroDecimalCurrency, roundDownToPriceEnding } from './currency';
 
 // Type for regional pricing config
 interface RegionalPricingConfig {
@@ -340,14 +341,25 @@ export function calculateNewPrice(
       newAmount = currentAmount * (1 + (operation.value ?? 0) / 100);
       break;
     case 'round':
-      const roundTo = operation.roundTo ?? 0.99;
-      newAmount = Math.floor(currentAmount) + roundTo;
+      // Rounds DOWN to the nearest x.<roundTo> at or below the current price
+      // (12.00 -> 11.99, 12.34 -> 11.99, 12.99 stays), so it never raises a
+      // price. No-decimal currencies ignore roundTo and use 9/90 endings.
+      newAmount = roundDownToPriceEnding(
+        currentAmount,
+        currentPrice.currencyCode,
+        operation.roundTo ?? 0.99
+      );
       break;
     default:
       newAmount = currentAmount;
   }
 
   newAmount = Math.max(0, newAmount);
+
+  // No fractional amounts for JPY, KRW, etc.
+  if (isZeroDecimalCurrency(currentPrice.currencyCode)) {
+    newAmount = Math.round(newAmount);
+  }
 
   let units = Math.floor(newAmount);
   let nanos = Math.round((newAmount - units) * 1_000_000_000);

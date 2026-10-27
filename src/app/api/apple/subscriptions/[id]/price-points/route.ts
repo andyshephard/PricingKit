@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAppleAuthFromCookies } from '../../../auth/route';
 import {
   getSubscriptionPricePoints,
-  AppleApiError,
 } from '@/lib/apple-connect';
+import { appleErrorResponse } from '../../../_lib/error-response';
 import { alpha2ToAlpha3 } from '@/lib/apple-connect/territories';
 
 // GET /api/apple/subscriptions/[id]/price-points?territory=US
@@ -37,16 +37,6 @@ export async function GET(
   } catch (error) {
     console.error('Error fetching subscription price points:', error);
 
-    if (error instanceof AppleApiError) {
-      return NextResponse.json(
-        { error: error.detail || 'Failed to fetch price points' },
-        { status: error.statusCode }
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'Failed to fetch price points' },
-      { status: 500 }
-    );
+    return appleErrorResponse(error, 'Failed to fetch price points');
   }
 }

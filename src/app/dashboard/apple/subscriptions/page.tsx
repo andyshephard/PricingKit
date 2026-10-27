@@ -5,7 +5,6 @@ import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Header } from '@/components/layout';
 import { SubscriptionsTable } from '@/components/subscriptions/subscriptions-table';
-import { BulkUpdateModal } from '@/components/pricing/bulk-update-modal';
 import { Button } from '@/components/ui/button';
 import { useSelectionStore } from '@/store/selection-store';
 import { useAuthStore } from '@/store/auth-store';
@@ -14,7 +13,6 @@ import type { RawAppleSubscription, SubscriptionsListResponse } from '@/types/ap
 
 export default function AppleSubscriptionsPage() {
   const [searchQuery, setSearchQuery] = useState('');
-  const [bulkModalOpen, setBulkModalOpen] = useState(false);
   const appleBaseCountry = useAuthStore((state) => state.appleBaseCountry) || 'US';
 
   const { data, isLoading, refetch, isRefetching, error } = useQuery<SubscriptionsListResponse>({
@@ -91,9 +89,6 @@ export default function AppleSubscriptionsPage() {
               <span className="text-sm text-muted-foreground">
                 {selectedSubscriptionIds.length} selected
               </span>
-              <Button onClick={() => setBulkModalOpen(true)}>
-                Bulk Update Prices
-              </Button>
               <Button
                 variant="outline"
                 onClick={() => setSelectedSubscriptions([])}
@@ -113,17 +108,6 @@ export default function AppleSubscriptionsPage() {
           platform="apple"
         />
       </div>
-
-      <BulkUpdateModal
-        open={bulkModalOpen}
-        onOpenChange={setBulkModalOpen}
-        type="subscription"
-        selectedIds={selectedSubscriptionIds}
-        onSuccess={() => {
-          setSelectedSubscriptions([]);
-          refetch();
-        }}
-      />
     </div>
   );
 }

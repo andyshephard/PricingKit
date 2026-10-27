@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   calculateRegionalPrice,
   calculateBulkPrices,
+  filterApplicablePrices,
 } from '../currency';
 import { calculateNewPrice } from '../products';
 import {
@@ -480,10 +481,64 @@ describe('calculateNewPrice', () => {
     expect(result.units).toBe('25');
   });
 
-  it('round 0.99 on 12.34 → 12.99', () => {
+  it('round 0.99 on 12.34 → 11.99 (rounds down, never raises)', () => {
     const result = calculateNewPrice(baseMoney(12.34), { type: 'round', roundTo: 0.99 });
+    expect(result.units).toBe('11');
+    expect(result.nanos).toBe(990_000_000);
+  });
+
+  it('round 0.99 on 12.00 → 11.99, not 12.99', () => {
+    const result = calculateNewPrice(baseMoney(12), { type: 'round', roundTo: 0.99 });
+    expect(result.units).toBe('11');
+    expect(result.nanos).toBe(990_000_000);
+  });
+
+  it('round 0.99 on 12.99 leaves it unchanged', () => {
+    const result = calculateNewPrice(baseMoney(12.99), { type: 'round', roundTo: 0.99 });
     expect(result.units).toBe('12');
     expect(result.nanos).toBe(990_000_000);
+  });
+
+  it('round never raises a price', () => {
+    for (const value of [0.99, 1, 1.5, 4.49, 9.98, 10, 99.99, 100]) {
+      const result = calculateNewPrice(baseMoney(value), { type: 'round', roundTo: 0.99 });
+      const amount = parseFloat(result.units) + (result.nanos ?? 0) / 1_000_000_000;
+      expect(amount).toBeLessThanOrEqual(value + 1e-9);
+    }
+  });
+
+  it('round on a price below the ending keeps it unchanged rather than going to zero', () => {
+    const result = calculateNewPrice(baseMoney(0.5), { type: 'round', roundTo: 0.99 });
+    expect(result.units).toBe('0');
+    expect(result.nanos).toBe(500_000_000);
+  });
+
+  it('round on JPY 1234 → 1190 with no fractional part', () => {
+    const result = calculateNewPrice(
+      { currencyCode: 'JPY', units: '1234' },
+      { type: 'round', roundTo: 0.99 }
+    );
+    expect(result.currencyCode).toBe('JPY');
+    expect(result.units).toBe('1190');
+    expect(result.nanos).toBeUndefined();
+  });
+
+  it('round on JPY 250 → 249 and on KRW 50 → 50', () => {
+    expect(
+      calculateNewPrice({ currencyCode: 'JPY', units: '250' }, { type: 'round' }).units
+    ).toBe('249');
+    const krw = calculateNewPrice({ currencyCode: 'KRW', units: '50' }, { type: 'round' });
+    expect(krw.units).toBe('50');
+    expect(krw.nanos).toBeUndefined();
+  });
+
+  it('percentage on JPY yields a whole number', () => {
+    const result = calculateNewPrice(
+      { currencyCode: 'JPY', units: '1234' },
+      { type: 'percentage', value: 10 }
+    );
+    expect(result.units).toBe('1357');
+    expect(result.nanos).toBeUndefined();
   });
 
   it('percentage -200 on $50 → clamped to $0', () => {
@@ -507,5 +562,150 @@ describe('calculateNewPrice', () => {
       { type: 'percentage', value: 10 }
     );
     expect(result.currencyCode).toBe('GBP');
+  });
+});
+
+describe('calculateRegionalPrice — missing exchange rate', () => {
+  const ratesWithoutEur = {
+    ...TEST_EXCHANGE_RATES,
+    rates: Object.fromEntries(
+      Object.entries(TEST_EXCHANGE_RATES.rates).filter(([code]) => code !== 'EUR')
+    ),
+  };
+
+  it('flags the region instead of pricing at USD parity', () => {
+    // Billing currency with no dynamic or fallback rate
+    const result = calculateRegionalPrice(
+      49.99,
+      'DE',
+      'direct',
+      'none',
+      undefined,
+      TEST_PPP_DATA,
+      { DE: 'ZZZ' },
+      TEST_EXCHANGE_RATES
+    );
+    expect(result.error).toBe('MISSING_EXCHANGE_RATE');
+    expect(result.errorMessage).toMatch(/ZZZ/);
+    expect(result.rawPrice).toBe(0);
+    expect(result.rawPrice).not.toBeCloseTo(49.99, 2);
+  });
+
+  it('flags every strategy, not just direct', () => {
+    for (const strategy of ['ppp', 'bigmac', 'netflix', 'custom'] as const) {
+      const result = calculateRegionalPrice(
+        49.99,
+        'DE',
+        strategy,
+        'none',
+        1,
+        TEST_PPP_DATA,
+        { DE: 'ZZZ' },
+        TEST_EXCHANGE_RATES
+      );
+      expect(result.error).toBe('MISSING_EXCHANGE_RATE');
+    }
+  });
+
+  it('flags regions when the base currency has no rate', () => {
+    const result = calculateRegionalPrice(
+      49.99,
+      'US',
+      'direct',
+      'none',
+      undefined,
+      TEST_PPP_DATA,
+      undefined,
+      TEST_EXCHANGE_RATES,
+      'ZZZ',
+      'DE'
+    );
+    expect(result.error).toBe('MISSING_EXCHANGE_RATE');
+  });
+
+  it('falls back to the static rate when the dynamic one is missing', () => {
+    const result = calculateRegionalPrice(
+      49.99,
+      'DE',
+      'direct',
+      'none',
+      undefined,
+      TEST_PPP_DATA,
+      undefined,
+      ratesWithoutEur
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.exchangeRate).toBeGreaterThan(0);
+    expect(result.exchangeRate).not.toBe(1);
+  });
+
+  it('a free price is still 0 without a rate and is not flagged', () => {
+    const result = calculateRegionalPrice(
+      0,
+      'DE',
+      'direct',
+      'none',
+      undefined,
+      TEST_PPP_DATA,
+      { DE: 'ZZZ' },
+      TEST_EXCHANGE_RATES
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.rawPrice).toBe(0);
+  });
+
+  it('calculateBulkPrices keeps flagged regions; filterApplicablePrices drops them', () => {
+    const result = calculateBulkPrices(
+      49.99,
+      ['US', 'DE'],
+      'direct',
+      'none',
+      undefined,
+      TEST_PPP_DATA,
+      { US: 'USD', DE: 'ZZZ' },
+      TEST_EXCHANGE_RATES
+    );
+    expect(result).toHaveLength(2);
+    expect(result[1].error).toBe('MISSING_EXCHANGE_RATE');
+    expect(filterApplicablePrices(result).map((r) => r.regionCode)).toEqual(['US']);
+  });
+});
+
+describe('calculateRegionalPrice — dynamic PPP multiplier clamp', () => {
+  const base = { minPrice: 0, suggestedRounding: 0.99, source: 'world-bank' as const };
+
+  it('clamps a very high multiplier to 2.0', () => {
+    const result = calculateRegionalPrice(
+      10,
+      'DE',
+      'ppp',
+      'none',
+      undefined,
+      {
+        US: { ...base, pppMultiplier: 1, pppConversionFactor: 1, marketExchangeRate: 1 },
+        // 50 EUR per intl $ at 0.851 EUR/USD → raw multiplier ≈ 58.75
+        DE: { ...base, pppMultiplier: 1, pppConversionFactor: 50, marketExchangeRate: 0.851 },
+      },
+      undefined,
+      TEST_EXCHANGE_RATES
+    );
+    expect(result.multiplier).toBe(2.0);
+  });
+
+  it('clamps a very low multiplier to 0.1', () => {
+    const result = calculateRegionalPrice(
+      10,
+      'DE',
+      'ppp',
+      'none',
+      undefined,
+      {
+        US: { ...base, pppMultiplier: 1, pppConversionFactor: 1, marketExchangeRate: 1 },
+        DE: { ...base, pppMultiplier: 1, pppConversionFactor: 0.001, marketExchangeRate: 0.851 },
+      },
+      undefined,
+      TEST_EXCHANGE_RATES
+    );
+    expect(result.multiplier).toBe(0.1);
   });
 });

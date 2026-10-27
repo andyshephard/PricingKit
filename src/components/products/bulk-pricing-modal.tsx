@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { Calculator, Globe, TrendingDown, Sliders, RefreshCw, Hamburger, Tv, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
+import { Calculator, Globe, TrendingDown, RefreshCw, Hamburger, Tv, Loader2, ArrowUpDown, ChevronUp, ChevronDown, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -53,6 +53,7 @@ import {
 import {
   calculateBulkPrices,
   calculatePriceChange,
+  filterApplicablePrices,
   formatPriceChange,
   type PricingStrategy,
   type RoundingMode,
@@ -390,7 +391,9 @@ export function BulkPricingModal({
 
     // For Apple, match each calculated price to the closest available tier
     const finalPrices = platform === 'apple' ? calculatedPrices.map(calculated => {
-      const closestTier = findClosestTierForCurrency(calculated.rawPrice, calculated.currencyCode);
+      // Regions without an exchange rate have no price to map to a tier
+      if (calculated.error) return calculated;
+      const closestTier= findClosestTierForCurrency(calculated.rawPrice, calculated.currencyCode);
       if (closestTier) {
         return {
           ...calculated,
@@ -502,6 +505,8 @@ export function BulkPricingModal({
       const newSelected = new Set<string>();
       
       previewPrices.forEach((calculated) => {
+        // Never pre-select a region whose price couldn't be calculated
+        if (calculated.error) return;
         const current = getCurrentPrice(calculated.regionCode);
         const target = calculated.price;
         const isRequired = calculated.regionCode === appleBaseRegion;
@@ -595,13 +600,28 @@ export function BulkPricingModal({
 
     const appleBaseRegion = platform === 'apple' ? baseRegion : null;
 
+    // Regions whose price couldn't be calculated are never applied
+    const flagged = previewPrices.filter(
+      (p) => p.error && (selectedRegions.has(p.regionCode) || p.regionCode === appleBaseRegion)
+    );
+    if (appleBaseRegion && flagged.some((p) => p.regionCode === appleBaseRegion)) {
+      toast.error(`Cannot update: no exchange rate for base region ${appleBaseRegion}`);
+      return;
+    }
+    if (flagged.length > 0) {
+      toast.warning(
+        `${flagged.length} region${flagged.length !== 1 ? 's' : ''} will be skipped: no exchange rate`,
+        { description: flagged.map((p) => p.regionCode).join(', ') }
+      );
+    }
+
     allRegions.forEach(region => {
       const currentPrice = getCurrentPrice(region.code);
       const newPriceItem = previewPrices.find(p => p.regionCode === region.code);
       const isSelected = selectedRegions.has(region.code);
       const isRequired = region.code === appleBaseRegion;
 
-      if ((isSelected || isRequired) && newPriceItem) {
+      if ((isSelected || isRequired) && newPriceItem && !newPriceItem.error) {
         changing.push({
           name: region.name,
           regionCode: region.code,
@@ -626,7 +646,8 @@ export function BulkPricingModal({
     const prices: Record<string, Money> = {};
     const appleBaseRegion = platform === 'apple' ? baseRegion : null;
 
-    previewPrices.forEach((calculated) => {
+    // Exclude regions flagged with an error (e.g. missing exchange rate)
+    filterApplicablePrices(previewPrices).forEach((calculated) => {
       if (selectedRegions.has(calculated.regionCode) || calculated.regionCode === appleBaseRegion) {
         prices[calculated.regionCode] = calculated.price;
       }
@@ -831,7 +852,7 @@ export function BulkPricingModal({
               )}
             </div>
             <TooltipProvider delayDuration={200}>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
@@ -935,29 +956,7 @@ export function BulkPricingModal({
                     </p>
                   </TooltipContent>
                 </Tooltip>
-
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <label className="flex items-center gap-2 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors has-[:checked]:border-primary has-[:checked]:bg-primary/5">
-                      <input
-                        type="radio"
-                        name="strategy"
-                        value="custom"
-                        checked={strategy === 'custom'}
-                        onChange={() => setStrategy('custom')}
-                        className="sr-only"
-                      />
-                      <Sliders className="h-4 w-4 shrink-0" />
-                      <span className="text-sm font-medium truncate">Custom</span>
-                    </label>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" className="max-w-xs">
-                    <p className="font-medium">Custom Multipliers</p>
-                    <p className="text-xs text-muted-foreground">
-                      Define your own regional price multipliers (coming soon).
-                    </p>
-                  </TooltipContent>
-                </Tooltip>
+                {/* 'custom' is hidden until per-territory multipliers can be entered */}
               </div>
             </TooltipProvider>
           </div>
@@ -1037,6 +1036,7 @@ export function BulkPricingModal({
                     const next = new Set<string>();
                     const appleBaseRegion = platform === 'apple' ? baseRegion : null;
                     previewPrices.forEach((calculated) => {
+                      if (calculated.error) return;
                       const current = getCurrentPrice(calculated.regionCode);
                       const currentNum = current ? moneyToNumber(current) : 0;
                       const targetNum = moneyToNumber(calculated.price);
@@ -1134,9 +1134,9 @@ export function BulkPricingModal({
                           className={!isSelected && !isRequired ? 'opacity-50' : ''}
                         >
                           <TableCell>
-                            <Checkbox 
-                              checked={isSelected || isRequired}
-                              disabled={isRequired}
+                            <Checkbox
+                              checked={(isSelected || isRequired) && !calculated.error}
+                              disabled={isRequired || !!calculated.error}
                               onCheckedChange={() => toggleRegion(calculated.regionCode)}
                               aria-label={`Select ${calculated.regionCode}`}
                             />
@@ -1191,6 +1191,19 @@ export function BulkPricingModal({
                               : '-'}
                           </TableCell>
                           <TableCell className="text-right font-medium">
+                            {calculated.error ? (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span className="inline-flex items-center gap-1 text-xs text-destructive cursor-help">
+                                    <AlertTriangle className="h-3 w-3" />
+                                    No exchange rate
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent side="top">
+                                  <p className="text-xs">{calculated.errorMessage}. This region will not be updated.</p>
+                                </TooltipContent>
+                              </Tooltip>
+                            ) : (
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <span className="cursor-help">
@@ -1215,6 +1228,7 @@ export function BulkPricingModal({
                                 </div>
                               </TooltipContent>
                             </Tooltip>
+                            )}
                           </TableCell>
                           {platform === 'apple' && (
                             <TableCell className="text-right text-xs">

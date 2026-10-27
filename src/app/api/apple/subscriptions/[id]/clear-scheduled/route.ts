@@ -5,16 +5,17 @@ import {
   getSubscriptionById,
   getSubscriptionPrices,
   deleteSubscriptionPrice,
-  AppleApiError,
 } from '@/lib/apple-connect';
+import { appleErrorResponse, getAppleErrorMessage } from '../../../_lib/error-response';
 import { executeWithRateLimit, RateLimitError } from '@/lib/utils/rate-limit';
+import { getErrorStatus } from '@/lib/utils/api-error';
 import { createNdjsonStream, NDJSON_HEADERS } from '@/lib/utils/ndjson-stream';
 import {
   validateAndDecodeAppleProductId,
   ValidationError,
 } from '@/lib/validation';
 
-// Check if the ID is a numeric Apple subscription ID (e.g., "6746950587")
+// Check if the ID is a numeric Apple subscription ID (e.g., "1234567890")
 function isNumericSubscriptionId(id: string): boolean {
   return /^\d+$/.test(id);
 }
@@ -90,8 +91,12 @@ export async function POST(
             await deleteSubscriptionPrice(auth.credentials, price.subscriptionPriceId!);
             return { territory, deleted: true as const };
           } catch (error) {
-            if (error instanceof AppleApiError && error.statusCode === 409) {
-              return { territory, deleted: false as const, reason: error.detail };
+            if (getErrorStatus(error) === 409) {
+              return {
+                territory,
+                deleted: false as const,
+                reason: getAppleErrorMessage(error, 'Scheduled price can no longer be deleted'),
+              };
             }
             throw error;
           }
@@ -115,8 +120,14 @@ export async function POST(
         const deleted = results.filter(r => r.deleted);
         const skipped = results.filter(r => !r.deleted);
 
-        // Fetch updated prices to confirm
-        const updatedPricesResult = await getSubscriptionPrices(credentials, subscriptionId);
+        // Fetch updated prices to confirm (deletes are done; a failed refresh isn't a failed clear)
+        let remainingScheduled: number | undefined;
+        try {
+          const updatedPricesResult = await getSubscriptionPrices(credentials, subscriptionId);
+          remainingScheduled = Object.keys(updatedPricesResult.scheduled).length;
+        } catch (error) {
+          console.error('Error refreshing prices after clearing scheduled prices:', error);
+        }
 
         const message = skipped.length > 0
           ? `Cleared ${deleted.length} scheduled price${deleted.length !== 1 ? 's' : ''}, ${skipped.length} skipped (no longer deletable)`
@@ -127,7 +138,11 @@ export async function POST(
           message,
           deletedCount: deleted.length,
           skippedCount: skipped.length,
-          remainingScheduled: Object.keys(updatedPricesResult.scheduled).length,
+          skipped: skipped.map((r) => ({
+            territory: r.territory,
+            reason: 'reason' in r ? r.reason : undefined,
+          })),
+          remainingScheduled,
         });
       } catch (error) {
         console.error('Error clearing scheduled prices:', error);
@@ -138,10 +153,8 @@ export async function POST(
             error.successCount,
             error.totalCount
           );
-        } else if (error instanceof AppleApiError) {
-          writer.error(error.detail || 'Failed to clear scheduled prices');
         } else {
-          writer.error('Failed to clear scheduled prices');
+          writer.error(getAppleErrorMessage(error, 'Failed to clear scheduled prices'));
         }
       }
     })();
@@ -150,16 +163,6 @@ export async function POST(
   } catch (error) {
     console.error('Error clearing scheduled prices:', error);
 
-    if (error instanceof AppleApiError) {
-      return NextResponse.json(
-        { error: error.detail || 'Failed to clear scheduled prices' },
-        { status: error.statusCode }
-      );
-    }
-
-    return NextResponse.json(
-      { error: 'Failed to clear scheduled prices' },
-      { status: 500 }
-    );
+    return appleErrorResponse(error, 'Failed to clear scheduled prices');
   }
 }

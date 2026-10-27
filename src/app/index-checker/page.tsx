@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, ArrowUpDown, ChevronUp, ChevronDown, Hamburger, Globe, RefreshCw, Tv } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ArrowUpDown, ChevronUp, ChevronDown, Hamburger, Globe, RefreshCw, Tv } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -393,7 +393,7 @@ export default function IndexCheckerPage() {
                                       : 'text-muted-foreground cursor-help'
                                 }
                               >
-                                {calc.multiplier.toFixed(2)}×
+                                {calc.error ? '-' : `${calc.multiplier.toFixed(2)}×`}
                               </span>
                             </TooltipTrigger>
                             <TooltipContent side="top">
@@ -412,7 +412,21 @@ export default function IndexCheckerPage() {
                           </Tooltip>
                         </TableCell>
                         <TableCell className="text-right font-medium">
-                          {formatMoney(calc.price)}
+                          {calc.error ? (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="inline-flex items-center gap-1 text-xs text-destructive cursor-help">
+                                  <AlertTriangle className="h-3 w-3" />
+                                  No exchange rate
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent side="top">
+                                <p className="text-xs">{calc.errorMessage}</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            formatMoney(calc.price)
+                          )}
                         </TableCell>
                       </TableRow>
                     ))}
