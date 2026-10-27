@@ -123,15 +123,20 @@ export async function writeSessionCookie<K extends SessionKind>(jar: CookieJar, 
 
 /**
  * The credentials of a valid session cookie, or null. A legacy cookie (old
- * format or old name) is re-written as v3 under the current name with the
- * same expiry; best effort, since some cookie stores are read-only.
+ * v1/v2 format, under either name) is re-written as v3 under the current
+ * name with an expiry no later than the cutoff; best effort, since some
+ * cookie stores are read-only. A v3 cookie under an old name is refused.
  */
 export async function readSessionCookie<K extends SessionKind>(jar: CookieReader | CookieJar, kind: K, nowMs: number = Date.now()): Promise<SessionCredentials<K> | null> {
   const found = readCookie(jar, SESSION_BASE[kind], nowMs);
   if (!found) return null;
   const opened = await openSession(kind, found.value, { nowMs });
   if (!opened) return null;
-  if ((opened.legacy || found.legacyName) && 'set' in jar) {
+  // Under an old (unprefixed) name only an old-format cookie is accepted. A v3 envelope was only
+  // ever written under the __Host- name, so one under the old name was planted (for example by a
+  // sibling subdomain, which can set unprefixed cookies): refused.
+  if (found.legacyName && !opened.legacy) return null;
+  if (opened.legacy && 'set' in jar) {
     try {
       const sealed = await sealSession(kind, opened.creds, { nowMs, exp: opened.exp });
       writeCookie(jar, SESSION_BASE[kind], sealed.value, sealed.exp - Math.floor(nowMs / 1000));

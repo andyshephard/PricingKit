@@ -54,7 +54,9 @@ key (`.p8` private key, Key ID, Issuer ID) and/or a Google Play service account 
    v1 and v2, and the cookie names without `__Host-`) are read until **2026-11-10 00:00 UTC**
    (`LEGACY_SESSION_CUTOFF` in `src/lib/encryption.ts`) and re-written in the current format
    on the request that reads them, with an expiry no later than that date; from then on they
-   are refused. Anything that isn't a well-formed cookie of a plausible size is refused before
+   are refused. Under an old name only an old-format cookie is accepted: a current-format
+   session found there was planted (a sibling subdomain can set unprefixed cookies) and is
+   refused. Anything that isn't a well-formed cookie of a plausible size is refused before
    any key is derived. Legacy cookies are refused at once when `SESSION_VERSION` is set.
 
 Requests that change something (`POST`, `PUT`, `PATCH`, `DELETE`):

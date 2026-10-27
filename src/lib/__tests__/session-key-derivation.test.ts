@@ -252,17 +252,19 @@ describe('session cookies in the browser', () => {
     expect(setCalls).toEqual([]);
   });
 
-  it('Apple: moving a v3 cookie to its new name keeps its expiry', async () => {
+  it('refuses a v3 cookie under an old (unprefixed) name: only old-format cookies are read there (no cookie tossing)', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(BEFORE_CUTOFF);
-    const issued = BEFORE_CUTOFF - 20 * HOUR;
-    const { value, exp } = await sealSession('apple', appleCreds, { nowMs: issued });
-    const { getAppleAuthFromCookies } = await import('@/middleware/auth');
+    // A valid v3 session (say, the attacker's own) planted under the unprefixed name by a sibling subdomain
+    const { value } = await sealSession('apple', appleCreds);
+    const { getAppleAuthFromCookies, getAppleSessionFromCookies } = await import('@/middleware/auth');
     cookieStore = store({ apple_session: value, apple_bundle_id: 'com.example.app' });
+    expect(await getAppleAuthFromCookies()).toBeNull();
+    expect(await getAppleSessionFromCookies()).toBeNull();
+    expect(setCalls.some((c) => c.name === '__Host-apple_session')).toBe(false);
+    // The same value under the __Host- name is the real session
+    cookieStore = store({ '__Host-apple_session': value, '__Host-apple_bundle_id': 'com.example.app' });
     expect((await getAppleAuthFromCookies())?.bundleId).toBe('com.example.app');
-    const moved = setCalls.find((c) => c.name === '__Host-apple_session')!;
-    expect(moved.options.maxAge).toBe(4 * 3600);
-    expect((await openSession('apple', moved.value))?.exp).toBe(exp);
   });
 
   it('after the cutoff, cookies under the old names are ignored', async () => {
