@@ -73,11 +73,11 @@ jobs:
           path: pricingkit
           persist-credentials: false
 
+      # No dependency cache in a job that holds credentials (App Store Connect
+      # has no read-only key role for prices: the key can also write)
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: pricingkit/.nvmrc
-          cache: npm
-          cache-dependency-path: pricingkit/package-lock.json
 
       - name: Install
         working-directory: pricingkit

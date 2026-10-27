@@ -4,9 +4,12 @@
 # it, copy it to .github/workflows/ in your own repository, next to
 # apply-on-merge.yml (the two work together), and set:
 #
-#   Repository secrets (read-only keys are enough here: plan never writes)
+#   Secrets for planning (plan only reads, but see SECURITY: the keys
+#   themselves may be able to write)
 #     ASC_KEY_ID, ASC_ISSUER_ID, ASC_PRIVATE_KEY       App Store Connect, or
 #     GOOGLE_SERVICE_ACCOUNT_JSON                       Google Play
+#   as secrets of a "pricing-plan" environment (recommended, see SECURITY) or
+#   as repository secrets.
 #   Repository variables
 #     PRICINGKIT_SPEC    base-price or offer spec, e.g. pricing/spec.yaml (optional
 #                        when PRICINGKIT_RULES is set)
@@ -30,13 +33,33 @@
 # Change the paths below to where your pricing files live (GitHub doesn't
 # allow variables in `paths`).
 #
-# SECURITY
-# - Triggered by `pull_request`, never `pull_request_target`: the plan job
-#   runs code from the pull request, so it must not see write credentials.
-#   Pull requests from forks get no secrets and the plan job fails; that's
-#   intended.
-# - The plan job has the secrets and read-only repository access; the comment
-#   job can write pull request comments and has no secrets.
+# SECURITY: read this before adding the secrets
+# - On `pull_request`, ANYONE WHO CAN PUSH A BRANCH TO THIS REPOSITORY CAN READ
+#   THESE SECRETS: a pull request runs the workflow file from its own branch,
+#   so its author can change this file (or add another workflow) to print or
+#   send them. The plan command only reads, but that doesn't limit what the
+#   key itself can do. (Pull requests from forks get no secrets; the plan job
+#   then fails, which is intended. Never switch to `pull_request_target`.)
+# - App Store Connect has no API key role that can read subscription prices
+#   and offers without being able to change them: reading them needs App
+#   Manager (or Admin), which can also edit pricing, and team keys reach
+#   every app of the team. So there is no truly read-only App Store key for
+#   this job. Google Play permissions are per app and per permission, so a
+#   separate service account limited to viewing the one app is possible;
+#   check that it can still read what `plan` needs (the subscription, its
+#   offers and the price conversion) before relying on it.
+# - So, at least one of:
+#     - Use a separate key for planning, not the apply key: its own App
+#       Store Connect key (App Manager) or a view-only Play service account,
+#       which you can revoke on its own, and set PRICINGKIT_EXPECT_* pins.
+#     - Put the planning secrets in a second environment, "pricing-plan", and
+#       uncomment `environment: pricing-plan` below: with required reviewers,
+#       a person approves each planning run before it sees the secrets;
+#       deployment-branch rules can limit which branches may use it.
+#     - Only give push access to people you would trust with the key.
+# - The plan job has the secrets and read-only repository access, and no
+#   dependency cache (a poisoned cache must not run next to credentials);
+#   the comment job can write pull request comments and has no secrets.
 # - The comment contains prices and product IDs. In a public repository it is
 #   public.
 
@@ -57,6 +80,7 @@ jobs:
   plan:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # environment: pricing-plan # recommended: secrets only after approval (see SECURITY)
     permissions:
       contents: read
     outputs:
@@ -77,11 +101,10 @@ jobs:
           path: pricingkit
           persist-credentials: false
 
+      # No dependency cache in a job that holds credentials
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: pricingkit/.nvmrc
-          cache: npm
-          cache-dependency-path: pricingkit/package-lock.json
 
       - name: Install
         working-directory: pricingkit
@@ -108,6 +131,8 @@ jobs:
           [ -n "$SPEC" ] && args+=(--spec "$REPO/$SPEC")
           [ -n "$RULES" ] && args+=(--rules "$REPO/$RULES")
           {
+            # Hidden marker: the comment job edits only the comment that carries it
+            echo '<!-- pricingkit-plan-on-pr -->'
             echo '## Pricing plan'
             echo
             if [ -n "$PLAN" ] && [ -f "$REPO/$PLAN" ]; then
@@ -180,6 +205,13 @@ jobs:
             printf '\n```\n(truncated: see the job summary)\n' >> "$body.cut"
             body="$body.cut"
           fi
-          # One comment per pull request, updated on each push (--edit-last edits this
-          # workflow token's last comment on the pull request)
-          gh pr comment "$PR" --edit-last --body-file "$body" 2>/dev/null || gh pr comment "$PR" --body-file "$body"
+          # One comment per pull request, updated on each push: the one by this
+          # workflow's token that starts with the hidden marker, never another comment
+          marker='<!-- pricingkit-plan-on-pr -->'
+          id=$(gh api --paginate "repos/$GH_REPO/issues/$PR/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | head -n 1)
+          if [ -n "$id" ]; then
+            gh api --method PATCH "repos/$GH_REPO/issues/comments/$id" -F "body=@$body" > /dev/null
+          else
+            gh pr comment "$PR" --body-file "$body"
+          fi

@@ -615,10 +615,15 @@ by commit SHA, with least-privilege permissions):
   on) an issue and fails the job when an offer drifts.
 - [`plan-on-pr.yml`](examples/github-actions/plan-on-pr.yml): on a pull request that changes the
   pricing files, comments the committed plan's `diff` and hash and a fresh read-only plan against
-  current prices.
-- [`apply-on-merge.yml`](examples/github-actions/apply-on-merge.yml): on merge to main, waits for a
-  required reviewer of a protected environment, applies the committed plan with its hash, uploads
-  the run log as an artifact and, on failure, says how to resume.
+  current prices. On `pull_request`, anyone who can push a branch can read the secrets that job
+  uses, and App Store Connect has no API key role that reads prices without being able to change
+  them: use a separate planning key, or put it behind an environment with required reviewers (the
+  file explains both).
+- [`apply-on-merge.yml`](examples/github-actions/apply-on-merge.yml): on merge to main, a preview
+  job (no secrets) writes the plan's diff and hash to the run summary; the apply job waits for a
+  required reviewer of a protected environment, applies the committed plan with that hash, uploads
+  the run log as an artifact and, on failure, says how to resume (only from a run of the same
+  workflow on main). Protect main: require pull requests and dismiss stale approvals.
 
 ## Environment Variables
 

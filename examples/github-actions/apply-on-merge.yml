@@ -6,9 +6,17 @@
 # plan-on-pr.yml (which posts the plan and its hash on the pull request), and
 # set up:
 #
+#   Branch protection (or a ruleset) on main, so the plan file on main is
+#   always the one reviewed in a pull request:
+#     - Require a pull request before merging, with at least one approval
+#     - Dismiss stale pull request approvals when new commits are pushed
+#     - (recommended) Require review from code owners, with a CODEOWNERS entry
+#       for the pricing folder, and require the plan-on-pr check to pass
+#     - Don't allow bypassing the rules, force pushes or direct pushes to main
 #   An environment named "pricing" (Settings > Environments) with
 #     - Required reviewers: the people who may approve a price change. The
-#       apply job waits until one of them approves this run.
+#       apply job waits until one of them approves this run. Turn on
+#       "Prevent self-review" if your plan allows it.
 #     - Deployment branches: main only.
 #     - Environment secrets with WRITE access, kept only here:
 #         ASC_KEY_ID, ASC_ISSUER_ID, ASC_PRIVATE_KEY     App Store Connect, or
@@ -23,25 +31,30 @@
 #                        test app; see the PricingKit README before enabling it.
 #
 # What it does, on a push to main that changes the plan file:
-#   1. waits for a required reviewer of the "pricing" environment to approve
-#   2. reads the plan hash from the committed plan file (the file reviewed in
-#      the pull request; plan-on-pr.yml printed the same hash there) and runs
+#   1. preview (no environment, no secrets): writes the plan's diff and hash
+#      to the run's summary, so an approver sees exactly what will be
+#      applied, and can compare the hash with the one on the pull request
+#   2. apply waits for a required reviewer of the "pricing" environment, then
+#      reads the hash from the same committed plan file (it must equal the
+#      preview's) and runs
 #        pricingkit apply <plan> --confirm <hash>
-#      A plan file edited after review has another hash than the one shown on
-#      the pull request; compare them before approving.
 #   3. uploads the run log (pricingkit.applyRun) as an artifact, whatever the result
-#   4. on failure, prints how to resume: re-run this workflow by hand
-#      (Actions > Pricing apply > Run workflow) with the failed run's ID; it
-#      downloads that run log and continues with --resume (after the same
-#      approval). Ops already done are skipped, and nothing changes that the
-#      plan didn't show. A run log of another plan (the plan file changed on
-#      main since) is refused.
+#   4. on failure, prints how to resume: run this workflow by hand
+#      (Actions > Pricing apply > Run workflow) with the failed run's ID. It
+#      checks that run is this workflow on main (push or manual), downloads
+#      its run log and continues with --resume (after the same approval). Ops
+#      already done are skipped, and nothing changes that the plan didn't
+#      show. A run log of another plan (the plan file changed on main since)
+#      is refused.
 # Deleting offers is never done here: a plan with deletes fails with
 # REDEMPTIONS_UNCHECKED and must be applied by a person with --force-delete.
 #
 # Undo: download the run log artifact and run, locally,
-#   pricingkit undo <plan> <run.json>
-# then review and commit the undo plan as a new plan file.
+#   pricingkit undo <plan> <run.json> --out undo.json
+# then replace the plan file with the undo plan (copy undo.json over
+# PRICINGKIT_PLAN) in a pull request; merging it applies the undo the same way.
+#
+# Write credentials are only in the apply job: no dependency cache there.
 
 name: Pricing apply
 
@@ -65,13 +78,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  apply:
+  preview:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment: pricing
+    timeout-minutes: 10
     permissions:
       contents: read
-      actions: read # only to download a previous run's log when resuming
+    outputs:
+      hash: ${{ steps.diff.outputs.hash }}
     steps:
       - name: Check out the merged commit (the reviewed plan file)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -91,21 +104,89 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: pricingkit/.nvmrc
-          cache: npm
+          cache: npm # no credentials in this job
           cache-dependency-path: pricingkit/package-lock.json
 
       - name: Install
         working-directory: pricingkit
         run: npm ci --no-audit --no-fund
 
-      - name: Download the run log to resume
+      - name: Show the plan to approve
+        id: diff
+        working-directory: pricingkit
+        env:
+          PLAN: ${{ github.workspace }}/repo/${{ vars.PRICINGKIT_PLAN }}
+          PLAN_NAME: ${{ vars.PRICINGKIT_PLAN }}
+        run: |
+          # Offline: reads the plan file only. diff exits 2 for a plan with changes.
+          summary=$(npx pricingkit diff "$PLAN" --json) || [ $? -eq 2 ]
+          hash=$(printf '%s' "$summary" | jq -r '.changeSetHash // empty')
+          [ -n "$hash" ] || { echo "::error::Could not read the plan hash"; exit 1; }
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+          {
+            echo '## Plan to approve'
+            echo
+            echo "Plan file: \`$PLAN_NAME\` at \`$GITHUB_SHA\`"
+            echo
+            echo "Plan hash: \`$hash\` (compare it with the one on the pull request)"
+            echo
+            echo '```'
+            npx pricingkit diff "$PLAN" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    needs: preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: pricing
+    permissions:
+      contents: read
+      actions: read # only to check and download a previous run's log when resuming
+    steps:
+      - name: Check out the merged commit (the reviewed plan file)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          persist-credentials: false
+
+      - name: Check out PricingKit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: andyshephard/PricingKit
+          ref: 0000000000000000000000000000000000000000 # REPLACE with the same reviewed commit SHA
+          path: pricingkit
+          persist-credentials: false
+
+      # No dependency cache in the job that holds write credentials
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: pricingkit/.nvmrc
+
+      - name: Install
+        working-directory: pricingkit
+        run: npm ci --no-audit --no-fund
+
+      - name: Check and download the run log to resume
         if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+          WORKFLOW: ${{ github.workflow }}
         run: |
           case "$RESUME_RUN_ID" in (''|*[!0-9]*) echo "::error::resume_run_id must be a run ID (digits)"; exit 1;; esac
+          # Only a run of this workflow, on main, started by a push or by hand, can be resumed
+          info=$(gh run view "$RESUME_RUN_ID" --json workflowName,headBranch,event,conclusion)
+          name=$(printf '%s' "$info" | jq -r '.workflowName')
+          branch=$(printf '%s' "$info" | jq -r '.headBranch')
+          event=$(printf '%s' "$info" | jq -r '.event')
+          conclusion=$(printf '%s' "$info" | jq -r '.conclusion')
+          if [ "$name" != "$WORKFLOW" ] || [ "$branch" != "main" ] || { [ "$event" != "push" ] && [ "$event" != "workflow_dispatch" ]; }; then
+            echo "::error::Run $RESUME_RUN_ID is not a run of \"$WORKFLOW\" on main (it is \"$name\" on $branch, event $event)"
+            exit 1
+          fi
+          echo "Resuming run $RESUME_RUN_ID ($event, $conclusion)"
           gh run download "$RESUME_RUN_ID" -n pricingkit-run-log -D "$RUNNER_TEMP/previous"
           test -f "$RUNNER_TEMP/previous/run.json"
 
@@ -121,15 +202,19 @@ jobs:
           PRICINGKIT_EXPECT_PACKAGE: ${{ vars.PRICINGKIT_EXPECT_PACKAGE }}
           ALLOW_BASE_PRICES: ${{ vars.PRICINGKIT_ALLOW_BASE_PRICES }}
           PLAN: ${{ github.workspace }}/repo/${{ vars.PRICINGKIT_PLAN }}
+          PREVIEW_HASH: ${{ needs.preview.outputs.hash }}
           RUN_LOG: ${{ runner.temp }}/run/run.json
           RESUMING: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           mkdir -p "$(dirname "$RUN_LOG")"
-          # The hash of the plan file as committed: what plan-on-pr.yml showed on the pull request
-          # diff exits 2 for a plan with changes; that's the normal case here
+          # The hash of the plan file as committed: what the preview job and plan-on-pr.yml showed
           summary=$(npx pricingkit diff "$PLAN" --json) || [ $? -eq 2 ]
           hash=$(printf '%s' "$summary" | jq -r '.changeSetHash // empty')
           [ -n "$hash" ] || { echo "::error::Could not read the plan hash"; exit 1; }
+          if [ "$hash" != "$PREVIEW_HASH" ]; then
+            echo "::error::The plan hash ($hash) is not the one previewed for approval ($PREVIEW_HASH); nothing was applied"
+            exit 1
+          fi
           echo "hash=$hash" >> "$GITHUB_OUTPUT"
           echo "Applying $PLAN with plan hash $hash" >> "$GITHUB_STEP_SUMMARY"
 
