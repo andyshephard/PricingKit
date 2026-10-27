@@ -180,6 +180,8 @@ export interface PPPData {
 export interface PPPMultipliers {
   multipliers: Record<string, number>;
   pppConversionFactors: Record<string, number>;
+  /** The year of each region's PPP factor (World Bank's most recent non-empty value) */
+  years: Record<string, number>;
   baseYear: number;
   fetchedAt: Date;
 }
@@ -304,6 +306,7 @@ export async function getPPPMultipliers(forceRefresh = false): Promise<PPPMultip
 
     const multipliers: Record<string, number> = {};
     const pppConversionFactors: Record<string, number> = {};
+    const years: Record<string, number> = {};
     const baseYear = usPPP.year;
 
     for (const data of pppData) {
@@ -312,6 +315,7 @@ export async function getPPPMultipliers(forceRefresh = false): Promise<PPPMultip
       // This IS the "fair" exchange rate based on purchasing power
       // For PPP pricing: price_local = price_USD * pppConversionFactor
       pppConversionFactors[data.regionCode] = data.pppConversionFactor;
+      if (Number.isFinite(data.year)) years[data.regionCode] = data.year;
 
       // Calculate the multiplier relative to the MARKET exchange rate
       // multiplier = PPP_Factor / Market_Exchange_Rate
@@ -330,6 +334,7 @@ export async function getPPPMultipliers(forceRefresh = false): Promise<PPPMultip
     cachedPPPData = {
       multipliers,
       pppConversionFactors,
+      years,
       baseYear,
       fetchedAt: new Date(),
     };
@@ -356,4 +361,37 @@ export async function getPPPMultiplier(regionCode: string): Promise<number> {
     // Fallback to hardcoded default
     return 0.5;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Consumer price inflation, for carrying stale PPP factors forward
+// (src/lib/pricing/freshness.ts, the "inflate" policy).
+
+/** Region -> year -> CPI (2010 = 100) */
+export type CpiSeries = Record<string, Record<number, number>>;
+
+let cachedCpi: { key: string; value: CpiSeries; fetchedAt: number } | null = null;
+
+/**
+ * Consumer price index series from the World Bank's FP.CPI.TOTL
+ * (2010 = 100), every country from `fromYear` to this year, in one request;
+ * cached 24 hours. Turn into ratios with cpiRatioSince (pricing core).
+ */
+export async function getCpiSeries(fromYear: number, now: Date = new Date()): Promise<CpiSeries> {
+  const currentYear = now.getUTCFullYear();
+  const key = `${fromYear}:${currentYear}`;
+  if (cachedCpi && cachedCpi.key === key && Date.now() - cachedCpi.fetchedAt < CACHE_DURATION_MS) return cachedCpi.value;
+  const url = `https://api.worldbank.org/v2/country/all/indicator/FP.CPI.TOTL?format=json&per_page=20000&date=${fromYear}:${currentYear}`;
+  const response = await fetch(url, { next: { revalidate: 86400 }, signal: AbortSignal.timeout(10000) } as RequestInit);
+  if (!response.ok) throw new Error(`World Bank CPI request failed (${response.status})`);
+  const data = (await response.json()) as unknown;
+  if (!Array.isArray(data) || data.length < 2 || !Array.isArray(data[1])) throw new Error('Invalid World Bank CPI response format');
+  const series: CpiSeries = {};
+  for (const record of data[1] as WorldBankDataPoint[]) {
+    const region = WORLD_BANK_TO_REGION[record.countryiso3code];
+    if (!region || typeof record.value !== 'number' || !Number.isFinite(record.value) || record.value <= 0) continue;
+    (series[region] ??= {})[parseInt(record.date, 10)] = record.value;
+  }
+  cachedCpi = { key, value: series, fetchedAt: Date.now() };
+  return series;
 }

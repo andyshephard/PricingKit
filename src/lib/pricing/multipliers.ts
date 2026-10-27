@@ -8,7 +8,7 @@
 // column names only, never cell contents.
 // Framework-free: no file access (the CLI reads the file).
 
-import { isDecimalString, normalizeDecimal, type Decimal } from './decimal';
+import { compareDecimal, isDecimalString, normalizeDecimal, type Decimal } from './decimal';
 
 export class MultiplierCsvError extends Error {
   constructor(public readonly issues: string[]) {
@@ -101,5 +101,54 @@ export function parseMultiplierCsv(text: string): Record<string, Decimal> {
   });
   if (issues.length === 0 && Object.keys(out).length === 0) issues.push('no row has a multiplier');
   if (issues.length > 0) throw new MultiplierCsvError(issues);
+  return out;
+}
+
+/** Custom multipliers are kept within [0.01, 10] (spec.ts checks the same range) */
+export const MIN_CUSTOM_MULTIPLIER = '0.01';
+export const MAX_CUSTOM_MULTIPLIER = '10';
+
+/**
+ * A multiplier table typed or pasted in the web app: either CSV with a
+ * header (as parseMultiplierCsv), or one territory per line as "GB=0.9",
+ * "GB 0.9" or "GB,0.9" (blank lines and lines starting with # ignored).
+ * Territories are upper-cased. Each multiplier must be within [0.01, 10].
+ */
+export function parseMultiplierText(text: string): Record<string, Decimal> {
+  const firstLine = text.split(/\r?\n/).find((l) => l.trim() !== '' && !l.trim().startsWith('#')) ?? '';
+  let table: Record<string, Decimal>;
+  if (/territory/i.test(firstLine)) {
+    table = parseMultiplierCsv(text);
+  } else {
+    table = {};
+    const issues: string[] = [];
+    text.split(/\r?\n/).forEach((raw, index) => {
+      const line = raw.trim();
+      if (line === '' || line.startsWith('#')) return;
+      const match = /^([A-Za-z]{2})\s*[=,:\s]\s*([0-9.]+)$/.exec(line);
+      if (!match || !isDecimalString(match[2])) {
+        issues.push(`line ${index + 1}: expected a territory and a multiplier, e.g. GB=0.9`);
+        return;
+      }
+      const territory = match[1].toUpperCase();
+      if (territory in table) issues.push(`line ${index + 1}: ${territory} is listed twice`);
+      else table[territory] = normalizeDecimal(match[2]);
+    });
+    if (issues.length === 0 && Object.keys(table).length === 0) issues.push('no multipliers');
+    if (issues.length > 0) throw new MultiplierCsvError(issues);
+  }
+  const outOfRange = Object.entries(table).filter(([, m]) => compareDecimal(m, MIN_CUSTOM_MULTIPLIER) < 0 || compareDecimal(m, MAX_CUSTOM_MULTIPLIER) > 0);
+  if (outOfRange.length > 0) throw new MultiplierCsvError(outOfRange.map(([t]) => `${t}: a multiplier must be from ${MIN_CUSTOM_MULTIPLIER} to ${MAX_CUSTOM_MULTIPLIER}`));
+  return table;
+}
+
+/**
+ * Multipliers relative to the base territory, as numbers for
+ * calculateBulkPrices (the base territory's own defaults to 1).
+ */
+export function relativeMultipliers(table: Record<string, Decimal>, baseTerritory: string): Record<string, number> {
+  const base = Number(table[baseTerritory] ?? '1');
+  const out: Record<string, number> = { [baseTerritory]: 1 };
+  for (const [territory, m] of Object.entries(table)) out[territory] = Number(m) / base;
   return out;
 }

@@ -1,6 +1,15 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { getPPPMultipliers } from '@/lib/world-bank/ppp';
+import { getCpiSeries, getPPPMultipliers } from '@/lib/world-bank/ppp';
+import {
+  checkFreshness,
+  cpiRatioSince,
+  DEFAULT_PPP_MAX_AGE_YEARS,
+  pppStalenessAdjustment,
+  REFERENCE_DATA,
+  type FreshnessEntry,
+  type PppStalenessPolicy,
+} from '@/lib/pricing';
 import { PRICING_INDEX, DEFAULT_PRICING_INDEX_ENTRY, LOCAL_CURRENCIES } from '@/lib/pricing/indexes/ppp';
 import { BIG_MAC_INDEX, DEFAULT_BIG_MAC_MULTIPLIER } from '@/lib/pricing/indexes/big-mac';
 import { NETFLIX_PRICE_INDEX, DEFAULT_NETFLIX_MULTIPLIER } from '@/lib/pricing/indexes/netflix';
@@ -9,11 +18,44 @@ import { FALLBACK_EXCHANGE_RATES } from '@/lib/pricing/indexes/exchange-rates';
 import { hasAuthenticatedSession } from '@/lib/session';
 
 const EXCHANGE_RATES_COOKIE = 'exchange_rates_api_key';
-const FALLBACK_RATES_SNAPSHOT_DATE = '2026-02-01';
+const FALLBACK_RATES_SNAPSHOT_DATE = REFERENCE_DATA.fallbackExchangeRates.asOf;
+
+/**
+ * How old each data set behind the index is (freshness badges in the UI).
+ * `ppp` is the live World Bank set (its base year) or the static snapshot;
+ * `rates` the live Open Exchange Rates timestamp or the fallback snapshot.
+ */
+function referenceFreshness(now: Date, ppp: { baseYear?: number }, rates: { asOf?: string }): FreshnessEntry[] {
+  return [
+    ppp.baseYear !== undefined
+      ? checkFreshness({ id: 'ppp', label: `PPP (World Bank, live, ${ppp.baseYear} data)`, asOf: `${ppp.baseYear}-12-31` }, now)
+      : checkFreshness(REFERENCE_DATA.ppp, now),
+    checkFreshness(REFERENCE_DATA.bigmac, now),
+    checkFreshness(REFERENCE_DATA.netflix, now),
+    rates.asOf !== undefined
+      ? checkFreshness({ id: 'exchangeRates', label: 'Exchange rates (Open Exchange Rates)', asOf: rates.asOf }, now)
+      : checkFreshness(REFERENCE_DATA.fallbackExchangeRates, now),
+    checkFreshness(REFERENCE_DATA.appleTiers, now),
+  ];
+}
+
+/** ?pppStale=cap|inflate&pppMaxAge=<years>: what to do with countries whose PPP factor is old */
+function stalenessPolicy(searchParams: URLSearchParams): PppStalenessPolicy | undefined {
+  const mode = searchParams.get('pppStale') ?? 'cap';
+  const maxAge = searchParams.get('pppMaxAge');
+  if (mode !== 'cap' && mode !== 'inflate') return undefined;
+  if (maxAge !== null && !/^\d{1,2}$/.test(maxAge)) return undefined;
+  return { mode, maxAgeYears: maxAge === null ? DEFAULT_PPP_MAX_AGE_YEARS : Number(maxAge) };
+}
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const forceRefresh = searchParams.get('refresh') === 'true';
+  const policy = stalenessPolicy(searchParams);
+  if (!policy) {
+    return NextResponse.json({ success: false, error: 'pppStale must be cap or inflate, and pppMaxAge a number of years' }, { status: 400 });
+  }
+  const now = new Date();
 
   // Pull user-supplied key from cookie (Settings page) so prod works without a
   // Cloudflare secret. Falls back to env var inside getExchangeRates().
@@ -70,6 +112,7 @@ export async function GET(request: Request) {
         totalRegions: Object.keys(staticData).length,
         fallback: true,
         error: 'Live PPP data unavailable',
+        freshness: referenceFreshness(now, {}, {}),
       },
     });
   }
@@ -92,6 +135,23 @@ export async function GET(request: Request) {
     ratesResult.status === 'fulfilled'
       ? ratesResult.value
       : { base: 'USD', rates: FALLBACK_EXCHANGE_RATES };
+  const exchangeRatesAsOf =
+    ratesResult.status === 'fulfilled' && Number.isFinite(ratesResult.value.timestamp) ? new Date(ratesResult.value.timestamp * 1000).toISOString() : undefined;
+
+  // Stale PPP factors: cap (use the static index instead) or inflate by CPI relative to the US
+  const currentYear = now.getUTCFullYear();
+  const staleYears = Object.values(pppData.years ?? {}).filter((y) => currentYear - y > (policy.maxAgeYears ?? DEFAULT_PPP_MAX_AGE_YEARS));
+  let cpi: Awaited<ReturnType<typeof getCpiSeries>> | undefined;
+  let cpiError: string | undefined;
+  if (policy.mode === 'inflate' && staleYears.length > 0) {
+    try {
+      cpi = await getCpiSeries(Math.min(...staleYears), now);
+    } catch (error) {
+      console.error('World Bank CPI error:', error);
+      cpiError = 'CPI data unavailable: stale PPP factors fall back to the static index';
+    }
+  }
+  const staleRegions: Array<{ region: string; year: number; action: 'static' | 'inflated'; factorRatio?: number }> = [];
 
   if (exchangeRatesError) {
     console.warn(
@@ -111,6 +171,10 @@ export async function GET(request: Request) {
       minPrice: number;
       suggestedRounding: number;
       source: 'world-bank' | 'static';
+      /** World Bank data year of this region's PPP factor */
+      pppYear?: number;
+      /** Older than the staleness policy allows: static index used, or the factor inflated by CPI */
+      pppStale?: boolean;
     }> = {};
 
     // Start with static data
@@ -127,9 +191,35 @@ export async function GET(request: Request) {
 
     // Override with World Bank data and calculate REAL PPP multipliers
     for (const [regionCode, multiplier] of Object.entries(pppData.multipliers)) {
-      const conversionFactor = pppData.pppConversionFactors[regionCode];
+      let conversionFactor = pppData.pppConversionFactors[regionCode];
       const currencyCode = LOCAL_CURRENCIES[regionCode];
       const marketRate = exchangeRates.rates[currencyCode];
+      const year = pppData.years?.[regionCode];
+      if (year !== undefined && regionCode !== 'US') {
+        const adjustment = pppStalenessAdjustment(year, currentYear, policy, {
+          ...(cpi ? { cpiRatio: cpiRatioSince(cpi[regionCode], year), baseCpiRatio: cpiRatioSince(cpi.US, year) } : {}),
+        });
+        if (!adjustment.ok) {
+          // Too old to use: keep the static index entry for this region, flagged
+          staleRegions.push({ region: regionCode, year, action: 'static' });
+          const entry = PRICING_INDEX[regionCode] ?? { ...DEFAULT_PRICING_INDEX_ENTRY, regionCode };
+          mergedData[regionCode] = {
+            pppMultiplier: entry.pppMultiplier,
+            bigMacMultiplier: BIG_MAC_INDEX[regionCode] ?? DEFAULT_BIG_MAC_MULTIPLIER,
+            netflixMultiplier: NETFLIX_PRICE_INDEX[regionCode]?.multiplier ?? DEFAULT_NETFLIX_MULTIPLIER,
+            minPrice: entry.minPrice,
+            suggestedRounding: entry.suggestedRounding,
+            source: 'static',
+            pppYear: year,
+            pppStale: true,
+          };
+          continue;
+        }
+        if (adjustment.stale) {
+          conversionFactor = conversionFactor * adjustment.factorRatio;
+          staleRegions.push({ region: regionCode, year, action: 'inflated', factorRatio: adjustment.factorRatio });
+        }
+      }
 
       // Calculate the real PPP multiplier: PPP_Factor / Market_Rate
       // This tells us how much to adjust the market-converted price
@@ -140,11 +230,13 @@ export async function GET(request: Request) {
         realPPPMultiplier = Math.max(0.1, Math.min(2.0, realPPPMultiplier));
       }
 
+      const yearFields = year !== undefined ? { pppYear: year, ...(staleRegions.some((r) => r.region === regionCode) ? { pppStale: true } : {}) } : {};
       if (mergedData[regionCode]) {
         mergedData[regionCode].pppMultiplier = realPPPMultiplier;
         mergedData[regionCode].pppConversionFactor = conversionFactor;
         if (marketRate) mergedData[regionCode].marketExchangeRate = marketRate;
         mergedData[regionCode].source = 'world-bank';
+        Object.assign(mergedData[regionCode], yearFields);
       } else {
         // New region from World Bank not in our static data
         mergedData[regionCode] = {
@@ -156,6 +248,7 @@ export async function GET(request: Request) {
           minPrice: DEFAULT_PRICING_INDEX_ENTRY.minPrice,
           suggestedRounding: DEFAULT_PRICING_INDEX_ENTRY.suggestedRounding,
           source: 'world-bank',
+          ...yearFields,
         };
       }
     }
@@ -176,6 +269,9 @@ export async function GET(request: Request) {
         exchangeRatesSource,
         exchangeRatesSnapshotDate:
           exchangeRatesSource === 'fallback' ? FALLBACK_RATES_SNAPSHOT_DATE : undefined,
+        ...(exchangeRatesAsOf ? { exchangeRatesAsOf } : {}),
+        pppStaleness: { ...policy, regions: staleRegions, ...(cpiError ? { error: cpiError } : {}) },
+        freshness: referenceFreshness(now, { baseYear: pppData.baseYear }, { ...(exchangeRatesAsOf ? { asOf: exchangeRatesAsOf } : {}) }),
         ...(warning ? { warning } : {}),
         ...(exchangeRatesError ? { exchangeRatesError } : {}),
       },
@@ -214,6 +310,7 @@ export async function GET(request: Request) {
         totalRegions: Object.keys(staticData).length,
         fallback: true,
         error: 'Live PPP data unavailable',
+        freshness: referenceFreshness(now, {}, {}),
       },
     });
   }

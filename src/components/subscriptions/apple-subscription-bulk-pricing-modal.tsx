@@ -1,5 +1,9 @@
 'use client';
 
+import { ReferenceDataBadges, referenceDataFor } from '@/components/pricing/reference-data-badges';
+import type { FreshnessEntry } from '@/lib/pricing';
+import { ExistingSubscribersCell } from '@/components/pricing/existing-subscribers';
+import { CustomMultipliersInput, CustomStrategyOption, useCustomMultipliers } from '@/components/pricing/custom-multipliers';
 import { useState, useMemo, useEffect } from 'react';
 import { Calculator, Globe, DollarSign, TrendingDown, RefreshCw, Hamburger, Tv, AlertTriangle, Loader2, ArrowUpDown, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
@@ -85,6 +89,7 @@ interface PPPApiResponse {
   success: boolean;
   data: DynamicPPPData;
   metadata: {
+    freshness?: FreshnessEntry[];
     baseYear: number | null;
     fetchedAt: string;
     worldBankRegions: number;
@@ -158,6 +163,7 @@ export function AppleSubscriptionBulkPricingModal({
 
   const [basePrice, setBasePrice] = useState<string>('');
   const [baseRegion, setBaseRegion] = useState<string>('USA'); // alpha-3
+  const custom = useCustomMultipliers(baseRegion);
   const [userTouchedRegion, setUserTouchedRegion] = useState(false);
   const [inputMode, setInputMode] = useState<'tier' | 'manual'>('tier');
   const [strategy, setStrategy] = useState<PricingStrategy>('ppp');
@@ -336,10 +342,10 @@ export function AppleSubscriptionBulkPricingModal({
     // calculateBulkPrices accepts baseRegion as alpha-2 OR alpha-3; for Apple we pass alpha-3.
     const calculatedPrices = calculateBulkPrices(
       basePriceNum,
-      targetRegions,
+      strategy === 'custom' ? custom.filterRegions(targetRegions) : targetRegions,
       strategy,
       rounding,
-      undefined, // customMultipliers
+      strategy === 'custom' ? custom.relative : undefined, // customMultipliers
       pppData ?? undefined,
       actualCurrencies,
       exchangeRates ?? undefined,
@@ -407,7 +413,7 @@ export function AppleSubscriptionBulkPricingModal({
         multiplierSource: calculated.multiplierSource,
       };
     });
-  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, subscription.prices, baseRegion, baseCurrency]);
+  }, [custom, basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, subscription.prices, baseRegion, baseCurrency]);
 
   const sortedPreviewPrices = useMemo(() => {
     const items = [...previewPrices];
@@ -957,9 +963,11 @@ export function AppleSubscriptionBulkPricingModal({
                       </p>
                     </TooltipContent>
                   </Tooltip>
-                  {/* 'custom' is hidden until per-territory multipliers can be entered */}
+                  <CustomStrategyOption checked={strategy === 'custom'} onSelect={() => setStrategy('custom')} />
                 </div>
               </TooltipProvider>
+              {strategy === 'custom' && <CustomMultipliersInput custom={custom} baseRegion={baseRegion} />}
+            <ReferenceDataBadges entries={pppMetadata?.freshness} only={referenceDataFor(strategy, { appleTiers: true })} />
             </div>
 
             {/* Rounding mode */}
@@ -1018,7 +1026,9 @@ export function AppleSubscriptionBulkPricingModal({
                 <span className="text-sm font-medium">Preserve existing subscriber prices</span>
               </label>
               <p className="text-xs text-muted-foreground ml-6">
-                When enabled, existing subscribers keep their current price. Only new subscribers get the updated price.
+                For increases: existing subscribers keep their current price and only new subscribers pay more.
+                Decreases always reach existing subscribers. Without it, Apple notifies subscribers of an increase, and
+                asks for their consent when it is over its limits (see the Existing subscribers column).
               </p>
             </div>
 
@@ -1120,6 +1130,8 @@ export function AppleSubscriptionBulkPricingModal({
                               Change {getSortIcon('change')}
                             </div>
                           </TableHead>
+                          <TableHead className="text-right">Current proceeds</TableHead>
+                          <TableHead>Existing subscribers</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -1241,6 +1253,20 @@ export function AppleSubscriptionBulkPricingModal({
                                 ) : (
                                   <span className="text-green-600">New</span>
                                 )}
+                              </TableCell>
+                              <TableCell className="text-right text-sm text-muted-foreground">
+                                {subscription.prices[preview.territoryCode]?.proceeds
+                                  ? formatPrice(parseFloat(subscription.prices[preview.territoryCode].proceeds), preview.currency)
+                                  : '-'}
+                              </TableCell>
+                              <TableCell className="text-xs">
+                                <ExistingSubscribersCell
+                                  territory={preview.territoryCode}
+                                  current={subscription.prices[preview.territoryCode] ?? null}
+                                  newPrice={preview.error || preview.noTierData ? null : preview.tierPrice}
+                                  currency={preview.currency}
+                                  preserveCurrentPrice={preserveCurrentPrice}
+                                />
                               </TableCell>
                             </TableRow>
                           );

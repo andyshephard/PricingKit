@@ -1,5 +1,8 @@
 'use client';
 
+import { ReferenceDataBadges, referenceDataFor } from '@/components/pricing/reference-data-badges';
+import type { FreshnessEntry } from '@/lib/pricing';
+import { CustomMultipliersInput, CustomStrategyOption, useCustomMultipliers } from '@/components/pricing/custom-multipliers';
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { Calculator, Globe, TrendingDown, RefreshCw, Hamburger, Tv, Loader2, ArrowUpDown, ChevronUp, ChevronDown, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
@@ -61,6 +64,7 @@ interface PPPApiResponse {
   success: boolean;
   data: DynamicPPPData;
   metadata: {
+    freshness?: FreshnessEntry[];
     baseYear: number | null;
     fetchedAt: string;
     worldBankRegions: number;
@@ -101,6 +105,7 @@ export function SubscriptionBulkPricingModal({
 }: SubscriptionBulkPricingModalProps) {
   const [basePrice, setBasePrice] = useState<string>('');
   const [baseRegion, setBaseRegion] = useState<string>('US');
+  const custom = useCustomMultipliers(baseRegion);
   const [strategy, setStrategy] = useState<PricingStrategy>('ppp');
   const [rounding, setRounding] = useState<RoundingMode>('nearest-99');
   const [selectedRegions, setSelectedRegions] = useState<Set<string>>(new Set());
@@ -246,17 +251,17 @@ export function SubscriptionBulkPricingModal({
 
     return calculateBulkPrices(
       basePriceNum,
-      targetRegions,
+      strategy === 'custom' ? custom.filterRegions(targetRegions) : targetRegions,
       strategy,
       rounding,
-      undefined, // customMultipliers
+      strategy === 'custom' ? custom.relative : undefined, // customMultipliers
       pppData ?? undefined, // dynamicPPPData
       actualCurrencies, // Use actual currencies from Google Play
       exchangeRates ?? undefined, // Dynamic exchange rates from API
       baseCurrency,
       baseRegion
     );
-  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, baseCurrency, baseRegion]);
+  }, [custom, basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, baseCurrency, baseRegion]);
 
   // Get current price for a region
   const getCurrentPrice = useCallback((regionCode: string): Money | null => {
@@ -691,9 +696,11 @@ export function SubscriptionBulkPricingModal({
                     </p>
                   </TooltipContent>
                 </Tooltip>
-                {/* 'custom' is hidden until per-territory multipliers can be entered */}
+                <CustomStrategyOption checked={strategy === 'custom'} onSelect={() => setStrategy('custom')} />
               </div>
             </TooltipProvider>
+            {strategy === 'custom' && <CustomMultipliersInput custom={custom} baseRegion={baseRegion} />}
+            <ReferenceDataBadges entries={pppMetadata?.freshness} only={referenceDataFor(strategy, { appleTiers: false })} />
           </div>
 
           {/* Rounding Options */}

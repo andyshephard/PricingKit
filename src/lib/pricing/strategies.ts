@@ -136,6 +136,10 @@ export interface DynamicPPPData {
     minPrice: number;
     suggestedRounding: number;
     source: 'world-bank' | 'static';
+    /** World Bank data year of the PPP factor (live data) */
+    pppYear?: number;
+    /** The factor was older than the staleness policy allows (static index used, or inflated by CPI) */
+    pppStale?: boolean;
   };
 }
 

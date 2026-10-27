@@ -1,5 +1,6 @@
 'use client';
 
+import { ReferenceDataBadges, referenceDataFor } from '@/components/pricing/reference-data-badges';
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { AlertTriangle, ArrowLeft, ArrowUpDown, ChevronUp, ChevronDown, Hamburger, Globe, RefreshCw, Tv } from 'lucide-react';
@@ -34,6 +35,7 @@ import {
   getAllRegionCodes,
   type DynamicPPPData,
   type DynamicExchangeRates,
+  type FreshnessEntry,
 } from '@/lib/pricing';
 import { GOOGLE_PLAY_REGIONS, formatMoney } from '@/lib/google-play/types';
 import { getCurrencySymbol } from '@/lib/utils/currency';
@@ -41,17 +43,15 @@ import { getCurrencySymbol } from '@/lib/utils/currency';
 interface PPPApiResponse {
   success: boolean;
   data: DynamicPPPData;
-  metadata?: {
-    exchangeRatesSource?: 'live' | 'fallback';
-    exchangeRatesSnapshotDate?: string;
-    warning?: string;
-  };
+  metadata?: PPPMetadata;
 }
 
 interface PPPMetadata {
   exchangeRatesSource?: 'live' | 'fallback';
   exchangeRatesSnapshotDate?: string;
   warning?: string;
+  freshness?: FreshnessEntry[];
+  pppStaleness?: { mode: string; maxAgeYears: number; regions: Array<{ region: string; year: number; action: string }>; error?: string };
 }
 
 interface ExchangeRatesApiResponse {
@@ -223,6 +223,19 @@ export default function IndexCheckerPage() {
                 </Link>{' '}
                 for live rates.
               </>
+            )}
+          </div>
+        )}
+
+        {pppMetadata?.freshness && (
+          <div className="mb-6 space-y-1">
+            <ReferenceDataBadges entries={pppMetadata.freshness} only={referenceDataFor(strategy)} />
+            {strategy === 'ppp' && pppMetadata.pppStaleness && pppMetadata.pppStaleness.regions.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {pppMetadata.pppStaleness.regions.length} countries have PPP data older than {pppMetadata.pppStaleness.maxAgeYears} years:{' '}
+                {pppMetadata.pppStaleness.mode === 'inflate' ? 'carried forward by consumer price inflation where available, ' : ''}
+                otherwise the static index is used ({pppMetadata.pppStaleness.regions.map((r) => `${r.region} ${r.year}`).join(', ')}).
+              </p>
             )}
           </div>
         )}
@@ -408,6 +421,12 @@ export default function IndexCheckerPage() {
                               <p className="text-xs text-muted-foreground">
                                 Relative to {baseRegion}: {calc.multiplier.toFixed(4)}×
                               </p>
+                              {strategy === 'ppp' && pppData?.[calc.regionCode]?.pppYear !== undefined && (
+                                <p className={`text-xs ${pppData[calc.regionCode].pppStale ? 'text-amber-600' : 'text-muted-foreground'}`}>
+                                  PPP data year {pppData[calc.regionCode].pppYear}
+                                  {pppData[calc.regionCode].pppStale ? ' (stale: see the note above the table)' : ''}
+                                </p>
+                              )}
                             </TooltipContent>
                           </Tooltip>
                         </TableCell>

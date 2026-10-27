@@ -8,6 +8,9 @@ import {
   DEFAULT_MAX_AGE_DAYS,
   MultiplierCsvError,
   parseMultiplierCsv,
+  parseMultiplierText,
+  relativeMultipliers,
+  cpiRatioSince,
   parsePricingSpec,
   PricingSpecError,
   pppStalenessAdjustment,
@@ -159,6 +162,24 @@ describe('multiplier CSV', () => {
     expect(fail('territory,multiplier\nGB,')).toEqual(['no row has a multiplier']);
     expect(fail('territory,multiplier\n"GB,1')).toEqual(['a quoted field is not closed']);
     expect(fail('')).toEqual(['the file is empty']);
+  });
+});
+
+describe('multiplier tables typed in the web app', () => {
+  it('reads GB=0.9 lines or CSV, checks the range, and makes them relative to the base', () => {
+    expect(parseMultiplierText('gb=0.9\n# comment\n\nIN, 0.40\nBR 0.55')).toEqual({ GB: '0.9', IN: '0.4', BR: '0.55' });
+    expect(parseMultiplierText('territory,multiplier\nGB,0.9')).toEqual({ GB: '0.9' });
+    expect(() => parseMultiplierText('GB=0.9\nGB=1')).toThrow(/listed twice/);
+    expect(() => parseMultiplierText('GB=twelve')).toThrow(/line 1: expected a territory and a multiplier/);
+    expect(() => parseMultiplierText('GB=0.001\nIN=20')).toThrow(MultiplierCsvError);
+    expect(relativeMultipliers({ US: '2', IN: '0.5' }, 'US')).toEqual({ US: 1, IN: 0.25 });
+    expect(relativeMultipliers({ IN: '0.5' }, 'US')).toEqual({ US: 1, IN: 0.5 });
+  });
+
+  it('cpiRatioSince: latest over the start year', () => {
+    expect(cpiRatioSince({ 2020: 100, 2021: 110, 2023: 150 }, 2020)).toBe(1.5);
+    expect(cpiRatioSince({ 2021: 110 }, 2020)).toBeUndefined();
+    expect(cpiRatioSince(undefined, 2020)).toBeUndefined();
   });
 });
 

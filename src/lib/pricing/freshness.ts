@@ -181,3 +181,16 @@ export function pppStalenessAdjustment(
   const factorRatio = cpiRatio / baseCpiRatio;
   return { ok: true, factorRatio, stale: true, ageYears, note: `PPP data from ${dataYear} inflated by relative CPI x${factorRatio.toFixed(4)}` };
 }
+
+/**
+ * CPI(latest year in the series) / CPI(fromYear), from a year -> index
+ * series; undefined when either value is missing.
+ */
+export function cpiRatioSince(series: Record<number, number> | undefined, fromYear: number): number | undefined {
+  if (!series) return undefined;
+  const start = series[fromYear];
+  const years = Object.keys(series).map(Number).filter((y) => y >= fromYear);
+  if (!start || years.length === 0) return undefined;
+  const latest = series[Math.max(...years)];
+  return latest > 0 && start > 0 ? latest / start : undefined;
+}
