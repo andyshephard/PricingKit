@@ -115,20 +115,22 @@ async function mintAccessToken(credentials: ServiceAccountCredentials): Promise<
 
   if (!response.ok) {
     const text = await response.text().catch(() => '');
-    throw {
+    throw new GooglePlayApiError({
       code: 401,
       message: `Failed to obtain Google access token (${response.status}): ${text}`,
       errors: [{ reason: 'invalidCredentials', message: text }],
-    };
+      retryable: false,
+    });
   }
 
   const data = (await response.json()) as { access_token?: string; expires_in?: number };
   if (!data.access_token) {
-    throw {
+    throw new GooglePlayApiError({
       code: 401,
       message: 'Google token endpoint returned no access_token',
       errors: [{ reason: 'invalidCredentials', message: 'No access_token in response' }],
-    };
+      retryable: false,
+    });
   }
 
   const ttl = typeof data.expires_in === 'number' ? data.expires_in : TOKEN_TTL_SECONDS;
