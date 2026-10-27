@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getAppleAuthFromCookies, getGoogleAuthFromCookies } from '@/middleware/auth';
-import { appleKeyConnection, GoogleKeyTokenSource } from '@/lib/token-source';
+import { appleKeyConnection, GoogleKeyTokenSource } from '@/lib/key-token-source';
 import { APP_MISMATCH, assertSubscriptionInApp } from '@/lib/apple-connect/ownership';
 import { getInAppProductRaw } from '@/lib/google-play/products';
 import { getSubscription as getGoogleSubscription } from '@/lib/google-play/subscriptions';

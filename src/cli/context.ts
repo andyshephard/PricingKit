@@ -8,7 +8,7 @@ import { lstat, open, readFile, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { AppleAdapter } from '@/lib/adapters/apple';
 import { PlayAdapter } from '@/lib/adapters/play';
-import { AppleKeyTokenSource, GoogleKeyTokenSource } from '@/lib/token-source';
+import { AppleKeyTokenSource, GoogleKeyTokenSource } from '@/lib/key-token-source';
 import type { AppRef, ProductPriceState, ProductRef, ResolveOptions, ResolveResult, ResolveTarget } from '@/lib/pricing';
 import type { RequestBudget } from '@/lib/utils/request-budget';
 import type { Flags } from './args';

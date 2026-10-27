@@ -5,7 +5,7 @@ import {
   testAppleConnection,
 } from '@/lib/apple-connect/client';
 import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
-import { appleKeyConnection } from '@/lib/token-source';
+import { appleKeyConnection } from '@/lib/key-token-source';
 import {
   MissingEncryptionKeyError,
   canStoreSessions,

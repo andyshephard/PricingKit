@@ -8,7 +8,7 @@ import {
 import { packageNameSchema } from '@/lib/validation';
 import { signInAttempts, trustedClientIp } from '@/lib/utils/attempt-limiter';
 import type { ServiceAccountCredentials } from '@/lib/google-play/types';
-import { GoogleKeyTokenSource } from '@/lib/token-source';
+import { GoogleKeyTokenSource } from '@/lib/key-token-source';
 import {
   MissingEncryptionKeyError,
   canStoreSessions,

@@ -65,7 +65,7 @@ import {
   type StoreOffer,
 } from '@/lib/pricing';
 import type { BasePlan, Money, RegionalBasePlanConfig, Subscription } from '@/lib/google-play/types';
-import type { TokenSource } from '@/lib/token-source';
+import { assertTokenPlatform, type TokenSource } from '@/lib/token-source';
 import {
   createSubscriptionOffer,
   deleteSubscriptionOffer,
@@ -131,6 +131,7 @@ export class PlayAdapter implements PlatformAdapter {
   private regionsVersionRead?: Promise<string | undefined>;
 
   constructor(options: PlayAdapterOptions) {
+    assertTokenPlatform(options.tokens, 'google');
     this.tokens = options.tokens;
     this.packageName = options.packageName;
     this.budget = options.budget;

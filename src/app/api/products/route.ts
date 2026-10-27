@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getGoogleAuthFromCookies } from '@/middleware/auth';
-import { GoogleKeyTokenSource } from '@/lib/token-source';
+import { GoogleKeyTokenSource } from '@/lib/key-token-source';
 import { listInAppProducts } from '@/lib/google-play/products';
 
 export async function GET() {

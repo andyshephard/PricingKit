@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { appleApiRequest, AppleApiError } from '@/lib/apple-connect/client';
 import type { AppleApiListResponse } from '@/lib/apple-connect/types';
 import { getAppleSessionFromCookies } from '@/middleware/auth';
-import { appleKeyConnection } from '@/lib/token-source';
+import { appleKeyConnection } from '@/lib/key-token-source';
 
 interface AppleAppListItem {
   id: string;

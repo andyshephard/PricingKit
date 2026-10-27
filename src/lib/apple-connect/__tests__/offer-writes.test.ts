@@ -25,7 +25,7 @@ import {
   winBackOfferUpdateBody,
 } from '../offer-writes';
 import type { AppleConnection } from '../types';
-import { appleKeyConnection } from '../../token-source';
+import { appleKeyConnection } from '../../key-token-source';
 import { RequestBudget } from '@/lib/utils/request-budget';
 
 // ---------------------------------------------------------------------------

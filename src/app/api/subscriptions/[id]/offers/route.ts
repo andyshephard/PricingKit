@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getGoogleAuthFromCookies } from '@/middleware/auth';
-import { GoogleKeyTokenSource } from '@/lib/token-source';
+import { GoogleKeyTokenSource } from '@/lib/key-token-source';
 import { PlayAdapter } from '@/lib/adapters/play';
 import { getErrorStatus, toApiError } from '@/lib/utils/api-error';
 import { RequestBudget } from '@/lib/utils/request-budget';

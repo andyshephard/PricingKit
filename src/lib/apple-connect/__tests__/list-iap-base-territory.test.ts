@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AppleConnectCredentials } from '../types';
-import { appleKeyConnection } from '../../token-source';
+import { appleKeyConnection } from '../../key-token-source';
 
 const appleApiRequest = vi.fn();
 vi.mock('../client', async (importOriginal) => {

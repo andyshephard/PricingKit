@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { googlePlayFetch } from '@/lib/google-play/client';
-import { GoogleKeyTokenSource } from '@/lib/token-source';
+import { GoogleKeyTokenSource } from '@/lib/key-token-source';
 import { COOKIE_NAMES, readSessionCookie, SESSION_COOKIE_MAX_AGE, writeCookie } from '@/lib/session';
 import { readJsonBody, rejectCrossSite, SMALL_BODY_LIMIT } from '@/lib/request-guard';
 import { packageNameSchema } from '@/lib/validation';

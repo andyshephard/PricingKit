@@ -2,82 +2,51 @@
 //
 // The Apple and Google clients never see a private key: every request asks a
 // TokenSource for a token. Two kinds exist:
-// - KeyTokenSource (AppleKeyTokenSource / GoogleKeyTokenSource) holds key
-//   credentials in this process and signs or mints tokens from them, using the
-//   in-process token cache (src/lib/token-cache.ts). The CLI and MCP server use it.
-// - HeaderTokenSource wraps a token the caller already has (e.g. one a browser
-//   signed and sent in a request header). It never sees a key.
+// - HeaderTokenSource (here) wraps a token the caller already has (e.g. one a
+//   browser signed and sent in a request header). It never sees a key.
+// - AppleKeyTokenSource / GoogleKeyTokenSource (src/lib/key-token-source.ts)
+//   hold key credentials in this process and sign or mint tokens from them.
+//   The CLI and MCP server use them. This module has no runtime import of
+//   that signing code.
 //
-// Key material and tokens live in private (#) fields, so logging or
-// JSON-serialising a source never prints them. `label` is a non-secret name
-// (an Apple Key ID / Issuer ID, a Google client_email) for logs and per-key
-// bookkeeping such as rate-limit tracking.
+// Tokens live in private (#) fields, so logging or JSON-serialising a source
+// never prints them. `label` is a non-secret name (an Apple Key ID / Issuer
+// ID, a Google client_email) for logs.
 
-import { generateJWT } from './apple-connect/client';
-import type { AppleConnectCredentials, AppleConnection } from './apple-connect/types';
-import { getGoogleAccessToken } from './google-play/client';
-import type { ServiceAccountCredentials } from './google-play/types';
+import { ApiError } from './utils/api-error';
 
 export type TokenPlatform = 'apple' | 'google';
 
 export interface TokenSource {
-  platform: TokenPlatform;
+  readonly platform: TokenPlatform;
   /** A bearer token for the store's API */
   getToken(): Promise<string>;
   /** Non-secret name for this source; never key material or a token */
-  label: string;
-}
-
-/** The fields of an App Store Connect API key needed to sign a JWT */
-export type AppleKeyCredentials = Pick<AppleConnectCredentials, 'privateKey' | 'keyId' | 'issuerId'>;
-
-/** Google service account fields needed to mint an access token */
-export type GoogleKeyCredentials = Pick<ServiceAccountCredentials, 'client_email' | 'private_key_id' | 'private_key'>;
-
-/** Label for an App Store Connect key: issuer and key ID, both non-secret */
-export function appleKeyLabel(issuerId: string, keyId: string): string {
-  return `${issuerId}:${keyId}`;
-}
-
-/** Signs App Store Connect JWTs (20 minutes, ES256) from a key held in this process */
-export class AppleKeyTokenSource implements TokenSource {
-  readonly platform = 'apple' as const;
   readonly label: string;
-  readonly #credentials: AppleKeyCredentials;
-
-  constructor(credentials: AppleKeyCredentials) {
-    // Copy only what signing needs, so nothing else of the caller's object is kept
-    this.#credentials = { privateKey: credentials.privateKey, keyId: credentials.keyId, issuerId: credentials.issuerId };
-    this.label = appleKeyLabel(credentials.issuerId, credentials.keyId);
-  }
-
-  getToken(): Promise<string> {
-    return generateJWT(this.#credentials);
-  }
 }
 
-/** Mints Google access tokens from a service account key held in this process */
-export class GoogleKeyTokenSource implements TokenSource {
-  readonly platform = 'google' as const;
-  readonly label: string;
-  readonly #credentials: GoogleKeyCredentials;
+const STORE_NAMES: Record<TokenPlatform, string> = { apple: 'App Store Connect', google: 'Google Play' };
 
-  constructor(credentials: GoogleKeyCredentials) {
-    this.#credentials = {
-      client_email: credentials.client_email,
-      private_key_id: credentials.private_key_id,
-      private_key: credentials.private_key,
-    };
-    this.label = credentials.client_email;
-  }
-
-  getToken(): Promise<string> {
-    return getGoogleAccessToken(this.#credentials);
+/**
+ * Throws unless the token source is for the given store, so one store's token
+ * is never sent to the other. The clients and adapters call this.
+ */
+export function assertTokenPlatform(tokens: TokenSource, platform: TokenPlatform): void {
+  if (tokens?.platform !== platform) {
+    throw new ApiError(`${STORE_NAMES[platform]} requests need a ${STORE_NAMES[platform]} token source`, {
+      status: 500,
+      code: 'WRONG_TOKEN_PLATFORM',
+      platform,
+      retryable: false,
+    });
   }
 }
 
 /** Largest token HeaderTokenSource accepts (Apple JWTs and Google access tokens are far smaller) */
 export const MAX_HEADER_TOKEN_CHARS = 4096;
+
+/** Printable ASCII, 1 to 200 characters */
+const LABEL_PATTERN = /^[\x20-\x7e]{1,200}$/;
 
 /**
  * A token supplied by the caller, used as is. The store checks it; an expired
@@ -96,15 +65,13 @@ export class HeaderTokenSource implements TokenSource {
     if (token.length > MAX_HEADER_TOKEN_CHARS) throw new Error('Token is too long');
     // A bearer token is one header value: no whitespace or control characters
     if (!/^[\x21-\x7e]+$/.test(token)) throw new Error('Token has invalid characters');
+    if (typeof label !== 'string' || !LABEL_PATTERN.test(label)) throw new Error('Label must be 1 to 200 printable characters');
+    // The label is logged; it must never carry the token
+    if (label.includes(token)) throw new Error('Label must not contain the token');
     this.#token = token;
   }
 
   getToken(): Promise<string> {
     return Promise.resolve(this.#token);
   }
-}
-
-/** An App Store Connect connection that signs with the given key, for the key's app (bundleId, '' for none) */
-export function appleKeyConnection(credentials: AppleConnectCredentials): AppleConnection {
-  return { tokens: new AppleKeyTokenSource(credentials), bundleId: credentials.bundleId };
 }

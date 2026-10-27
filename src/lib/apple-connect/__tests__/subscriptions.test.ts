@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AppleConnectCredentials, AppleProductPrice } from '../types';
-import { appleKeyConnection } from '../../token-source';
+import { appleKeyConnection } from '../../key-token-source';
 import { ApiError } from '@/lib/utils/api-error';
 
 // No network: every Apple call goes through this mock

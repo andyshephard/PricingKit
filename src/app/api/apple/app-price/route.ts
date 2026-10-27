@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getAppleAuthFromCookies } from '@/middleware/auth';
-import { appleKeyConnection } from '@/lib/token-source';
+import { appleKeyConnection } from '@/lib/key-token-source';
 import {
   getAppPrices,
   updateAppPriceSchedule,

@@ -1,12 +1,7 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { inspect } from 'node:util';
-import {
-  AppleKeyTokenSource,
-  GoogleKeyTokenSource,
-  HeaderTokenSource,
-  MAX_HEADER_TOKEN_CHARS,
-  appleKeyConnection,
-} from '../token-source';
+import { HeaderTokenSource, MAX_HEADER_TOKEN_CHARS, assertTokenPlatform } from '../token-source';
+import { AppleKeyTokenSource, GoogleKeyTokenSource, appleKeyConnection } from '../key-token-source';
 import { appleApiRequest, AppleApiError, clearTokenCache, getAppIdForBundleId } from '../apple-connect/client';
 import { clearGoogleAccessTokenCache, googlePlayFetch, GooglePlayApiError } from '../google-play/client';
 import { AppleAdapter } from '../adapters/apple';
@@ -154,6 +149,17 @@ describe('HeaderTokenSource', () => {
     expect(() => new HeaderTokenSource('other' as 'apple', 'abc', 'l')).toThrow('Unknown token platform');
     expect(() => new HeaderTokenSource('google', 'a'.repeat(MAX_HEADER_TOKEN_CHARS), 'l')).not.toThrow();
   });
+
+  it('refuses labels that are empty, too long, not printable or carry the token', () => {
+    expect(() => new HeaderTokenSource('apple', 'tok', '')).toThrow('Label must be');
+    expect(() => new HeaderTokenSource('apple', 'tok', 'x'.repeat(201))).toThrow('Label must be');
+    expect(() => new HeaderTokenSource('apple', 'tok', 'line\nbreak')).toThrow('Label must be');
+    expect(() => new HeaderTokenSource('apple', 'tok', 'caf\u00e9')).toThrow('Label must be');
+    expect(() => new HeaderTokenSource('apple', 'secret-jwt', 'secret-jwt')).toThrow('must not contain the token');
+    expect(() => new HeaderTokenSource('apple', 'secret-jwt', 'key secret-jwt (browser)')).toThrow('must not contain the token');
+    expect(() => new HeaderTokenSource('apple', 'tok', 'x'.repeat(200))).not.toThrow();
+    expect(() => new HeaderTokenSource('apple', 'tok', 'issuer:KEY 123')).not.toThrow();
+  });
 });
 
 describe('store clients take any TokenSource', () => {
@@ -209,6 +215,41 @@ describe('store clients take any TokenSource', () => {
     await expect(googlePlayFetch(failing, '/x')).rejects.toMatchObject({ code: 401 });
     expect(failing.getToken).toHaveBeenCalledTimes(1);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('a token source is only used for its own store', () => {
+  const apple = new HeaderTokenSource('apple', 'apple-jwt', 'browser');
+  const google = new HeaderTokenSource('google', 'ya29.google', 'robot');
+  const wrongPlatform = { status: 500, code: 'WRONG_TOKEN_PLATFORM', retryable: false };
+
+  it('assertTokenPlatform accepts the matching platform only', () => {
+    expect(() => assertTokenPlatform(apple, 'apple')).not.toThrow();
+    expect(() => assertTokenPlatform(google, 'google')).not.toThrow();
+    expect(() => assertTokenPlatform(google, 'apple')).toThrow(expect.objectContaining({ ...wrongPlatform, platform: 'apple' }));
+    expect(() => assertTokenPlatform(apple, 'google')).toThrow(expect.objectContaining({ ...wrongPlatform, platform: 'google' }));
+  });
+
+  it('appleApiRequest refuses a Google token before sending anything', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(appleApiRequest({ tokens: google, bundleId: 'com.example.app' }, '/apps')).rejects.toMatchObject(wrongPlatform);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('googlePlayFetch refuses an Apple token before sending anything', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(googlePlayFetch(apple, '/x')).rejects.toMatchObject(wrongPlatform);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('AppleAdapter refuses a Google token source', () => {
+    expect(() => new AppleAdapter({ tokens: google, bundleId: 'com.example.app' })).toThrow(expect.objectContaining(wrongPlatform));
+  });
+
+  it('PlayAdapter refuses an Apple token source', () => {
+    expect(() => new PlayAdapter({ tokens: apple, packageName: 'com.example.app' })).toThrow(expect.objectContaining(wrongPlatform));
   });
 });
 

@@ -5,11 +5,10 @@ import {
   clearTokenCache,
   generateJWT,
   getAppIdForBundleId,
-  getAppleRateLimitInfo,
   parseAppleRateLimitHeader,
 } from '../client';
 import type { AppleConnectCredentials, AppleConnection } from '../types';
-import { appleKeyConnection } from '../../token-source';
+import { appleKeyConnection } from '../../key-token-source';
 import { ApiError } from '@/lib/utils/api-error';
 import { RequestBudget } from '@/lib/utils/request-budget';
 import { executeWithRateLimit } from '@/lib/utils/rate-limit';
@@ -455,7 +454,7 @@ describe('appleApiRequest inside executeWithRateLimit', () => {
 });
 
 describe('appleApiRequest rate-limit tracking and budget', () => {
-  it('exposes X-Rate-Limit remaining via callback, budget and getter', async () => {
+  it('exposes X-Rate-Limit remaining via callback and budget', async () => {
     mockFetch([
       jsonResponse(200, { data: [] }, { 'X-Rate-Limit': 'user-hour-lim:3600;user-hour-rem:123;' }),
     ]);
@@ -467,7 +466,6 @@ describe('appleApiRequest rate-limit tracking and budget', () => {
     expect(onRateLimit).toHaveBeenCalledWith({ limit: 3600, remaining: 123 });
     expect(budget.upstreamRemainingCount).toBe(123);
     expect(budget.used).toBe(1);
-    expect(getAppleRateLimitInfo(connection)).toMatchObject({ limit: 3600, remaining: 123 });
   });
 
   it('throws BUDGET_EXCEEDED before fetch once the budget is spent', async () => {

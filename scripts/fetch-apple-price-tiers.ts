@@ -37,7 +37,7 @@ import { RequestBudget } from '../src/lib/utils/request-budget';
 import { appleCredentialsFromEnv } from '../src/cli/credentials';
 import { Redactor } from '../src/cli/redact';
 import { toApiError } from '../src/lib/utils/api-error';
-import { appleKeyConnection } from '../src/lib/token-source';
+import { appleKeyConnection } from '../src/lib/key-token-source';
 
 const ROOT = resolve(__dirname, '..');
 const DEFAULT_JSON = join(ROOT, 'src/lib/apple-connect/price-tier-data.json');

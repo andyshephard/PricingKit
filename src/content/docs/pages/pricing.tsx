@@ -272,7 +272,7 @@ export const plans: DocPage = {
             lang="ts"
             code={`import { buildChangeSet, applyChangeSet, buildUndoChangeSet, serializeChangeSet } from '@/lib/pricing';
 import { AppleAdapter } from '@/lib/adapters';
-import { AppleKeyTokenSource } from '@/lib/token-source';
+import { AppleKeyTokenSource } from '@/lib/key-token-source';
 import { RequestBudget } from '@/lib/utils/request-budget';
 
 const budget = new RequestBudget();                       // 3600 requests/hour by default

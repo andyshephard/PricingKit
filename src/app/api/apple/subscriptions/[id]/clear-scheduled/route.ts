@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAppleAuthFromCookies } from '@/middleware/auth';
-import { appleKeyConnection } from '@/lib/token-source';
+import { appleKeyConnection } from '@/lib/key-token-source';
 import {
   getSubscription,
   getSubscriptionById,

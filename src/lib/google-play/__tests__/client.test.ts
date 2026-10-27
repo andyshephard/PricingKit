@@ -6,7 +6,7 @@ import {
   GooglePlayApiError,
 } from '../client';
 import type { ServiceAccountCredentials } from '../types';
-import { GoogleKeyTokenSource } from '../../token-source';
+import { GoogleKeyTokenSource } from '../../key-token-source';
 import { ApiError } from '@/lib/utils/api-error';
 import { RequestBudget } from '@/lib/utils/request-budget';
 import { executeWithRateLimit } from '@/lib/utils/rate-limit';

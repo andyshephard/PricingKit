@@ -82,7 +82,7 @@ import { AppleApiError } from '@/lib/apple-connect/client';
 import { SubscriptionOwnership } from '@/lib/apple-connect/ownership';
 import { getSubscriptionById } from '@/lib/apple-connect/subscriptions';
 import type { AppleConnection } from '@/lib/apple-connect/types';
-import type { TokenSource } from '@/lib/token-source';
+import { assertTokenPlatform, type TokenSource } from '@/lib/token-source';
 import { deleteSubscriptionPrice, updateSubscriptionPrice } from '@/lib/apple-connect/subscriptions';
 import {
   getSubscriptionPricePointEqualizations,
@@ -130,6 +130,7 @@ export class AppleAdapter implements PlatformAdapter {
   private readonly ownership: SubscriptionOwnership;
 
   constructor(options: AppleAdapterOptions) {
+    assertTokenPlatform(options.tokens, 'apple');
     this.connection = { tokens: options.tokens, bundleId: options.bundleId };
     this.budget = options.budget;
     this.now = options.now;

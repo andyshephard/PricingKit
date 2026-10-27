@@ -2,7 +2,7 @@
 // change must send one schedule holding every manual price.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AppleConnectCredentials } from '../types';
-import { appleKeyConnection } from '../../token-source';
+import { appleKeyConnection } from '../../key-token-source';
 import { ApiError } from '@/lib/utils/api-error';
 
 const appleApiRequest = vi.fn();

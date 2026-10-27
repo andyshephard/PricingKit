@@ -5,7 +5,8 @@ import type {
   AppleApiErrorResponse,
 } from './types';
 import { TokenCache, hashCredentialFields } from '../token-cache';
-import type { AppleKeyCredentials } from '../token-source';
+import type { AppleKeyCredentials } from '../key-token-source';
+import { assertTokenPlatform } from '../token-source';
 import { ApiError, isRetryableStatus, toApiError } from '../utils/api-error';
 import type { RequestBudget, RequestContext } from '../utils/request-budget';
 import {
@@ -181,20 +182,6 @@ export function parseAppleRateLimitHeader(header: string | null): AppleRateLimit
   return info.limit === undefined && info.remaining === undefined ? undefined : info;
 }
 
-// Last X-Rate-Limit seen per API key (keyed by the token source's label, no secrets)
-const lastRateLimitByKey = new Map<string, AppleRateLimitInfo & { updatedAt: number }>();
-
-function rateLimitKey(connection: AppleConnection): string {
-  return connection.tokens.label;
-}
-
-/** Most recent X-Rate-Limit info observed for this connection's key, if any */
-export function getAppleRateLimitInfo(
-  connection: AppleConnection
-): (AppleRateLimitInfo & { updatedAt: number }) | undefined {
-  return lastRateLimitByKey.get(rateLimitKey(connection));
-}
-
 export interface AppleApiRequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
   body?: unknown;
@@ -218,6 +205,7 @@ export async function appleApiRequest<T>(
   options: AppleApiRequestOptions = {}
 ): Promise<T> {
   const { method = 'GET', body, queryParams, apiVersion = 'v1', budget, onRateLimit } = options;
+  assertTokenPlatform(connection.tokens, 'apple');
   const retry = resolveRetryOptions(options.retry);
   // A POST creates something. After a 5xx, timeout or dropped connection the
   // create may still have succeeded on Apple's side, so retrying could
@@ -286,7 +274,6 @@ export async function appleApiRequest<T>(
 
     const rateLimit = parseAppleRateLimitHeader(response.headers.get('X-Rate-Limit'));
     if (rateLimit) {
-      lastRateLimitByKey.set(rateLimitKey(connection), { ...rateLimit, updatedAt: Date.now() });
       if (rateLimit.remaining !== undefined) {
         budget?.recordUpstreamRemaining(rateLimit.remaining);
       }
@@ -409,8 +396,6 @@ export async function getAppIdForBundleId(
   ctx: RequestContext = {}
 ): Promise<string | null> {
   try {
-    // console.log('[Apple] getAppIdForBundleId - Looking up bundleId:', connection.bundleId);
-
     // Fetch apps matching the bundle ID filter (may return partial matches)
     // We need to find the exact match
     const response = await appleApiRequest<AppleApiListResponse<{
@@ -429,8 +414,6 @@ export async function getAppIdForBundleId(
       }
     );
 
-    // console.log('[Apple] getAppIdForBundleId - Found', response.data?.length ?? 0, 'apps matching filter');
-
     if (response.data && response.data.length > 0) {
       // Find the app with the EXACT bundle ID match
       const exactMatch = response.data.find(
@@ -438,21 +421,10 @@ export async function getAppIdForBundleId(
       );
 
       if (exactMatch) {
-        // console.log('[Apple] getAppIdForBundleId - Found exact match:', exactMatch.id, exactMatch.attributes.name);
         return exactMatch.id;
       }
-
-      // Log available apps for debugging
-      /* console.log('[Apple] getAppIdForBundleId - Available apps:', response.data.map(app => ({
-        id: app.id,
-        bundleId: app.attributes.bundleId,
-        name: app.attributes.name,
-      }))); */
-
-      // console.log('[Apple] getAppIdForBundleId - No exact match found for bundleId:', connection.bundleId);
       return null;
     }
-    // console.log('[Apple] getAppIdForBundleId - No apps found for bundleId:', connection.bundleId);
     return null;
   } catch (error) {
     // null means "no app with this bundle ID"; API failures are thrown

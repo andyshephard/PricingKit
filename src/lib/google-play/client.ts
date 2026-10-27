@@ -1,5 +1,6 @@
 import type { ServiceAccountCredentials } from './types';
-import type { GoogleKeyCredentials, TokenSource } from '../token-source';
+import type { GoogleKeyCredentials } from '../key-token-source';
+import { assertTokenPlatform, type TokenSource } from '../token-source';
 import { TokenCache, hashCredentialFields } from '../token-cache';
 import { ApiError, getErrorStatus, isRetryableStatus, toApiError } from '../utils/api-error';
 import type { RequestBudget } from '../utils/request-budget';
@@ -304,6 +305,7 @@ export async function googlePlayFetch<T>(
   path: string,
   options: GooglePlayFetchOptions = {}
 ): Promise<T> {
+  assertTokenPlatform(tokens, 'google');
   const { method = 'GET', body, query, budget, retryOnlyRateLimited = false } = options;
   const retry = resolveRetryOptions(options.retry);
   const url = buildUrl(path, query);

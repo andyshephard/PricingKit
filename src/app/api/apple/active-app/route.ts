@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { appleApiRequest, AppleApiError } from '@/lib/apple-connect/client';
-import { appleKeyConnection } from '@/lib/token-source';
+import { appleKeyConnection } from '@/lib/key-token-source';
 import type {
   AppleApiListResponse,
   AppleConnectCredentials,
