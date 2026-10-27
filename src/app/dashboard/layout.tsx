@@ -140,7 +140,7 @@ export default function DashboardLayout({
   if (!showSidebar) {
     // Platform selector page doesn't need sidebar
     return (
-      <main className="h-screen overflow-auto flex flex-col">
+      <main className="flex min-h-screen flex-col bg-background">
         <div className="flex-1">{children}</div>
         <Footer />
       </main>
@@ -148,9 +148,9 @@ export default function DashboardLayout({
   }
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex min-h-screen flex-col bg-background md:h-screen md:flex-row md:overflow-hidden">
       <Sidebar />
-      <main className="flex-1 overflow-auto flex flex-col">
+      <main className="flex min-w-0 flex-1 flex-col md:overflow-auto">
         <div className="flex-1">{children}</div>
         <Footer />
       </main>

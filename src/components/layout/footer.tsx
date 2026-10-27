@@ -1,26 +1,35 @@
 import Link from 'next/link';
-import { Github } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { GITHUB_URL, LICENSE_NAME, ROUTES } from '@/config/site';
 
+const footLink = 'rounded-md text-soft transition-colors hover:text-foreground';
+
+/** The small footer under app screens and the setup guides. */
 export function Footer() {
   return (
-    <footer className="border-t bg-background">
-      <div className="container mx-auto px-4 py-6 flex items-center justify-between text-sm text-muted-foreground">
-        <span>&copy; {new Date().getFullYear()} PricingKit</span>
-        <div className="flex items-center gap-4">
-          <Button variant="outline" size="sm" asChild>
-            <Link href="/index-checker">Index Checker</Link>
-          </Button>
-          <a
-            href="https://github.com/andyshephard/PricingKit"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1.5 hover:text-foreground transition-colors"
-          >
-            <Github className="h-4 w-4" />
-            <span>Free and open-source, forever.</span>
-          </a>
-        </div>
+    <footer className="border-t">
+      <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-5 text-sm text-muted-foreground sm:px-8">
+        <span>
+          PricingKit · {LICENSE_NAME} · free and open source
+        </span>
+        <nav aria-label="Footer">
+          <ul className="flex flex-wrap gap-5">
+            <li>
+              <Link href={ROUTES.indexChecker} className={footLink}>
+                Index checker
+              </Link>
+            </li>
+            <li>
+              <Link href={ROUTES.docs} className={footLink}>
+                Docs
+              </Link>
+            </li>
+            <li>
+              <a href={GITHUB_URL} className={footLink} rel="noopener noreferrer">
+                GitHub
+              </a>
+            </li>
+          </ul>
+        </nav>
       </div>
     </footer>
   );

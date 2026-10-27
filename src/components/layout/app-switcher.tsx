@@ -8,7 +8,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
-import { Button } from '@/components/ui/button';
 import { useAuthStore } from '@/store/auth-store';
 import { useAppleApps } from '@/hooks/use-apple-apps';
 import { useSetActiveApp } from '@/hooks/use-set-active-app';
@@ -42,12 +41,12 @@ export function AppSwitcher() {
         appleApps.data?.find((a) => a.bundleId === activeBundleId)?.name ??
         activeBundleId ??
         'Select app';
-      return { name, badge: 'Apple' };
+      return { name, store: 'App Store' };
     }
     if (platform === 'google') {
-      return { name: activePackageName ?? 'Select app', badge: 'Google' };
+      return { name: activePackageName ?? 'Select app', store: 'Google Play' };
     }
-    return { name: 'Select app', badge: null };
+    return { name: 'Select app', store: null };
   })();
 
   const handlePickApple = async (bundleId: string) => {
@@ -79,22 +78,25 @@ export function AppSwitcher() {
     <>
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
-          <Button
-            variant="outline"
-            role="combobox"
-            aria-expanded={open}
-            className="w-full justify-between"
+          <button
+            type="button"
+            aria-label={`Current app: ${triggerLabel.name}${triggerLabel.store ? `, ${triggerLabel.store}` : ''}. Switch app`}
+            className="flex w-full items-center gap-2.5 rounded-xl border bg-background p-2.5 text-left transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
           >
-            <span className="flex min-w-0 items-center gap-2">
-              {triggerLabel.badge && (
-                <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground shrink-0">
-                  {triggerLabel.badge}
-                </span>
-              )}
-              <span className="truncate">{triggerLabel.name}</span>
+            <span
+              aria-hidden="true"
+              className="flex size-[30px] shrink-0 items-center justify-center rounded-lg bg-accent font-extrabold text-accent-foreground"
+            >
+              {triggerLabel.name.trim().charAt(0).toUpperCase() || '?'}
             </span>
-            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-          </Button>
+            <span className="min-w-0 flex-1">
+              <strong className="block truncate text-sm">{triggerLabel.name}</strong>
+              {triggerLabel.store && (
+                <span className="block truncate text-xs text-muted-foreground">{triggerLabel.store}</span>
+              )}
+            </span>
+            <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          </button>
         </PopoverTrigger>
         <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
           <div className="max-h-96 overflow-auto py-1">

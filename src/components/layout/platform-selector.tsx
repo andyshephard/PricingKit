@@ -125,9 +125,7 @@ export function PlatformSelector({ currentPlatform }: PlatformSelectorProps) {
   return (
     <>
       <div className="space-y-2">
-        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider px-1">
-          Platforms
-        </p>
+        <p className="mx-2 text-xs font-bold text-muted-foreground">Stores</p>
 
         <div className="space-y-1.5">
           <PlatformItem

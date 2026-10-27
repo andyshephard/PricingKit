@@ -9,9 +9,9 @@ const pathNames: Record<string, string> = {
   dashboard: 'Dashboard',
   google: 'Google Play',
   apple: 'App Store',
-  products: 'Products',
+  products: 'In-app purchases',
   subscriptions: 'Subscriptions',
-  'app-price': 'App Price',
+  'app-price': 'App price',
   settings: 'Settings',
 };
 
@@ -38,23 +38,24 @@ export function Breadcrumbs() {
   });
 
   return (
-    <nav className="flex items-center gap-1 text-sm">
+    <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1 overflow-hidden text-sm">
       <Link
         href={homeHref}
-        className="text-muted-foreground hover:text-foreground transition-colors"
+        aria-label="Overview"
+        className="rounded-md text-muted-foreground hover:text-foreground transition-colors"
       >
-        <Home className="h-4 w-4" />
+        <Home className="h-4 w-4" aria-hidden="true" />
       </Link>
 
       {breadcrumbs.map((crumb) => (
         <span key={crumb.href} className="flex items-center gap-1">
-          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+          <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           {crumb.isLast ? (
-            <span className="font-medium">{crumb.name}</span>
+            <span aria-current="page" className="truncate font-semibold">{crumb.name}</span>
           ) : (
             <Link
               href={crumb.href}
-              className="text-muted-foreground hover:text-foreground transition-colors"
+              className="truncate rounded-md text-muted-foreground hover:text-foreground transition-colors"
             >
               {crumb.name}
             </Link>
