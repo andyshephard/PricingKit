@@ -11,9 +11,14 @@ import type {
 } from './types';
 import { appleApiRequest, getAppIdForBundleId } from './client';
 import { appleListPages } from './pagination';
+import type { RequestContext } from '../utils/request-budget';
+import { mapWithConcurrency } from '../pricing/concurrency';
 import { alpha3ToAlpha2, UNSUPPORTED_IAP_TERRITORIES } from './territories';
 import { findClosestTierForCurrency, hasTierData } from './price-tier-data';
 import { ApiError, getErrorStatus, toApiError } from '../utils/api-error';
+
+// Most parallel reads one helper sends to App Store Connect at once
+export const APPLE_READ_CONCURRENCY = 4;
 
 // The bundle ID doesn't resolve to an app in this App Store Connect account
 function appNotFoundError(credentials: AppleConnectCredentials): ApiError {
@@ -26,11 +31,12 @@ function appNotFoundError(credentials: AppleConnectCredentials): ApiError {
 
 // List all in-app purchases for an app
 export async function listInAppPurchases(
-  credentials: AppleConnectCredentials
+  credentials: AppleConnectCredentials,
+  ctx: RequestContext = {}
 ): Promise<NormalizedAppleProduct[]> {
   // console.log('[Apple] listInAppPurchases - Starting for bundleId:', credentials.bundleId);
 
-  const appId = await getAppIdForBundleId(credentials);
+  const appId = await getAppIdForBundleId(credentials, ctx);
   if (!appId) {
     console.error('[Apple] listInAppPurchases - No app ID found');
     throw appNotFoundError(credentials);
@@ -54,7 +60,7 @@ export async function listInAppPurchases(
   for await (const response of appleListPages<AppleInAppPurchase>(
     credentials,
     `/apps/${appId}/inAppPurchasesV2`,
-    { queryParams }
+    { queryParams, budget: ctx.budget }
   )) {
     // Build a map of price schedule IDs and base territories from included data
     // Note: Apple's API returns price schedules in `included` but not in product relationships
@@ -119,7 +125,7 @@ export async function listInAppPurchases(
 
     // A failed price read fails the whole list (as ApiError) rather than
     // showing the product as if it had no price
-    const pricePromises = allProducts.map(async (product) => {
+    await mapWithConcurrency(allProducts, APPLE_READ_CONCURRENCY, async (product) => {
       // Look up the price schedule ID from our map (built from included data)
       const priceScheduleId = allPriceScheduleMap.get(product.id);
       if (!priceScheduleId) {
@@ -129,14 +135,13 @@ export async function listInAppPurchases(
       // Get the base territory for this product (default to USA if not found)
       const baseTerritory = allBaseTerritoryMap.get(product.id) || 'USA';
       // console.log('[Apple] Fetching price for product', product.id, 'using schedule', priceScheduleId, 'base territory', baseTerritory);
-      const basePrice = await getProductBasePriceBySchedule(credentials, priceScheduleId, baseTerritory);
+      const basePrice = await getProductBasePriceBySchedule(credentials, priceScheduleId, baseTerritory, ctx);
       if (basePrice) {
         product.prices = { [baseTerritory]: basePrice };
         product.baseTerritory = baseTerritory;
         // console.log('[Apple] Got price for product', product.id, ':', basePrice.customerPrice, basePrice.currency);
       }
     });
-    await Promise.all(pricePromises);
   }
 
   // console.log('[Apple] listInAppPurchases - Total products found:', allProducts.length);
@@ -149,7 +154,8 @@ export async function listInAppPurchases(
 async function getProductBasePriceBySchedule(
   credentials: AppleConnectCredentials,
   priceScheduleId: string,
-  territoryCode: string = 'USA'
+  territoryCode: string = 'USA',
+  ctx: RequestContext = {}
 ): Promise<AppleProductPrice | null> {
   try {
     // console.log('[Apple] getProductBasePriceBySchedule - Fetching prices for schedule:', priceScheduleId, 'territory:', territoryCode);
@@ -172,6 +178,7 @@ async function getProductBasePriceBySchedule(
         };
       }>
     >(credentials, `/inAppPurchasePriceSchedules/${priceScheduleId}/manualPrices`, {
+      budget: ctx.budget,
       queryParams: {
         include: 'inAppPurchasePricePoint,territory',
         'filter[territory]': territoryCode,
@@ -228,10 +235,11 @@ async function getProductBasePriceBySchedule(
 // (auth, rate limit, 5xx, network, unknown app) are thrown as ApiError.
 export async function getInAppPurchase(
   credentials: AppleConnectCredentials,
-  productId: string
+  productId: string,
+  ctx: RequestContext = {}
 ): Promise<NormalizedAppleProduct | null> {
   // First, we need to find the product by its productId (SKU)
-  const appId = await getAppIdForBundleId(credentials);
+  const appId = await getAppIdForBundleId(credentials, ctx);
   if (!appId) {
     throw appNotFoundError(credentials);
   }
@@ -241,6 +249,7 @@ export async function getInAppPurchase(
     const response = await appleApiRequest<
       AppleApiListResponse<AppleInAppPurchase>
     >(credentials, `/apps/${appId}/inAppPurchasesV2`, {
+      budget: ctx.budget,
       queryParams: {
         'filter[productId]': productId,
         include: 'inAppPurchaseLocalizations,iapPriceSchedule',
@@ -269,13 +278,14 @@ export async function getInAppPurchase(
 // API failures are thrown as ApiError, never guessed as 'USA'.
 export async function getBaseTerritoryForProduct(
   credentials: AppleConnectCredentials,
-  inAppPurchaseId: string
+  inAppPurchaseId: string,
+  ctx: RequestContext = {}
 ): Promise<string | null> {
   try {
     const response = await appleApiRequest<AppleApiResponse<AppleTerritory>>(
       credentials,
       `/inAppPurchasePriceSchedules/${inAppPurchaseId}/baseTerritory`,
-      { queryParams: { 'fields[territories]': 'currency' } }
+      { queryParams: { 'fields[territories]': 'currency' }, budget: ctx.budget }
     );
     return response.data?.id || null;
   } catch (error) {
@@ -312,7 +322,8 @@ function encodePricePointId(sourceId: string, territoryCode: string, priceTier: 
 // A 404 (no price schedule yet) returns {}; other failures are thrown as ApiError
 export async function getInAppPurchasePrices(
   credentials: AppleConnectCredentials,
-  inAppPurchaseId: string
+  inAppPurchaseId: string,
+  ctx: RequestContext = {}
 ): Promise<Record<string, AppleProductPrice>> {
   try {
     // console.log('[Apple] getInAppPurchasePrices - Fetching prices for product:', inAppPurchaseId);
@@ -329,6 +340,7 @@ export async function getInAppPurchasePrices(
           attributes: { startDate?: string };
         }>
       >(credentials, `/inAppPurchasePriceSchedules/${inAppPurchaseId}/manualPrices`, {
+        budget: ctx.budget,
         queryParams: {
           include: 'inAppPurchasePricePoint,territory',
           limit: '200',
@@ -345,6 +357,7 @@ export async function getInAppPurchasePrices(
           attributes: { startDate?: string };
         }>
       >(credentials, `/inAppPurchasePriceSchedules/${inAppPurchaseId}/automaticPrices`, {
+        budget: ctx.budget,
         queryParams: {
           include: 'inAppPurchasePricePoint,territory',
           limit: '200',
@@ -488,7 +501,8 @@ function normalizeProducts(
 // Get available price points for in-app purchases
 export async function getAvailablePricePoints(
   credentials: AppleConnectCredentials,
-  territoryCode: string = 'USA'
+  territoryCode: string = 'USA',
+  ctx: RequestContext = {}
 ): Promise<
   Array<{
     id: string;
@@ -496,7 +510,7 @@ export async function getAvailablePricePoints(
     proceeds: string;
   }>
 > {
-  const appId = await getAppIdForBundleId(credentials);
+  const appId = await getAppIdForBundleId(credentials, ctx);
   if (!appId) {
     throw appNotFoundError(credentials);
   }
@@ -505,6 +519,7 @@ export async function getAvailablePricePoints(
     const response = await appleApiRequest<
       AppleApiListResponse<ApplePricePoint>
     >(credentials, `/apps/${appId}/appPricePoints`, {
+      budget: ctx.budget,
       queryParams: {
         'filter[territory]': territoryCode,
         limit: '200',
@@ -529,13 +544,15 @@ export async function updateInAppPurchasePrice(
   inAppPurchaseId: string,
   pricePointId: string,
   territoryCode: string,
-  startDate?: string
+  startDate?: string,
+  ctx: RequestContext = {}
 ): Promise<void> {
   // Create or update price for a specific territory
   await appleApiRequest(
     credentials,
     `/inAppPurchasePriceSchedules`,
     {
+      budget: ctx.budget,
       method: 'POST',
       body: {
         data: {
@@ -590,7 +607,8 @@ export async function updateInAppPurchasePrices(
   credentials: AppleConnectCredentials,
   inAppPurchaseId: string,
   manualPrices: Array<{ territoryId: string; pricePointId: string }>,
-  baseTerritoryId: string = 'USA'
+  baseTerritoryId: string = 'USA',
+  ctx: RequestContext = {}
 ): Promise<void> {
   // Apple requires a manual price for the base territory; without one the
   // whole schedule is rejected, so fail loudly instead of reporting success
@@ -638,6 +656,7 @@ export async function updateInAppPurchasePrices(
     credentials,
     `/inAppPurchasePriceSchedules`,
     {
+      budget: ctx.budget,
       method: 'POST',
       body: {
         data: {
@@ -681,7 +700,8 @@ export interface PPPResolutionResult {
 // This is much more efficient than fetching all price points
 async function getSourceIdForIAP(
   credentials: AppleConnectCredentials,
-  inAppPurchaseId: string
+  inAppPurchaseId: string,
+  ctx: RequestContext = {}
 ): Promise<string> {
   // console.log(`[Apple] getSourceIdForIAP - Fetching sourceId for ${inAppPurchaseId}`);
 
@@ -696,6 +716,7 @@ async function getSourceIdForIAP(
     credentials,
     `/inAppPurchases/${inAppPurchaseId}/pricePoints`,
     {
+      budget: ctx.budget,
       queryParams: {
         'filter[territory]': 'USA',
         limit: '1',
@@ -724,29 +745,31 @@ async function getSourceIdForIAP(
 export async function resolvePPPPricesToPricePoints(
   credentials: AppleConnectCredentials,
   inAppPurchaseId: string,
-  prices: Record<string, { currencyCode: string; units: string; nanos?: number }>
+  prices: Record<string, { currencyCode: string; units: string; nanos?: number }>,
+  ctx: RequestContext = {}
 ): Promise<PPPResolutionResult> {
   // Check if we have cached tier data
   if (hasTierData()) {
     // console.log(`[Apple] Using cached tier data`);
-    return resolvePPPPricesWithCache(credentials, inAppPurchaseId, prices);
+    return resolvePPPPricesWithCache(credentials, inAppPurchaseId, prices, ctx);
   }
 
   // Fall back to fetching from Apple's API
   // console.log(`[Apple] No cached tier data - fetching from Apple API`);
-  return resolvePPPPricesFromAPI(credentials, inAppPurchaseId, prices);
+  return resolvePPPPricesFromAPI(credentials, inAppPurchaseId, prices, ctx);
 }
 
 // Resolve prices using cached tier data (fast path - 1 API call)
 async function resolvePPPPricesWithCache(
   credentials: AppleConnectCredentials,
   inAppPurchaseId: string,
-  prices: Record<string, { currencyCode: string; units: string; nanos?: number }>
+  prices: Record<string, { currencyCode: string; units: string; nanos?: number }>,
+  ctx: RequestContext = {}
 ): Promise<PPPResolutionResult> {
   const territories = Object.entries(prices);
 
   // Step 1: Get sourceId for this IAP (single API call)
-  const sourceId = await getSourceIdForIAP(credentials, inAppPurchaseId);
+  const sourceId = await getSourceIdForIAP(credentials, inAppPurchaseId, ctx);
 
   // Step 2: For each territory, find the closest tier using cached data
   const manualPrices: Array<{ territoryId: string; pricePointId: string }> = [];
@@ -779,7 +802,8 @@ async function resolvePPPPricesWithCache(
 async function resolvePPPPricesFromAPI(
   credentials: AppleConnectCredentials,
   inAppPurchaseId: string,
-  prices: Record<string, { currencyCode: string; units: string; nanos?: number }>
+  prices: Record<string, { currencyCode: string; units: string; nanos?: number }>,
+  ctx: RequestContext = {}
 ): Promise<PPPResolutionResult> {
   const territories = Object.entries(prices);
 
@@ -797,13 +821,14 @@ async function resolvePPPPricesFromAPI(
   const currencyPricePoints = new Map<string, Array<{ id: string; customerPrice: string }>>();
   const currencyTierMaps = new Map<string, Map<string, string>>(); // currency → (price → tier)
 
-  // Use Promise.all to fetch currencies in parallel
-  await Promise.all(Array.from(currencyToTerritories.entries()).map(async ([currency, territoryList]) => {
+  // Fetch currencies in parallel, a few at a time
+  await mapWithConcurrency(Array.from(currencyToTerritories.entries()), APPLE_READ_CONCURRENCY, async ([currency, territoryList]) => {
     const representativeTerritory = territoryList[0];
     const pricePoints = await getInAppPurchasePricePointsForTerritory(
       credentials,
       inAppPurchaseId,
-      representativeTerritory
+      representativeTerritory,
+      ctx
     );
     currencyPricePoints.set(currency, pricePoints);
 
@@ -816,7 +841,7 @@ async function resolvePPPPricesFromAPI(
       }
     }
     currencyTierMaps.set(currency, tierMap);
-  }));
+  });
 
   // Step 3: Extract sourceId from any price point
   const anyPricePoints = currencyPricePoints.values().next().value;
@@ -896,7 +921,8 @@ export function findClosestPricePoint(
 export async function getInAppPurchasePricePointsForTerritory(
   credentials: AppleConnectCredentials,
   inAppPurchaseId: string,
-  territoryCode: string
+  territoryCode: string,
+  ctx: RequestContext = {}
 ): Promise<Array<{ id: string; customerPrice: string }>> {
   try {
     // console.log(`[Apple] Fetching IAP price points for ${inAppPurchaseId} in ${territoryCode}`);
@@ -914,7 +940,7 @@ export async function getInAppPurchasePricePointsForTerritory(
       id: string;
       type: string;
       attributes: { customerPrice: string; proceeds: string };
-    }>(credentials, `/inAppPurchases/${inAppPurchaseId}/pricePoints`, { queryParams, apiVersion: 'v2' })) {
+    }>(credentials, `/inAppPurchases/${inAppPurchaseId}/pricePoints`, { queryParams, apiVersion: 'v2', budget: ctx.budget })) {
       for (const pp of response.data) {
         allPricePoints.push({
           id: pp.id,

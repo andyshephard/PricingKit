@@ -5,7 +5,7 @@ import type {
 } from './types';
 import { TokenCache, hashCredentialFields } from '../token-cache';
 import { ApiError, isRetryableStatus, toApiError } from '../utils/api-error';
-import type { RequestBudget } from '../utils/request-budget';
+import type { RequestBudget, RequestContext } from '../utils/request-budget';
 import {
   computeBackoffDelay,
   parseRetryAfter,
@@ -450,7 +450,8 @@ export async function testAppleConnection(
 
 // Get app ID for a bundle ID
 export async function getAppIdForBundleId(
-  credentials: AppleConnectCredentials
+  credentials: AppleConnectCredentials,
+  ctx: RequestContext = {}
 ): Promise<string | null> {
   try {
     // console.log('[Apple] getAppIdForBundleId - Looking up bundleId:', credentials.bundleId);
@@ -469,6 +470,7 @@ export async function getAppIdForBundleId(
           'fields[apps]': 'bundleId,name',
           limit: '200',
         },
+        budget: ctx.budget,
       }
     );
 

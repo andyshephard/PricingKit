@@ -8,3 +8,4 @@ export * from './strategies';
 export * from './rounding';
 export * from './decimal';
 export * from './snap';
+export * from './concurrency';

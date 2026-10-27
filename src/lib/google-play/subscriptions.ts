@@ -1,4 +1,5 @@
 import { googlePlayFetch } from './client';
+import type { RequestContext } from '../utils/request-budget';
 import type {
   ServiceAccountCredentials,
   Subscription,
@@ -48,7 +49,8 @@ async function patchBasePlanRegionalConfigs(
   productId: string,
   subscription: GoogleApiSubscription,
   basePlanId: string,
-  regionalConfigs: RegionalBasePlanConfig[]
+  regionalConfigs: RegionalBasePlanConfig[],
+  ctx: RequestContext = {}
 ): Promise<GoogleApiSubscription> {
   // Only the target base plan's regionalConfigs change. Every other field
   // (including otherRegionsConfig) and every other base plan is sent back
@@ -67,6 +69,7 @@ async function patchBasePlanRegionalConfigs(
     credentials,
     `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/subscriptions/${encodeURIComponent(productId)}`,
     {
+      budget: ctx.budget,
       method: 'PATCH',
       query: {
         'regionsVersion.version': resolveRegionsVersion(subscription, productId),
@@ -79,7 +82,8 @@ async function patchBasePlanRegionalConfigs(
 
 export async function listSubscriptions(
   credentials: ServiceAccountCredentials,
-  packageName: string
+  packageName: string,
+  ctx: RequestContext = {}
 ): Promise<Subscription[]> {
   const subscriptions: Subscription[] = [];
   let pageToken: string | undefined;
@@ -89,6 +93,7 @@ export async function listSubscriptions(
       credentials,
       `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/subscriptions`,
       {
+        budget: ctx.budget,
         query: {
           pageSize: 100,
           pageToken,
@@ -109,12 +114,14 @@ export async function listSubscriptions(
 export async function getSubscription(
   credentials: ServiceAccountCredentials,
   packageName: string,
-  productId: string
+  productId: string,
+  ctx: RequestContext = {}
 ): Promise<Subscription | null> {
   try {
     const subscription = await googlePlayFetch<GoogleApiSubscription>(
       credentials,
-      `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/subscriptions/${encodeURIComponent(productId)}`
+      `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/subscriptions/${encodeURIComponent(productId)}`,
+      { budget: ctx.budget }
     );
 
     if (subscription.regionsVersion) {
@@ -136,9 +143,10 @@ export async function getBasePlan(
   credentials: ServiceAccountCredentials,
   packageName: string,
   productId: string,
-  basePlanId: string
+  basePlanId: string,
+  ctx: RequestContext = {}
 ): Promise<BasePlan | null> {
-  const subscription = await getSubscription(credentials, packageName, productId);
+  const subscription = await getSubscription(credentials, packageName, productId, ctx);
   if (!subscription) {
     return null;
   }
@@ -150,9 +158,10 @@ export async function updateBasePlanPrices(
   packageName: string,
   productId: string,
   basePlanId: string,
-  regionalConfigs: RegionalBasePlanConfig[]
+  regionalConfigs: RegionalBasePlanConfig[],
+  ctx: RequestContext = {}
 ): Promise<BasePlan> {
-  const subscription = await getSubscription(credentials, packageName, productId);
+  const subscription = await getSubscription(credentials, packageName, productId, ctx);
   if (!subscription) {
     throw new Error(`Subscription ${productId} not found`);
   }
@@ -200,7 +209,8 @@ export async function updateBasePlanPrices(
     productId,
     subscription,
     basePlanId,
-    updatedConfigs
+    updatedConfigs,
+    ctx
   );
 
   return response.basePlans?.find(bp => bp.basePlanId === basePlanId) || basePlan;
@@ -211,9 +221,10 @@ export async function deleteBasePlanRegionPrice(
   packageName: string,
   productId: string,
   basePlanId: string,
-  regionCode: string
+  regionCode: string,
+  ctx: RequestContext = {}
 ): Promise<BasePlan> {
-  const subscription = await getSubscription(credentials, packageName, productId);
+  const subscription = await getSubscription(credentials, packageName, productId, ctx);
   if (!subscription) {
     throw new Error(`Subscription ${productId} not found`);
   }
@@ -243,7 +254,8 @@ export async function deleteBasePlanRegionPrice(
     productId,
     subscription,
     basePlanId,
-    filteredConfigs
+    filteredConfigs,
+    ctx
   );
 
   return response.basePlans?.find(bp => bp.basePlanId === basePlanId) || basePlan;

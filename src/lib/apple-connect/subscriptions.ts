@@ -16,14 +16,16 @@ import { appleListPages } from './pagination';
 import { alpha2ToAlpha3, alpha3ToAlpha2 } from './territories';
 import { ApiError, getErrorStatus, toApiError } from '../utils/api-error';
 import { executeWithRateLimit, type RateLimitOptions } from '../utils/rate-limit';
+import type { RequestBudget, RequestContext } from '../utils/request-budget';
 
 // List all subscription groups for an app
 export async function listSubscriptionGroups(
-  credentials: AppleConnectCredentials
+  credentials: AppleConnectCredentials,
+  ctx: RequestContext = {}
 ): Promise<NormalizedAppleSubscriptionGroup[]> {
   // console.log('[Apple] listSubscriptionGroups - Starting for bundleId:', credentials.bundleId);
 
-  const appId = await getAppIdForBundleId(credentials);
+  const appId = await getAppIdForBundleId(credentials, ctx);
   if (!appId) {
     console.error('[Apple] listSubscriptionGroups - No app ID found');
     throw new ApiError(`App with Bundle ID "${credentials.bundleId}" not found`, {
@@ -45,11 +47,11 @@ export async function listSubscriptionGroups(
   for await (const page of appleListPages<AppleSubscriptionGroup>(
     credentials,
     `/apps/${appId}/subscriptionGroups`,
-    { queryParams }
+    { queryParams, budget: ctx.budget }
   )) {
     // For each group, fetch its subscriptions directly
     for (const group of page.data) {
-      const groupSubs = await fetchGroupSubscriptions(credentials, group.id, group.attributes.referenceName);
+      const groupSubs = await fetchGroupSubscriptions(credentials, group.id, group.attributes.referenceName, ctx);
       allGroups.push({
         id: group.id,
         name: group.attributes.referenceName,
@@ -67,7 +69,8 @@ export async function listSubscriptionGroups(
 async function fetchGroupSubscriptions(
   credentials: AppleConnectCredentials,
   groupId: string,
-  groupName: string
+  groupName: string,
+  ctx: RequestContext = {}
 ): Promise<NormalizedAppleSubscription[]> {
   const subscriptions: NormalizedAppleSubscription[] = [];
 
@@ -79,7 +82,7 @@ async function fetchGroupSubscriptions(
   for await (const page of appleListPages<AppleSubscription>(
     credentials,
     `/subscriptionGroups/${groupId}/subscriptions`,
-    { queryParams }
+    { queryParams, budget: ctx.budget }
   )) {
     for (const sub of page.data) {
       subscriptions.push({
@@ -101,9 +104,10 @@ async function fetchGroupSubscriptions(
 
 // List all subscriptions (flattened from groups)
 export async function listSubscriptions(
-  credentials: AppleConnectCredentials
+  credentials: AppleConnectCredentials,
+  ctx: RequestContext = {}
 ): Promise<NormalizedAppleSubscription[]> {
-  const groups = await listSubscriptionGroups(credentials);
+  const groups = await listSubscriptionGroups(credentials, ctx);
   return groups.flatMap((g) => g.subscriptions);
 }
 
@@ -112,18 +116,19 @@ export async function listSubscriptions(
 // failures (auth, rate limit, 5xx, network) are thrown as ApiError.
 export async function getSubscription(
   credentials: AppleConnectCredentials,
-  productId: string
+  productId: string,
+  ctx: RequestContext = {}
 ): Promise<NormalizedAppleSubscription | null> {
   try {
     // Get all subscription groups to find the subscription
     // (throws APP_NOT_FOUND if the bundle ID doesn't resolve to an app)
-    const groups = await listSubscriptionGroups(credentials);
+    const groups = await listSubscriptionGroups(credentials, ctx);
 
     for (const group of groups) {
       const sub = group.subscriptions.find((s) => s.productId === productId);
       if (sub) {
         // Fetch additional details including localizations
-        const details = await getSubscriptionDetails(credentials, sub.id);
+        const details = await getSubscriptionDetails(credentials, sub.id, ctx);
         return details ?? sub;
       }
     }
@@ -137,7 +142,8 @@ export async function getSubscription(
 // Get subscription details with localizations
 async function getSubscriptionDetails(
   credentials: AppleConnectCredentials,
-  subscriptionId: string
+  subscriptionId: string,
+  ctx: RequestContext = {}
 ): Promise<NormalizedAppleSubscription | null> {
   try {
     // Single item endpoint returns AppleApiResponse (not list)
@@ -150,6 +156,7 @@ async function getSubscriptionDetails(
           'name,productId,state,subscriptionPeriod,groupLevel,familySharable',
         'fields[subscriptionLocalizations]': 'name,description,locale',
       },
+      budget: ctx.budget,
     });
 
     // Handle both single item response and list response
@@ -201,9 +208,10 @@ async function getSubscriptionDetails(
 // Get a subscription by its Apple subscription ID (numeric ID like "1234567890")
 export async function getSubscriptionById(
   credentials: AppleConnectCredentials,
-  subscriptionId: string
+  subscriptionId: string,
+  ctx: RequestContext = {}
 ): Promise<NormalizedAppleSubscription | null> {
-  return getSubscriptionDetails(credentials, subscriptionId);
+  return getSubscriptionDetails(credentials, subscriptionId, ctx);
 }
 
 // Type for subscription price data from API
@@ -233,7 +241,8 @@ export interface SubscriptionPricesResult {
 // Get prices for a subscription
 export async function getSubscriptionPrices(
   credentials: AppleConnectCredentials,
-  subscriptionId: string
+  subscriptionId: string,
+  ctx: RequestContext = {}
 ): Promise<SubscriptionPricesResult> {
   try {
     const currentPrices: Record<string, AppleProductPrice> = {};
@@ -257,7 +266,7 @@ export async function getSubscriptionPrices(
     for await (const response of appleListPages<SubscriptionPriceData>(
       credentials,
       `/subscriptions/${subscriptionId}/prices`,
-      { queryParams }
+      { queryParams, budget: ctx.budget }
     )) {
       allPriceData.push(...response.data);
 
@@ -383,11 +392,15 @@ export async function getSubscriptionPrices(
   }
 }
 
+/** Page size for subscription price point reads (Apple's documented maximum) */
+export const APPLE_PRICE_POINT_PAGE_LIMIT = 8000;
+
 // Get available subscription price points for a territory
 export async function getSubscriptionPricePoints(
   credentials: AppleConnectCredentials,
   subscriptionId: string,
-  territoryCode: string = 'USA'
+  territoryCode: string = 'USA',
+  ctx: RequestContext = {}
 ): Promise<
   Array<{
     id: string;
@@ -402,16 +415,18 @@ export async function getSubscriptionPricePoints(
       proceeds: string;
     }> = [];
 
+    // Apple documents limit up to 8000 here: one request covers a territory's
+    // whole ladder instead of ~4 pages of 200
     const queryParams = {
       'filter[territory]': territoryCode,
-      limit: '200',
+      limit: String(APPLE_PRICE_POINT_PAGE_LIMIT),
       'fields[subscriptionPricePoints]': 'customerPrice,proceeds',
     };
 
     for await (const response of appleListPages<AppleSubscriptionPricePoint>(
       credentials,
       `/subscriptions/${subscriptionId}/pricePoints`,
-      { queryParams }
+      { queryParams, budget: ctx.budget }
     )) {
       for (const pp of response.data) {
         allPricePoints.push({
@@ -456,10 +471,12 @@ export async function updateSubscriptionPrice(
   pricePointId: string,
   territoryCode: string,
   startDate?: string,
-  preserveCurrentPrice: boolean = true
+  preserveCurrentPrice: boolean = true,
+  ctx: RequestContext = {}
 ): Promise<void> {
   await appleApiRequest(credentials, `/subscriptionPrices`, {
     method: 'POST',
+    budget: ctx.budget,
     body: {
       data: {
         type: 'subscriptionPrices',
@@ -496,13 +513,15 @@ export async function updateSubscriptionPrice(
 // Delete subscription price for a territory
 export async function deleteSubscriptionPrice(
   credentials: AppleConnectCredentials,
-  subscriptionPriceId: string
+  subscriptionPriceId: string,
+  ctx: RequestContext = {}
 ): Promise<void> {
   await appleApiRequest(
     credentials,
     `/subscriptionPrices/${subscriptionPriceId}`,
     {
       method: 'DELETE',
+      budget: ctx.budget,
     }
   );
 }
@@ -576,10 +595,13 @@ export async function applySubscriptionPriceChanges(
   options: {
     preserveCurrentPrice?: boolean;
     rateLimit?: Pick<RateLimitOptions, 'concurrency' | 'delayBetweenBatches'>;
+    /** Every create and delete consumes from this budget */
+    budget?: RequestBudget;
     onProgress?: (completed: number, total: number) => void;
   } = {}
 ): Promise<TerritoryPriceOutcome[]> {
   const { preserveCurrentPrice = true } = options;
+  const ctx: RequestContext = { budget: options.budget };
 
   const applyOne = async (
     territoryCode: string,
@@ -592,7 +614,8 @@ export async function applySubscriptionPriceChanges(
         pricePointId,
         territoryCode,
         startDate,
-        preserveCurrentPrice
+        preserveCurrentPrice,
+        ctx
       );
 
     // Only a future-dated change replaces the existing scheduled price
@@ -632,7 +655,7 @@ export async function applySubscriptionPriceChanges(
 
     // New price exists; now it's safe to remove the one it replaces
     try {
-      await deleteSubscriptionPrice(credentials, previous.subscriptionPriceId);
+      await deleteSubscriptionPrice(credentials, previous.subscriptionPriceId, ctx);
     } catch (deleteError) {
       // Already gone is fine; anything else leaves both prices scheduled
       if (getErrorStatus(deleteError) !== 404) {

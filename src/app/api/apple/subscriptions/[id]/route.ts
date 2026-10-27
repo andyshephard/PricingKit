@@ -16,6 +16,7 @@ import {
   ValidationError,
   regionCodeSchema,
 } from '@/lib/validation';
+import { RequestBudget } from '@/lib/utils/request-budget';
 
 // Check if the ID is a numeric Apple subscription ID (e.g., "1234567890")
 function isNumericSubscriptionId(id: string): boolean {
@@ -111,6 +112,9 @@ export async function PATCH(
     }
 
     const { id } = await params;
+    // One budget for the whole run: reads, creates and deletes (Apple allows ~3600/hour per key)
+    const budget = new RequestBudget();
+    const ctx = { budget };
 
     let body;
     try {
@@ -133,7 +137,7 @@ export async function PATCH(
     // Get the subscription (by ID or productId)
     let subscription;
     if (isNumericSubscriptionId(id)) {
-      subscription = await getSubscriptionById(auth.credentials, id);
+      subscription = await getSubscriptionById(auth.credentials, id, ctx);
     } else {
       let productId: string;
       try {
@@ -147,7 +151,7 @@ export async function PATCH(
         }
         throw error;
       }
-      subscription = await getSubscription(auth.credentials, productId);
+      subscription = await getSubscription(auth.credentials, productId, ctx);
     }
 
     if (!subscription) {
@@ -161,7 +165,7 @@ export async function PATCH(
 
     // Fetch current scheduled prices: Apple only allows one scheduled (future)
     // price per territory, so a future-dated change replaces the existing one
-    const currentPricesResult = await getSubscriptionPrices(auth.credentials, subscription.id);
+    const currentPricesResult = await getSubscriptionPrices(auth.credentials, subscription.id, ctx);
     const scheduledPrices = currentPricesResult.scheduled;
 
     // Stream progress back to the client
@@ -179,6 +183,7 @@ export async function PATCH(
           scheduledPrices,
           {
             preserveCurrentPrice,
+            budget,
             onProgress: (completed, total) => writer.progress(completed, total, 'update'),
           }
         );
@@ -191,11 +196,12 @@ export async function PATCH(
         let updatedSubscription: Awaited<ReturnType<typeof getSubscriptionById>> = null;
         let refreshError: string | undefined;
         try {
-          updatedSubscription = await getSubscriptionById(credentials, subscriptionId);
+          updatedSubscription = await getSubscriptionById(credentials, subscriptionId, ctx);
           if (updatedSubscription) {
             const updatedPricesResult = await getSubscriptionPrices(
               credentials,
-              updatedSubscription.id
+              updatedSubscription.id,
+              ctx
             );
             updatedSubscription.prices = updatedPricesResult.current;
             updatedSubscription.scheduledPrices = Object.keys(updatedPricesResult.scheduled).length > 0

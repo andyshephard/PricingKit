@@ -12,6 +12,7 @@ import {
 } from '@/lib/google-play/subscriptions';
 import type { Money, RegionalBasePlanConfig } from '@/lib/google-play/types';
 import { toApiError } from '@/lib/utils/api-error';
+import { RequestBudget } from '@/lib/utils/request-budget';
 
 type SkippedRegion = { regionCode: string; reason: string };
 
@@ -57,6 +58,8 @@ export async function POST(request: NextRequest) {
       );
     }
     const result = bulkUpdateSchema.safeParse(body);
+    // One request budget for the whole bulk run
+    const ctx = { budget: new RequestBudget() };
 
     if (!result.success) {
       return NextResponse.json(
@@ -101,7 +104,8 @@ export async function POST(request: NextRequest) {
           const product = await getInAppProduct(
             auth.credentials,
             auth.packageName,
-            item.id
+            item.id,
+            ctx
           );
 
           if (!product) {
@@ -164,7 +168,9 @@ export async function POST(request: NextRequest) {
             auth.credentials,
             auth.packageName,
             item.id,
-            newPrices
+            newPrices,
+            undefined,
+            ctx
           );
 
           results.push({
@@ -178,7 +184,8 @@ export async function POST(request: NextRequest) {
           const subscription = await getSubscription(
             auth.credentials,
             auth.packageName,
-            item.id
+            item.id,
+            ctx
           );
 
           if (!subscription) {
@@ -289,7 +296,8 @@ export async function POST(request: NextRequest) {
                 auth.packageName,
                 item.id,
                 basePlan.basePlanId,
-                newConfigs
+                newConfigs,
+                ctx
               );
 
               results.push({

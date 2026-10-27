@@ -9,6 +9,7 @@ import { alpha2ToAlpha3 } from '@/lib/apple-connect/territories';
 import { executeWithRateLimit, RateLimitError } from '@/lib/utils/rate-limit';
 import { getErrorStatus } from '@/lib/utils/api-error';
 import { createNdjsonStream, NDJSON_HEADERS } from '@/lib/utils/ndjson-stream';
+import { isBudgetExceeded, RequestBudget } from '@/lib/utils/request-budget';
 
 const batchSchema = z.object({
   territories: z.record(
@@ -69,6 +70,8 @@ export async function POST(
 
     const credentials = auth.credentials;
     const subscriptionId = id;
+    // One budget for the whole run (Apple allows ~3600 requests/hour per key)
+    const ctx = { budget: new RequestBudget() };
 
     (async () => {
       try {
@@ -93,12 +96,14 @@ export async function POST(
                 const pricePoints = await getSubscriptionPricePoints(
                   credentials,
                   subscriptionId,
-                  alpha3
+                  alpha3,
+                  ctx
                 );
                 return { territoryCode, targetPrice, currency, pricePoints, error: undefined };
               } catch (error) {
                 const status = getErrorStatus(error);
-                if (status === 401 || status === 403) throw error;
+                // Auth failures and a spent budget abort the run instead of skipping every territory
+                if (status === 401 || status === 403 || isBudgetExceeded(error)) throw error;
                 return {
                   territoryCode,
                   targetPrice,

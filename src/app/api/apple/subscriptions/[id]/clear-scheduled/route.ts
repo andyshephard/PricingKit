@@ -14,6 +14,7 @@ import {
   validateAndDecodeAppleProductId,
   ValidationError,
 } from '@/lib/validation';
+import { RequestBudget } from '@/lib/utils/request-budget';
 
 // Check if the ID is a numeric Apple subscription ID (e.g., "1234567890")
 function isNumericSubscriptionId(id: string): boolean {
@@ -35,11 +36,13 @@ export async function POST(
     }
 
     const { id } = await params;
+    // One budget for the whole run (Apple allows ~3600 requests/hour per key)
+    const ctx = { budget: new RequestBudget() };
 
     // Get the subscription (by ID or productId)
     let subscription;
     if (isNumericSubscriptionId(id)) {
-      subscription = await getSubscriptionById(auth.credentials, id);
+      subscription = await getSubscriptionById(auth.credentials, id, ctx);
     } else {
       let productId: string;
       try {
@@ -53,7 +56,7 @@ export async function POST(
         }
         throw error;
       }
-      subscription = await getSubscription(auth.credentials, productId);
+      subscription = await getSubscription(auth.credentials, productId, ctx);
     }
 
     if (!subscription) {
@@ -64,7 +67,7 @@ export async function POST(
     }
 
     // Fetch current prices to get scheduled prices
-    const currentPricesResult = await getSubscriptionPrices(auth.credentials, subscription.id);
+    const currentPricesResult = await getSubscriptionPrices(auth.credentials, subscription.id, ctx);
     const scheduledPrices = currentPricesResult.scheduled;
 
     // Check if there are any scheduled prices to delete
@@ -88,7 +91,7 @@ export async function POST(
       ([territory, price]) =>
         async () => {
           try {
-            await deleteSubscriptionPrice(auth.credentials, price.subscriptionPriceId!);
+            await deleteSubscriptionPrice(auth.credentials, price.subscriptionPriceId!, ctx);
             return { territory, deleted: true as const };
           } catch (error) {
             if (getErrorStatus(error) === 409) {
@@ -123,7 +126,7 @@ export async function POST(
         // Fetch updated prices to confirm (deletes are done; a failed refresh isn't a failed clear)
         let remainingScheduled: number | undefined;
         try {
-          const updatedPricesResult = await getSubscriptionPrices(credentials, subscriptionId);
+          const updatedPricesResult = await getSubscriptionPrices(credentials, subscriptionId, ctx);
           remainingScheduled = Object.keys(updatedPricesResult.scheduled).length;
         } catch (error) {
           console.error('Error refreshing prices after clearing scheduled prices:', error);

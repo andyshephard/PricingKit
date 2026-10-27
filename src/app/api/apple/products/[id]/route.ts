@@ -17,6 +17,8 @@ import {
   regionCodeSchema,
   currencyCodeSchema,
 } from '@/lib/validation';
+import { RequestBudget } from '@/lib/utils/request-budget';
+import { mapWithConcurrency } from '@/lib/pricing/concurrency';
 
 // GET /api/apple/products/[id] - Get a single product with prices
 export async function GET(
@@ -112,6 +114,8 @@ export async function PATCH(
     }
 
     const { id } = await params;
+    // One budget for the whole run (Apple allows ~3600 requests/hour per key)
+    const ctx = { budget: new RequestBudget() };
 
     // Validate and decode product ID
     let productId: string;
@@ -146,7 +150,7 @@ export async function PATCH(
     }
 
     // Get the product to find its internal ID
-    const product = await getInAppPurchase(auth.credentials, productId);
+    const product = await getInAppPurchase(auth.credentials, productId, ctx);
     if (!product) {
       return NextResponse.json(
         { error: 'Product not found' },
@@ -156,7 +160,7 @@ export async function PATCH(
 
     // Fetch base territory from Apple's dedicated endpoint
     product.baseTerritory =
-      (await getBaseTerritoryForProduct(auth.credentials, product.id)) ?? undefined;
+      (await getBaseTerritoryForProduct(auth.credentials, product.id, ctx)) ?? undefined;
 
     // Update prices
     const { prices } = result.data;
@@ -200,7 +204,8 @@ export async function PATCH(
       const result: PPPResolutionResult = await resolvePPPPricesToPricePoints(
         auth.credentials,
         product.id,
-        moneyPrices
+        moneyPrices,
+        ctx
       );
 
       skippedTerritories = result.skipped;
@@ -221,29 +226,27 @@ export async function PATCH(
         auth.credentials,
         product.id,
         result.resolved,
-        baseTerritory
+        baseTerritory,
+        ctx
       );
 
       updatedCount = result.resolved.length;
     } else {
-      // Direct pricePointId format - update each territory
-      const updates: Promise<void>[] = [];
+      // Direct pricePointId format - update each territory, one at a time
+      const updates = Object.entries(prices).flatMap(([territoryCode, priceData]) =>
+        'pricePointId' in priceData ? [{ territoryCode, ...priceData }] : []
+      );
 
-      for (const [territoryCode, priceData] of Object.entries(prices)) {
-        if ('pricePointId' in priceData) {
-          updates.push(
-            updateInAppPurchasePrice(
-              auth.credentials,
-              product.id,
-              priceData.pricePointId,
-              territoryCode,
-              priceData.startDate
-            )
-          );
-        }
-      }
-
-      await Promise.all(updates);
+      await mapWithConcurrency(updates, 1, (update) =>
+        updateInAppPurchasePrice(
+          auth.credentials,
+          product.id,
+          update.pricePointId,
+          update.territoryCode,
+          update.startDate,
+          ctx
+        )
+      );
       updatedCount = updates.length;
     }
 
@@ -252,11 +255,11 @@ export async function PATCH(
     let updatedProduct: Awaited<ReturnType<typeof getInAppPurchase>> = null;
     let refreshError: string | undefined;
     try {
-      updatedProduct = await getInAppPurchase(auth.credentials, productId);
+      updatedProduct = await getInAppPurchase(auth.credentials, productId, ctx);
       if (updatedProduct) {
         const [updatedPrices, updatedBaseTerritory] = await Promise.all([
-          getInAppPurchasePrices(auth.credentials, updatedProduct.id),
-          getBaseTerritoryForProduct(auth.credentials, updatedProduct.id),
+          getInAppPurchasePrices(auth.credentials, updatedProduct.id, ctx),
+          getBaseTerritoryForProduct(auth.credentials, updatedProduct.id, ctx),
         ]);
         updatedProduct.prices = updatedPrices;
         updatedProduct.baseTerritory = updatedBaseTerritory ?? undefined;

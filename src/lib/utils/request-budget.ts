@@ -107,3 +107,17 @@ export class RequestBudget {
     this.timestamps.push(this.now());
   }
 }
+
+/**
+ * Per-call context threaded through the store helpers (lib/apple-connect,
+ * lib/google-play). Every HTTP request a helper makes, including retries and
+ * pagination, consumes from `budget` when one is given.
+ */
+export interface RequestContext {
+  budget?: RequestBudget;
+}
+
+/** True for the error RequestBudget.consume() throws once a budget is spent */
+export function isBudgetExceeded(error: unknown): boolean {
+  return error instanceof ApiError && error.code === BUDGET_EXCEEDED_CODE;
+}
