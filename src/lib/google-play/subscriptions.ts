@@ -4,11 +4,8 @@ import type {
   Subscription,
   BasePlan,
   RegionalBasePlanConfig,
-  Money,
   RegionsVersion,
 } from './types';
-import { GOOGLE_PLAY_REGIONS, moneyToNumber } from './types';
-import { calculateBulkPrices } from './currency';
 
 interface GoogleApiSubscription extends Subscription {
   regionsVersion?: RegionsVersion;
@@ -26,11 +23,58 @@ interface SubscriptionUpdateRequestBody {
 }
 
 /**
- * Get the latest available regions version for Google Play pricing.
- * Required for subscription price updates. Format: YYYY/MM.
+ * Fallback regions version, used ONLY when the subscription resource we fetched
+ * has no `regionsVersion` of its own. Format: YYYY/MM.
+ *
+ * Google requires `regionsVersion.version` on every base plan price PATCH. We
+ * always prefer the version the resource already reports so a price edit never
+ * silently migrates the product onto a newer region set.
  */
-export function getLatestRegionsVersion(): string {
-  return '2025/03';
+export const FALLBACK_SUBSCRIPTION_REGIONS_VERSION = '2025/03';
+
+function resolveRegionsVersion(subscription: GoogleApiSubscription, productId: string): string {
+  if (subscription.regionsVersion?.version) {
+    return subscription.regionsVersion.version;
+  }
+  console.warn(
+    `Subscription ${productId} has no regionsVersion; falling back to ${FALLBACK_SUBSCRIPTION_REGIONS_VERSION}`
+  );
+  return FALLBACK_SUBSCRIPTION_REGIONS_VERSION;
+}
+
+async function patchBasePlanRegionalConfigs(
+  credentials: ServiceAccountCredentials,
+  packageName: string,
+  productId: string,
+  subscription: GoogleApiSubscription,
+  basePlanId: string,
+  regionalConfigs: RegionalBasePlanConfig[]
+): Promise<GoogleApiSubscription> {
+  // Only the target base plan's regionalConfigs change. Every other field
+  // (including otherRegionsConfig) and every other base plan is sent back
+  // exactly as fetched, because updateMask=basePlans replaces the whole list.
+  const updatedBasePlans = subscription.basePlans?.map(bp =>
+    bp.basePlanId === basePlanId ? { ...bp, regionalConfigs } : bp
+  );
+
+  const requestBody: SubscriptionUpdateRequestBody = {
+    packageName,
+    productId,
+    basePlans: updatedBasePlans,
+  };
+
+  return googlePlayFetch<GoogleApiSubscription>(
+    credentials,
+    `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/subscriptions/${encodeURIComponent(productId)}`,
+    {
+      method: 'PATCH',
+      query: {
+        'regionsVersion.version': resolveRegionsVersion(subscription, productId),
+        updateMask: 'basePlans',
+      },
+      body: requestBody,
+    }
+  );
 }
 
 export async function listSubscriptions(
@@ -118,86 +162,45 @@ export async function updateBasePlanPrices(
     throw new Error(`Base plan ${basePlanId} not found in subscription ${productId}`);
   }
 
-  const existingConfigs = basePlan.regionalConfigs || [];
-  const configMap = new Map<string, RegionalBasePlanConfig>();
-
-  for (const config of existingConfigs) {
-    configMap.set(config.regionCode, {
-      ...config,
-      newSubscriberAvailability: true,
-    });
-  }
-
+  // Change only the regions the caller passed in. Existing regions keep their
+  // position, availability and any other fields; regions not in the request
+  // are sent back as fetched. No fill-in of unconfigured regions: if Google
+  // needs more (e.g. a USD/EUR price backing otherRegionsConfig), its own
+  // validation error is surfaced instead of us guessing prices.
+  const incoming = new Map<string, RegionalBasePlanConfig>();
   for (const config of regionalConfigs) {
-    configMap.set(config.regionCode, {
-      ...config,
-      newSubscriberAvailability: true,
-    });
+    incoming.set(config.regionCode, config);
   }
 
-  const mergedConfigs = Array.from(configMap.values());
-  const usConfig = mergedConfigs.find(c => c.regionCode === 'US');
-  if (!usConfig) {
-    throw new Error(`US price not found for base plan ${basePlanId}. Cannot calculate regional prices without a base USD price.`);
-  }
-  const baseUsdPrice = moneyToNumber(usConfig.price);
-
-  const allRegionCodes = GOOGLE_PLAY_REGIONS.map(r => r.code);
-  const missingRegions = allRegionCodes.filter(code => !configMap.has(code));
-
-  if (missingRegions.length > 0) {
-    const calculatedPrices = calculateBulkPrices(
-      baseUsdPrice,
-      missingRegions,
-      'direct', // Use simple exchange rate for fill-in regions
-      'nearest-99',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      'USD',
-      'US'
-    );
-    for (const calculated of calculatedPrices) {
-      configMap.set(calculated.regionCode, {
-        regionCode: calculated.regionCode,
-        price: calculated.price,
-        newSubscriberAvailability: true,
-      });
+  const updatedConfigs: RegionalBasePlanConfig[] = (basePlan.regionalConfigs || []).map(existing => {
+    const update = incoming.get(existing.regionCode);
+    if (!update) {
+      return existing;
     }
-  }
-
-  const updatedConfigs = Array.from(configMap.values());
-
-  const updatedBasePlans = subscription.basePlans?.map(bp => {
-    if (bp.basePlanId === basePlanId) {
-      return {
-        ...bp,
-        regionalConfigs: updatedConfigs,
-      };
-    }
-    return bp;
+    incoming.delete(existing.regionCode);
+    return {
+      ...existing,
+      price: update.price,
+      newSubscriberAvailability: update.newSubscriberAvailability ?? existing.newSubscriberAvailability,
+    };
   });
 
-  const regionsVersionString = subscription.regionsVersion?.version || getLatestRegionsVersion();
+  // Regions not yet configured on the base plan: open to new subscribers
+  // unless the caller says otherwise.
+  for (const config of incoming.values()) {
+    updatedConfigs.push({
+      ...config,
+      newSubscriberAvailability: config.newSubscriberAvailability ?? true,
+    });
+  }
 
-  const requestBody: SubscriptionUpdateRequestBody = {
+  const response = await patchBasePlanRegionalConfigs(
+    credentials,
     packageName,
     productId,
-    basePlans: updatedBasePlans,
-  };
-
-  const response = await googlePlayFetch<GoogleApiSubscription>(
-    credentials,
-    `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/subscriptions/${encodeURIComponent(productId)}`,
-    {
-      method: 'PATCH',
-      query: {
-        'regionsVersion.version': regionsVersionString,
-        updateMask: 'basePlans',
-      },
-      body: requestBody,
-    }
+    subscription,
+    basePlanId,
+    updatedConfigs
   );
 
   return response.basePlans?.find(bp => bp.basePlanId === basePlanId) || basePlan;
@@ -220,128 +223,28 @@ export async function deleteBasePlanRegionPrice(
     throw new Error(`Base plan ${basePlanId} not found`);
   }
 
-  const filteredConfigs = (basePlan.regionalConfigs || []).filter(
-    config => config.regionCode !== regionCode
-  );
-
-  const configMap = new Map<string, RegionalBasePlanConfig>();
-  for (const config of filteredConfigs) {
-    configMap.set(config.regionCode, config);
-  }
-
-  const usConfig = filteredConfigs.find(c => c.regionCode === 'US');
-  if (!usConfig) {
-    throw new Error(`US price not found for base plan ${basePlanId}. Cannot calculate regional prices without a base USD price.`);
-  }
-  const baseUsdPrice = moneyToNumber(usConfig.price);
-
-  const allRegionCodes = GOOGLE_PLAY_REGIONS.map(r => r.code);
-  const missingRegions = allRegionCodes.filter(code => !configMap.has(code));
-
-  if (missingRegions.length > 0) {
-    const calculatedPrices = calculateBulkPrices(
-      baseUsdPrice,
-      missingRegions,
-      'direct',
-      'nearest-99',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      'USD',
-      'US'
+  const existingConfigs = basePlan.regionalConfigs || [];
+  if (!existingConfigs.some(config => config.regionCode === regionCode)) {
+    throw Object.assign(
+      new Error(`Region ${regionCode} is not configured on base plan ${basePlanId}`),
+      { code: 404 }
     );
-    for (const calculated of calculatedPrices) {
-      configMap.set(calculated.regionCode, {
-        regionCode: calculated.regionCode,
-        price: calculated.price,
-        newSubscriberAvailability: true,
-      });
-    }
   }
 
-  const updatedConfigs = Array.from(configMap.values());
+  // Remove exactly this region; every other region is sent back unchanged and
+  // nothing is filled in. Google may refuse (e.g. a region that still has
+  // subscribers, or the last USD/EUR price backing otherRegionsConfig); that
+  // error propagates as-is so the user sees Google's reason.
+  const filteredConfigs = existingConfigs.filter(config => config.regionCode !== regionCode);
 
-  const updatedBasePlans = subscription.basePlans?.map(bp => {
-    if (bp.basePlanId === basePlanId) {
-      return {
-        ...bp,
-        regionalConfigs: updatedConfigs,
-      };
-    }
-    return bp;
-  });
-
-  const regionsVersionString = subscription.regionsVersion?.version || getLatestRegionsVersion();
-
-  const deleteRequestBody: SubscriptionUpdateRequestBody = {
+  const response = await patchBasePlanRegionalConfigs(
+    credentials,
     packageName,
     productId,
-    basePlans: updatedBasePlans,
-  };
-
-  const response = await googlePlayFetch<GoogleApiSubscription>(
-    credentials,
-    `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/subscriptions/${encodeURIComponent(productId)}`,
-    {
-      method: 'PATCH',
-      query: {
-        'regionsVersion.version': regionsVersionString,
-        updateMask: 'basePlans',
-      },
-      body: deleteRequestBody,
-    }
+    subscription,
+    basePlanId,
+    filteredConfigs
   );
 
   return response.basePlans?.find(bp => bp.basePlanId === basePlanId) || basePlan;
-}
-
-export function calculateNewBasePlanPrice(
-  currentConfig: RegionalBasePlanConfig,
-  operation: { type: 'fixed' | 'percentage' | 'round'; value?: number; roundTo?: number }
-): RegionalBasePlanConfig {
-  const parsedUnits = parseFloat(currentConfig.price.units);
-  if (isNaN(parsedUnits) || !Number.isFinite(parsedUnits)) {
-    throw new Error(`Invalid price units value: "${currentConfig.price.units}"`);
-  }
-  const currentAmount = parsedUnits +
-    (currentConfig.price.nanos ? currentConfig.price.nanos / 1_000_000_000 : 0);
-
-  let newAmount: number;
-
-  switch (operation.type) {
-    case 'fixed':
-      newAmount = operation.value ?? currentAmount;
-      break;
-    case 'percentage':
-      newAmount = currentAmount * (1 + (operation.value ?? 0) / 100);
-      break;
-    case 'round':
-      const roundTo = operation.roundTo ?? 0.99;
-      newAmount = Math.floor(currentAmount) + roundTo;
-      break;
-    default:
-      newAmount = currentAmount;
-  }
-
-  newAmount = Math.max(0, newAmount);
-
-  let units = Math.floor(newAmount);
-  let nanos = Math.round((newAmount - units) * 1_000_000_000);
-
-  if (nanos > 999_999_999) {
-    units += Math.floor(nanos / 1_000_000_000);
-    nanos = nanos % 1_000_000_000;
-  }
-
-  const newPrice: Money = {
-    currencyCode: currentConfig.price.currencyCode,
-    units: units.toString(),
-    nanos: nanos > 0 ? nanos : undefined,
-  };
-
-  return {
-    ...currentConfig,
-    price: newPrice,
-  };
 }
