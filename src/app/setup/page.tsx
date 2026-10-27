@@ -9,7 +9,7 @@ import { AppleConnectUpload } from '@/components/auth/apple-connect-upload';
 import { useAuthStore } from '@/store/auth-store';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { LandingFooter } from '@/components/landing/landing-footer';
+import { SiteFooter } from "@/components/site/site-footer";
 
 type PlatformTab = 'google' | 'apple';
 
@@ -125,7 +125,7 @@ export default function SetupPage() {
         </div>
       </div>
 
-      <LandingFooter />
+      <SiteFooter />
     </div>
   );
 }
