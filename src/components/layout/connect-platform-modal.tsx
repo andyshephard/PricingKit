@@ -361,7 +361,7 @@ export function ConnectPlatformModal({
               className={`
                 relative border-2 border-dashed rounded-lg p-4 transition-colors
                 ${state.isDragging ? 'border-primary bg-primary/5' : 'border-muted-foreground/25'}
-                ${state.file ? 'border-green-500 bg-green-50 dark:bg-green-950/20' : ''}
+                ${state.file ? 'border-success-foreground bg-success' : ''}
                 ${state.isLoading ? 'opacity-50 pointer-events-none' : 'cursor-pointer'}
               `}
             >
@@ -376,9 +376,9 @@ export function ConnectPlatformModal({
                 {state.file ? (
                   <>
                     {platform === 'google' ? (
-                      <FileJson className="h-8 w-8 text-green-500" />
+                      <FileJson className="h-8 w-8 text-success-foreground" />
                     ) : (
-                      <Key className="h-8 w-8 text-green-500" />
+                      <Key className="h-8 w-8 text-success-foreground" />
                     )}
                     <p className="text-sm font-medium">{state.file.name}</p>
                     <p className="text-xs text-muted-foreground">

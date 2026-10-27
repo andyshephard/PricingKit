@@ -330,7 +330,7 @@ export default function AppleSetupGuidePage() {
           </Card>
 
           {/* Ready */}
-          <Card className="bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-900">
+          <Card className="bg-success border-line">
             <CardContent className="pt-6">
               <div className="flex items-center gap-3 mb-4">
                 <CheckCircle2 className="h-8 w-8 text-success-foreground" />

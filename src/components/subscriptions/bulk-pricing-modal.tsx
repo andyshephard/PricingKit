@@ -156,19 +156,6 @@ export function SubscriptionBulkPricingModal({
     return [...GOOGLE_PLAY_REGIONS].sort((a, b) => a.name.localeCompare(b.name));
   }, []);
 
-  // Fetch PPP data and exchange rates when modal opens
-  // Only depend on `open` to prevent infinite retry loops on fetch failure
-  useEffect(() => {
-    if (open) {
-      if (!pppData && !pppLoading) {
-        fetchPPPData();
-      }
-      if (!exchangeRates && !exchangeRatesLoading) {
-        fetchExchangeRates();
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
 
   const fetchPPPData = async (forceRefresh = false) => {
     setPppLoading(true);
@@ -214,6 +201,20 @@ export function SubscriptionBulkPricingModal({
       setExchangeRatesFetched(true);
     }
   };
+
+  // Fetch PPP data and exchange rates when modal opens
+  // Only depend on `open` to prevent infinite retry loops on fetch failure
+  useEffect(() => {
+    if (open) {
+      if (!pppData && !pppLoading) {
+        fetchPPPData();
+      }
+      if (!exchangeRates && !exchangeRatesLoading) {
+        fetchExchangeRates();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   // Get regions to apply pricing to
   const targetRegions = useMemo(() => {
@@ -891,9 +892,9 @@ export function SubscriptionBulkPricingModal({
                                 <TooltipTrigger asChild>
                                   <span className={
                                     calculated.multiplier < 1
-                                      ? 'text-green-600 cursor-help'
+                                      ? 'text-success-foreground cursor-help'
                                       : calculated.multiplier > 1
-                                      ? 'text-orange-600 cursor-help'
+                                      ? 'text-change cursor-help'
                                       : 'text-muted-foreground cursor-help'
                                   }>
                                     {calculated.multiplier.toFixed(2)}×
@@ -961,16 +962,16 @@ export function SubscriptionBulkPricingModal({
                                 <span
                                   className={
                                     calculated.change > 0
-                                      ? 'text-red-600'
+                                      ? 'text-destructive'
                                       : calculated.change < 0
-                                      ? 'text-green-600'
+                                      ? 'text-success-foreground'
                                       : 'text-muted-foreground'
                                   }
                                 >
                                   {formatPriceChange(calculated.change)}
                                 </span>
                               ) : (
-                                <span className="text-green-600">New</span>
+                                <span className="text-success-foreground">New</span>
                               )}
                             </TableCell>
                           </TableRow>

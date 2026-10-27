@@ -299,17 +299,6 @@ export function BulkPricingModal({
     return [...GOOGLE_PLAY_REGIONS].sort((a, b) => a.name.localeCompare(b.name));
   }, [platform, normalizedPrices]);
 
-  // Fetch PPP data and exchange rates when modal opens
-  // Only depend on `open` to prevent infinite retry loops on fetch failure
-  useEffect(() => {
-    if (open && !pppFetched && !pppLoading) {
-      fetchPPPData();
-    }
-    if (open && !exchangeRatesFetched && !exchangeRatesLoading) {
-      fetchExchangeRates();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
 
   const fetchPPPData = async (forceRefresh = false) => {
     setPppLoading(true);
@@ -355,6 +344,18 @@ export function BulkPricingModal({
       setExchangeRatesFetched(true);
     }
   };
+
+  // Fetch PPP data and exchange rates when modal opens
+  // Only depend on `open` to prevent infinite retry loops on fetch failure
+  useEffect(() => {
+    if (open && !pppFetched && !pppLoading) {
+      fetchPPPData();
+    }
+    if (open && !exchangeRatesFetched && !exchangeRatesLoading) {
+      fetchExchangeRates();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   // Get regions to apply pricing to
   const targetRegions = useMemo(() => {
@@ -1161,7 +1162,7 @@ export function BulkPricingModal({
                             <div className="flex flex-col">
                               {calculated.countryName}
                               {isRequired && (
-                                <span className="text-[10px] text-amber-600 dark:text-amber-500 font-medium">Required Base</span>
+                                <span className="text-[10px] text-change font-medium">Required Base</span>
                               )}
                             </div>
                           </TableCell>
@@ -1173,9 +1174,9 @@ export function BulkPricingModal({
                               <TooltipTrigger asChild>
                                 <span className={
                                   calculated.multiplier < 1
-                                    ? 'text-green-600 cursor-help'
+                                    ? 'text-success-foreground cursor-help'
                                     : calculated.multiplier > 1
-                                    ? 'text-orange-600 cursor-help'
+                                    ? 'text-change cursor-help'
                                     : 'text-muted-foreground cursor-help'
                                 }>
                                   {calculated.multiplier.toFixed(2)}×
@@ -1248,7 +1249,7 @@ export function BulkPricingModal({
                                   {(calculated as CalculatedPriceWithTier).tierId ? `Tier ${(calculated as CalculatedPriceWithTier).tierId}` : 'No tier'}
                                 </span>
                                 {Math.abs((calculated as CalculatedPriceWithTier).tierDifference ?? 0) > 0.1 && (
-                                  <span className={((calculated as CalculatedPriceWithTier).tierDifference ?? 0) > 0 ? "text-orange-600" : "text-blue-600"}>
+                                  <span className={((calculated as CalculatedPriceWithTier).tierDifference ?? 0) > 0 ? "text-change" : "text-link"}>
                                     {(((calculated as CalculatedPriceWithTier).tierDifference ?? 0) > 0 ? "+" : "") + ((calculated as CalculatedPriceWithTier).tierDifference ?? 0).toFixed(1)}% vs ideal
                                   </span>
                                 )}
@@ -1260,16 +1261,16 @@ export function BulkPricingModal({
                               <span
                                 className={
                                   calculated.change > 0
-                                    ? 'text-red-600'
+                                    ? 'text-destructive'
                                     : calculated.change < 0
-                                    ? 'text-green-600'
+                                    ? 'text-success-foreground'
                                     : 'text-muted-foreground'
                                 }
                               >
                                 {formatPriceChange(calculated.change)}
                               </span>
                             ) : (
-                              <span className="text-green-600">New</span>
+                              <span className="text-success-foreground">New</span>
                             )}
                           </TableCell>
                         </TableRow>

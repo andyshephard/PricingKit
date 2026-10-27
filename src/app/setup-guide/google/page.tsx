@@ -227,8 +227,8 @@ export default function SetupGuidePage() {
                 <li>Click <Badge variant="secondary">Invite user</Badge></li>
               </ol>
 
-              <div className="rounded-lg bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 p-4 mt-4">
-                <p className="text-sm text-blue-800 dark:text-blue-200">
+              <div className="rounded-lg bg-info p-4 mt-4">
+                <p className="text-sm text-info-foreground">
                   <strong>Note:</strong> You no longer need to link your Google Cloud project to Play Console.
                   Simply inviting the service account email as a user is sufficient.
                 </p>
@@ -347,7 +347,7 @@ export default function SetupGuidePage() {
           </Card>
 
           {/* Ready */}
-          <Card className="bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-900">
+          <Card className="bg-success border-line">
             <CardContent className="pt-6">
               <div className="flex items-center gap-3 mb-4">
                 <CheckCircle2 className="h-8 w-8 text-success-foreground" />

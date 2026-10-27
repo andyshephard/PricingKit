@@ -190,7 +190,7 @@ export function AppleConnectUpload() {
               className={`
                 relative border-2 border-dashed rounded-lg p-6 transition-colors
                 ${state.isDragging ? 'border-primary bg-primary/5' : 'border-muted-foreground/25'}
-                ${state.file ? 'border-green-500 bg-green-50 dark:bg-green-950/20' : ''}
+                ${state.file ? 'border-success-foreground bg-success' : ''}
                 ${state.isLoading ? 'opacity-50 pointer-events-none' : 'cursor-pointer'}
               `}
             >
@@ -204,7 +204,7 @@ export function AppleConnectUpload() {
               <div className="flex flex-col items-center gap-2 text-center">
                 {state.file ? (
                   <>
-                    <Key className="h-10 w-10 text-green-500" />
+                    <Key className="h-10 w-10 text-success-foreground" />
                     <p className="text-sm font-medium">{state.file.name}</p>
                     <p className="text-xs text-muted-foreground">
                       Click or drag to replace

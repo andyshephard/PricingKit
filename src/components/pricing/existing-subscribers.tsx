@@ -9,12 +9,12 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { classifyPriceChange, currencyScale, decimalFromNumber, isDecimalString, normalizeDecimal, type PriceChangeClass } from '@/lib/pricing';
 
 const LABELS: Record<PriceChangeClass, { text: string; className: string }> = {
-  decrease: { text: 'Lower price', className: 'text-green-600' },
+  decrease: { text: 'Lower price', className: 'text-success-foreground' },
   unchanged: { text: 'Unchanged', className: 'text-muted-foreground' },
   'new-price': { text: 'New territory', className: 'text-muted-foreground' },
   'increase-to-new-subscribers-only': { text: 'New subscribers only', className: 'text-muted-foreground' },
-  'increase-within-no-consent-threshold': { text: 'Notified', className: 'text-amber-600' },
-  'increase-needs-consent': { text: 'Needs consent', className: 'text-red-600 font-medium' },
+  'increase-within-no-consent-threshold': { text: 'Notified', className: 'text-change' },
+  'increase-needs-consent': { text: 'Needs consent', className: 'text-destructive font-medium' },
   'one-time-product': { text: '-', className: 'text-muted-foreground' },
 };
 

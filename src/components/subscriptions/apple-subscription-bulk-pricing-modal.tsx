@@ -269,19 +269,6 @@ export function AppleSubscriptionBulkPricingModal({
     }
   }, [open, subscription.prices, isApproved]);
 
-  // Fetch PPP data and exchange rates when modal opens
-  // Only depend on `open` to prevent infinite retry loops on fetch failure
-  useEffect(() => {
-    if (open) {
-      if (!pppData && !pppLoading) {
-        fetchPPPData();
-      }
-      if (!exchangeRates && !exchangeRatesLoading) {
-        fetchExchangeRates();
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
 
   const fetchPPPData = async (forceRefresh = false) => {
     setPppLoading(true);
@@ -326,6 +313,20 @@ export function AppleSubscriptionBulkPricingModal({
       setExchangeRatesFetched(true);
     }
   };
+
+  // Fetch PPP data and exchange rates when modal opens
+  // Only depend on `open` to prevent infinite retry loops on fetch failure
+  useEffect(() => {
+    if (open) {
+      if (!pppData && !pppLoading) {
+        fetchPPPData();
+      }
+      if (!exchangeRates && !exchangeRatesLoading) {
+        fetchExchangeRates();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   // Get regions to apply pricing to
   const targetRegions = useMemo(() => {
@@ -1054,7 +1055,7 @@ export function AppleSubscriptionBulkPricingModal({
                   <div className="flex flex-col">
                     <Label>Regions & Preview ({selectedRegions.size} selected)</Label>
                     {warningCount > 0 && (
-                      <div className="flex items-center gap-1 text-amber-600 dark:text-amber-500 mt-1">
+                      <div className="flex items-center gap-1 text-change mt-1">
                         <AlertTriangle className="h-3 w-3" />
                         <span className="text-[10px]">{warningCount} regions with issues</span>
                       </div>
@@ -1153,7 +1154,7 @@ export function AppleSubscriptionBulkPricingModal({
                         {sortedPreviewPrices.map((preview) => {
                           const isSelected = selectedRegions.has(preview.territoryCode);
                           const rowClassName = preview.noTierData
-                            ? 'bg-red-50/50 dark:bg-red-950/20'
+                            ? 'bg-destructive/10'
                             : !isSelected ? 'opacity-50' : '';
 
                           return (
@@ -1182,9 +1183,9 @@ export function AppleSubscriptionBulkPricingModal({
                                   <TooltipTrigger asChild>
                                     <span className={
                                       preview.multiplier < 1
-                                        ? 'text-green-600 cursor-help'
+                                        ? 'text-success-foreground cursor-help'
                                         : preview.multiplier > 1
-                                        ? 'text-orange-600 cursor-help'
+                                        ? 'text-change cursor-help'
                                         : 'text-muted-foreground cursor-help'
                                     }>
                                       {preview.multiplier.toFixed(2)}×
@@ -1214,7 +1215,7 @@ export function AppleSubscriptionBulkPricingModal({
                                 {preview.error ? (
                                   <Tooltip>
                                     <TooltipTrigger asChild>
-                                      <span className="inline-flex items-center gap-1 text-xs text-red-600 cursor-help">
+                                      <span className="inline-flex items-center gap-1 text-xs text-destructive cursor-help">
                                         <AlertTriangle className="h-3 w-3" />
                                         No exchange rate
                                       </span>
@@ -1224,7 +1225,7 @@ export function AppleSubscriptionBulkPricingModal({
                                     </TooltipContent>
                                   </Tooltip>
                                 ) : preview.noTierData ? (
-                                  <span className="text-red-600">No tier data</span>
+                                  <span className="text-destructive">No tier data</span>
                                 ) : (
                                   <Tooltip>
                                     <TooltipTrigger asChild>
@@ -1257,16 +1258,16 @@ export function AppleSubscriptionBulkPricingModal({
                                   <span
                                     className={
                                       preview.priceChange > 0
-                                        ? 'text-red-600'
+                                        ? 'text-destructive'
                                         : preview.priceChange < 0
-                                        ? 'text-green-600'
+                                        ? 'text-success-foreground'
                                         : 'text-muted-foreground'
                                     }
                                   >
                                     {formatPriceChange(preview.priceChange)}
                                   </span>
                                 ) : (
-                                  <span className="text-green-600">New</span>
+                                  <span className="text-success-foreground">New</span>
                                 )}
                               </TableCell>
                               <TableCell className="text-right text-sm text-muted-foreground">

@@ -423,7 +423,7 @@ export default function IndexCheckerPage() {
                                 Relative to {baseRegion}: {calc.multiplier.toFixed(4)}×
                               </p>
                               {strategy === 'ppp' && pppData?.[calc.regionCode]?.pppYear !== undefined && (
-                                <p className={`text-xs ${pppData[calc.regionCode].pppStale ? 'text-amber-600' : 'text-muted-foreground'}`}>
+                                <p className={`text-xs ${pppData[calc.regionCode].pppStale ? 'text-change' : 'text-muted-foreground'}`}>
                                   PPP data year {pppData[calc.regionCode].pppYear}
                                   {pppData[calc.regionCode].pppStale ? ' (stale: see the note above the table)' : ''}
                                 </p>

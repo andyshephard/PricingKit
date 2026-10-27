@@ -396,13 +396,13 @@ export function AppleSubscriptionPricingEditor({
     <div className="space-y-6">
       {/* Pending Changes Banner */}
       {hasChanges && (
-        <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
+        <div className="bg-warn border border-warn-border rounded-lg p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2">
-              <Badge variant="outline" className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+              <Badge variant="outline" className="border-warn-border bg-warn text-warn-foreground">
                 {pendingChanges.size} pending change{pendingChanges.size !== 1 ? 's' : ''}
               </Badge>
-              <span className="text-sm text-amber-800 dark:text-amber-200">
+              <span className="text-sm text-warn-foreground">
                 {Array.from(pendingChanges.values()).some(c => c.startDate)
                   ? 'Save to schedule price changes in App Store Connect'
                   : 'Save to apply changes to App Store Connect'}
@@ -537,7 +537,7 @@ export function AppleSubscriptionPricingEditor({
                           key={regionCode}
                           className={
                             displayData.isChanged
-                              ? 'bg-amber-50/50 dark:bg-amber-950/20'
+                              ? 'bg-warn/60'
                               : ''
                           }
                         >

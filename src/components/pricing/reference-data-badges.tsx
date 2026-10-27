@@ -44,7 +44,7 @@ export function ReferenceDataBadges({ entries, only }: { entries?: FreshnessEntr
             <TooltipTrigger asChild>
               <Badge
                 variant={e.stale ? 'outline' : 'secondary'}
-                className={e.stale ? 'cursor-help border-amber-500 text-amber-700 dark:text-amber-400' : 'cursor-help'}
+                className={e.stale ? 'cursor-help border-warn-border bg-warn text-warn-foreground' : 'cursor-help'}
               >
                 {SHORT[e.id]} {e.asOf ? e.asOf.slice(0, e.id === 'ppp' ? 4 : 10) : ''} · {age(e.ageDays)}
                 {e.stale ? ' · stale' : ''}

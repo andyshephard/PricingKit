@@ -228,10 +228,10 @@ export function PricingEditor({ product, onSave }: PricingEditorProps) {
   return (
     <div className="space-y-6">
       {pendingChanges.size > 0 && (
-        <Card className="border-amber-500 bg-amber-50 dark:bg-amber-950/20">
+        <Card className="border-warn-border bg-warn">
           <CardHeader className="pb-2">
             <CardTitle className="text-lg flex items-center gap-2">
-              <AlertCircle className="h-5 w-5 text-amber-500" />
+              <AlertCircle className="h-5 w-5 text-change" />
               Pending Changes
             </CardTitle>
           </CardHeader>
@@ -256,12 +256,12 @@ export function PricingEditor({ product, onSave }: PricingEditorProps) {
                           <span className="text-muted-foreground line-through mr-2">
                             {formatMoney(change.oldPrice)}
                           </span>
-                          <span className="text-green-600">
+                          <span className="text-success-foreground">
                             {formatMoney(change.newPrice)}
                           </span>
                         </>
                       ) : (
-                        <span className="text-green-600">
+                        <span className="text-success-foreground">
                           + {formatMoney(change.newPrice)}
                         </span>
                       )}
@@ -335,7 +335,7 @@ export function PricingEditor({ product, onSave }: PricingEditorProps) {
               return (
                 <TableRow
                   key={regionCode}
-                  className={pendingChange ? 'bg-amber-50 dark:bg-amber-950/20' : ''}
+                  className={pendingChange ? 'bg-warn/60' : ''}
                 >
                   <TableCell>
                     <Badge variant="outline">{regionCode}</Badge>

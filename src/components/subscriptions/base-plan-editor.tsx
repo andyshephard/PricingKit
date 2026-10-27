@@ -218,7 +218,7 @@ function BasePlanPricingSection({
               return (
                 <TableRow
                   key={regionCode}
-                  className={pendingChange ? 'bg-amber-50 dark:bg-amber-950/20' : ''}
+                  className={pendingChange ? 'bg-warn/60' : ''}
                 >
                   <TableCell>
                     <Badge variant="outline" className="text-xs">
@@ -502,10 +502,10 @@ export function BasePlanEditor({ subscription, bulkPricingPlanId, onBulkPricingP
   return (
     <div className="space-y-6">
       {totalChanges > 0 && (
-        <Card className="border-amber-500 bg-amber-50 dark:bg-amber-950/20">
+        <Card className="border-warn-border bg-warn">
           <CardHeader className="pb-2">
             <CardTitle className="text-lg flex items-center gap-2">
-              <AlertCircle className="h-5 w-5 text-amber-500" />
+              <AlertCircle className="h-5 w-5 text-change" />
               {totalChanges} Pending Changes
             </CardTitle>
           </CardHeader>
