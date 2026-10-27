@@ -2,8 +2,10 @@
 // environment (credentials), file access relative to cwd, and store adapters
 // built from env credentials.
 
-import { readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
+import { lstat, open, readFile, rename, rm } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 import { AppleAdapter } from '@/lib/adapters/apple';
 import { PlayAdapter } from '@/lib/adapters/play';
 import type { ProductPriceState, ProductRef, ResolveResult, ResolveTarget, SnapMode } from '@/lib/pricing';
@@ -41,35 +43,58 @@ export async function readInputFile(ctx: CommandContext, path: string, what: str
   }
 }
 
-/** Write an output file (plans, snapshots). Never used for credentials. */
+/**
+ * Write an output file (plans, snapshots, run logs). Never used for credentials.
+ *
+ * Always atomic and never through a link: the content goes to a new
+ * temporary file next to the target (created with O_EXCL | O_NOFOLLOW, so a
+ * planted file or link there is refused), then rename() replaces the
+ * target's directory entry. rename() never follows a link at the target, so
+ * a symlink or hard link swapped in after the checks is replaced, not written
+ * through. An existing target that is a symlink, not a plain file, or a file
+ * with more than one hard link is refused before anything is written (a link
+ * there means someone expects the write to land elsewhere).
+ */
 export async function writeOutputFile(ctx: CommandContext, path: string, content: string): Promise<string> {
   const full = resolve(ctx.cwd, path);
+  const fail = (why: string) => new CliError(`Can't write ${path} (${why})`);
+  const checkTarget = async () => {
+    let stat;
+    try {
+      stat = await lstat(full);
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'ENOENT') return;
+      throw fail(code ?? 'unreadable');
+    }
+    if (stat.isSymbolicLink()) throw fail('it is a symbolic link; it won\'t be written through or replaced');
+    if (!stat.isFile()) throw fail('it exists and is not a plain file');
+    if (stat.nlink > 1) throw fail(`it has ${stat.nlink} hard links; it won't be replaced`);
+  };
+  await checkTarget();
+  const temp = join(dirname(full), `.${basename(full)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
+  let created = false;
   try {
-    await writeFile(full, content, 'utf8');
+    const handle = await open(temp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0), 0o666);
+    created = true;
+    try {
+      await handle.writeFile(content, 'utf8');
+    } finally {
+      await handle.close();
+    }
+    await checkTarget();
+    await rename(temp, full);
   } catch (error) {
+    if (created) await rm(temp, { force: true }).catch(() => undefined);
+    if (error instanceof CliError) throw error;
     const code = (error as { code?: string }).code;
     throw new CliError(`Can't write ${path}${code ? ` (${code})` : ''}`);
   }
   return full;
 }
 
-/**
- * Write a file atomically: a temporary file next to it, then a rename, so a
- * crash mid-write never leaves a truncated run log.
- */
-export async function writeOutputFileAtomic(ctx: CommandContext, path: string, content: string): Promise<string> {
-  const full = resolve(ctx.cwd, path);
-  const temp = `${full}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    await writeFile(temp, content, 'utf8');
-    await rename(temp, full);
-  } catch (error) {
-    await rm(temp, { force: true }).catch(() => undefined);
-    const code = (error as { code?: string }).code;
-    throw new CliError(`Can't write ${path}${code ? ` (${code})` : ''}`);
-  }
-  return full;
-}
+/** Same as writeOutputFile (every output file is written atomically); kept for the run log's call sites */
+export const writeOutputFileAtomic = writeOutputFile;
 
 /**
  * Optional pins: PRICINGKIT_EXPECT_BUNDLE_ID / PRICINGKIT_EXPECT_PACKAGE name

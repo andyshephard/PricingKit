@@ -41,7 +41,8 @@
 #   3. uploads the run log (pricingkit.applyRun) as an artifact, whatever the result
 #   4. on failure, prints how to resume: run this workflow by hand
 #      (Actions > Pricing apply > Run workflow) with the failed run's ID. It
-#      checks that run is this workflow on main (push or manual), downloads
+#      checks that run is this workflow (by workflow ID) on main (push or
+#      manual) and that its commit is on main, downloads
 #      its run log and continues with --resume (after the same approval). Ops
 #      already done are skipped, and nothing changes that the plan didn't
 #      show. A run log of another plan (the plan file changed on main since)
@@ -173,17 +174,28 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RESUME_RUN_ID: ${{ inputs.resume_run_id }}
-          WORKFLOW: ${{ github.workflow }}
         run: |
           case "$RESUME_RUN_ID" in (''|*[!0-9]*) echo "::error::resume_run_id must be a run ID (digits)"; exit 1;; esac
-          # Only a run of this workflow, on main, started by a push or by hand, can be resumed
-          info=$(gh run view "$RESUME_RUN_ID" --json workflowName,headBranch,event,conclusion)
+          # Only a run of this same workflow (by its numeric ID, not its name, which any
+          # other workflow could copy), on main, started by a push or by hand, whose
+          # commit is on main, can be resumed
+          this_workflow=$(gh run view "$GITHUB_RUN_ID" --json workflowDatabaseId --jq '.workflowDatabaseId')
+          info=$(gh run view "$RESUME_RUN_ID" --json workflowDatabaseId,workflowName,headBranch,headSha,event,conclusion)
+          workflow=$(printf '%s' "$info" | jq -r '.workflowDatabaseId')
           name=$(printf '%s' "$info" | jq -r '.workflowName')
           branch=$(printf '%s' "$info" | jq -r '.headBranch')
+          sha=$(printf '%s' "$info" | jq -r '.headSha')
           event=$(printf '%s' "$info" | jq -r '.event')
           conclusion=$(printf '%s' "$info" | jq -r '.conclusion')
-          if [ "$name" != "$WORKFLOW" ] || [ "$branch" != "main" ] || { [ "$event" != "push" ] && [ "$event" != "workflow_dispatch" ]; }; then
-            echo "::error::Run $RESUME_RUN_ID is not a run of \"$WORKFLOW\" on main (it is \"$name\" on $branch, event $event)"
+          if [ -z "$this_workflow" ] || [ "$workflow" != "$this_workflow" ] || [ "$branch" != "main" ] || { [ "$event" != "push" ] && [ "$event" != "workflow_dispatch" ]; }; then
+            echo "::error::Run $RESUME_RUN_ID is not a run of this workflow (ID $this_workflow) on main (it is \"$name\", workflow ID $workflow, on $branch, event $event)"
+            exit 1
+          fi
+          case "$sha" in (*[!0-9a-f]*|'') echo "::error::Run $RESUME_RUN_ID has no commit SHA"; exit 1;; esac
+          # Its commit must be on main: identical to main, or an ancestor of it
+          status=$(gh api "repos/$GH_REPO/compare/$sha...main" --jq '.status')
+          if [ "$status" != "identical" ] && [ "$status" != "ahead" ]; then
+            echo "::error::Run $RESUME_RUN_ID ran on commit $sha, which is not on main ($status)"
             exit 1
           fi
           echo "Resuming run $RESUME_RUN_ID ($event, $conclusion)"

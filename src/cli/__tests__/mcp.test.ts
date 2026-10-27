@@ -2,7 +2,7 @@
 // the stdio transport. Agents can plan; humans apply: no tool writes to a
 // store. The App Store client is mocked: nothing leaves the process.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 
@@ -122,6 +122,7 @@ describe('MCP tools', () => {
     expect((await runCliCaptured(['apply', 'del.json', '--confirm', hash], { env, cwd: tmp.dir })).code).toBe(1);
     const r = await tool('apply_command', { plan: 'del.json', resume: 'del.run.json' });
     expect(r.structuredContent!.command).toBe(`pricingkit apply del.json --confirm ${hash} --resume del.run.json --force-delete`);
+    expect(r.content[0].text).toMatch(/already records 0 of 1 ops as done \(ok or skipped\); they won't be re-checked\. 1 will be checked/);
 
     // A run log of another plan is refused
     await tool('plan', { rules: 'rules.json', spec: 'base.json', out: 'other.json' });
@@ -232,7 +233,56 @@ describe('MCP tools', () => {
   });
 });
 
+describe('MCP notifications and output files', () => {
+  it('refuses a plan sent as a notification (no answer would say it wrote a file); read-only tools still run', async () => {
+    const logged: string[] = [];
+    server = new McpServer({ cwd: tmp.dir, env, log: (t) => logged.push(t) });
+    const params = { name: 'plan', arguments: { spec: 'base.json', out: 'silent.json' } };
+    expect(await server.handle({ jsonrpc: '2.0', method: 'tools/call', params })).toBeUndefined();
+    expect(await server.handle({ jsonrpc: '2.0', id: null, method: 'tools/call', params })).toEqual({
+      jsonrpc: '2.0',
+      id: null,
+      error: { code: -32600, message: 'plan writes files: send it as a request with a string or number id' },
+    });
+    expect(existsSync(join(tmp.dir, 'silent.json'))).toBe(false);
+    expect(logged.join('')).toMatch(/refused a plan call sent as a notification/);
+    expect(appleApiRequest).not.toHaveBeenCalled();
+    // A read-only tool sent as a notification runs; nothing is answered
+    expect(await server.handle({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'drift', arguments: { rules: 'rules.json' } } })).toBeUndefined();
+    expect(appleApiRequest).toHaveBeenCalled();
+  });
+
+  it('plan output: never written through a hard link; a plan file is replaced atomically', async () => {
+    expect((await tool('plan', { spec: 'base.json', out: 'p.json' })).structuredContent!.exitCode).toBe(2);
+    const first = readFileSync(join(tmp.dir, 'p.json'), 'utf8');
+    linkSync(join(tmp.dir, 'p.json'), join(tmp.dir, 'hard.json'));
+    const r = await tool('plan', { spec: 'base.json', out: 'hard.json' });
+    expect(r.isError).toBe(true);
+    expect(JSON.stringify(r.structuredContent)).toMatch(/2 hard links; it won't be replaced/);
+    expect(readFileSync(join(tmp.dir, 'p.json'), 'utf8')).toBe(first);
+    // No temporary files are left behind
+    expect(readdirSync(tmp.dir).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+  });
+});
+
 describe('MCP stdio transport', () => {
+  it('decodes UTF-8 across chunk boundaries (a multibyte character split in two)', async () => {
+    const input = new PassThrough();
+    const out: string[] = [];
+    const done = serveMcp({ cwd: tmp.dir, env, input, output: (line) => out.push(line) });
+    const bytes = Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', id: 'naïve-€-😀', method: 'ping' })}\n`, 'utf8');
+    const euro = bytes.indexOf(Buffer.from('€', 'utf8'));
+    const emoji = bytes.indexOf(Buffer.from('😀', 'utf8'));
+    // Split inside the 3-byte euro sign and inside the 4-byte emoji
+    input.write(bytes.subarray(0, euro + 1));
+    input.write(bytes.subarray(euro + 1, emoji + 2));
+    input.write(bytes.subarray(emoji + 2));
+    input.end();
+    await done;
+    expect(out.map((l) => JSON.parse(l))).toEqual([{ jsonrpc: '2.0', id: 'naïve-€-😀', result: {} }]);
+  });
+
+
   it('reads newline-delimited JSON-RPC and writes one response per request, protocol only', async () => {
     const input = new PassThrough();
     const out: string[] = [];

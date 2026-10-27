@@ -20,6 +20,7 @@
 
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { assertRunMatches, changeSetHash, isOfferOp, parseChangeSet, parseRun, parseStateSnapshot } from '@/lib/pricing';
 import packageJson from '../../package.json';
 import { runCli, type CliIO } from './main';
@@ -263,9 +264,14 @@ async function commandForPlan(args: Args, cwd: string): Promise<ToolResult> {
     throw error instanceof ToolInputError ? error : new ToolInputError((error as Error).message);
   }
   const resumePath = args.resume === undefined ? undefined : String(args.resume);
+  let resumeNote: string | undefined;
   if (resumePath !== undefined) {
     try {
-      assertRunMatches(changeSet, parseRun(await readArgFile(cwd, resumePath, 'run log')));
+      const run = parseRun(await readArgFile(cwd, resumePath, 'run log'));
+      assertRunMatches(changeSet, run);
+      // A resume runs only pending and failed ops: ones the log records as ok or skipped aren't read or re-checked
+      const done = run.ops.filter((r) => r.status === 'ok' || r.status === 'skipped').length;
+      resumeNote = `--resume: the run log already records ${done} of ${run.ops.length} ops as done (ok or skipped); they won't be re-checked. ${run.ops.length - done} will be checked against the store and applied if still needed.`;
     } catch (error) {
       throw error instanceof ToolInputError ? error : new ToolInputError(`resume: ${(error as Error).message}`);
     }
@@ -287,6 +293,7 @@ async function commandForPlan(args: Args, cwd: string): Promise<ToolResult> {
   const notes = [
     'A person must review the plan (pricingkit diff) and run this command themselves; this server cannot apply plans.',
     ...(changeSet.ops.length === 0 ? ['The plan has no ops: applying it changes nothing.'] : []),
+    ...(resumeNote ? [resumeNote] : []),
     ...(baseOps > 0 ? [`--allow-base-prices: the plan changes base prices (${baseOps} ops).`] : []),
     ...(deletes > 0 ? [`--force-delete: the plan deletes ${deletes} offer(s), which the store can't check for redemptions or can't undo.`] : []),
   ];
@@ -372,6 +379,12 @@ export class McpServer {
       case 'tools/call': {
         const name = typeof params.name === 'string' ? params.name : '';
         const args = (params.arguments && typeof params.arguments === 'object' ? params.arguments : {}) as Args;
+        // A notification (no id, or id null) gets no answer, so a tool that writes files (plan) would write
+        // silently: refuse it. Read-only tools may still run (their result is simply not sent).
+        if (!isRequest && TOOLS.find((t) => t.name === name)?.paths.some((p) => p.mode === 'write')) {
+          this.options.log?.(`pricingkit mcp: refused a ${name} call sent as a notification (no id); it writes files, so send it as a request with an id\n`);
+          return hasId ? { jsonrpc: '2.0', id: null, error: { code: -32600, message: `${name} writes files: send it as a request with a string or number id` } } : undefined;
+        }
         const run = this.queue.then(() => this.callTool(name, args));
         this.queue = run.catch(() => undefined);
         try {
@@ -428,9 +441,11 @@ export async function serveMcp(options: McpServerOptions & { input: NodeJS.Reada
 
   let buffer = '';
   let dropping = false; // inside an over-long line: skip to its end
+  // Bytes are decoded with a StringDecoder, so a multibyte character split across two chunks survives
+  const decoder = new StringDecoder('utf8');
   for await (const chunk of options.input) {
     if (closed) break;
-    buffer += typeof chunk === 'string' ? chunk : (chunk as Buffer).toString('utf8');
+    buffer += typeof chunk === 'string' ? chunk : decoder.write(chunk as Buffer);
     let newline: number;
     while ((newline = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, newline).replace(/\r$/, '');
@@ -456,6 +471,7 @@ export async function serveMcp(options: McpServerOptions & { input: NodeJS.Reada
       buffer = '';
     }
   }
+  buffer += decoder.end();
   if (!closed && !dropping && buffer.trim() !== '') {
     const task = handleLine(buffer);
     inFlight.add(task);
