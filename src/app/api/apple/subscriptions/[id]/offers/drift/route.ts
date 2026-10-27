@@ -17,9 +17,16 @@ const querySchema = z.object({
     .string()
     .regex(/^(0(\.\d{1,4})?|1)$/, 'threshold is a fraction between 0 and 1, e.g. 0.05')
     .optional(),
+  // Comma-separated alpha-2 codes. Limits the check; the offer's other territories are reported as outOfScope
+  territories: z
+    .string()
+    .max(1200)
+    .transform((v) => [...new Set(v.split(',').map((t) => t.trim().toUpperCase()).filter(Boolean))])
+    .refine((list) => list.length > 0 && list.every((t) => /^[A-Z]{2}$/.test(t)), 'territories is a comma-separated list of alpha-2 codes, e.g. GB,US')
+    .optional(),
 });
 
-// GET /api/apple/subscriptions/[id]/offers/drift?kind=apple.promo&offer=<id or key>&percent=50[&basis=perPeriod|totalOverDuration][&snap=nearest]
+// GET /api/apple/subscriptions/[id]/offers/drift?kind=apple.promo&offer=<id or key>&percent=50[&basis=perPeriod|totalOverDuration][&snap=nearest][&territories=GB,US]
 // Read-only: compares one offer's prices with "percent of each territory's
 // current price, snapped to its price points" and returns an OfferDriftReport.
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -35,7 +42,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!parsed.success) {
       return NextResponse.json({ error: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') }, { status: 400 });
     }
-    const { kind, offer, percent, basis, snap, threshold } = parsed.data;
+    const { kind, offer, percent, basis, snap, threshold, territories } = parsed.data;
     let rule;
     try {
       const parsedRule = parsePercentOfCurrentRule({ type: 'percentOfCurrent', percent, basis: basis ?? 'perPeriod', snap });
@@ -48,7 +55,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const adapter = new AppleAdapter({ credentials: auth.credentials, budget: new RequestBudget() });
     const report = await adapter.checkOfferDrift(
       { platform: 'apple', type: 'subscription', id },
-      { kind, offer, rule, ...(threshold ? { deviationThreshold: threshold } : {}) }
+      { kind, offer, rule, ...(threshold ? { deviationThreshold: threshold } : {}), ...(territories ? { territories } : {}) }
     );
     if (!report) return NextResponse.json({ error: 'Offer not found' }, { status: 404 });
     return NextResponse.json({ report });

@@ -329,6 +329,11 @@ export interface OfferDriftReport {
   summary: Record<OfferDriftStatus, number>;
   /** Every territory looked at, sorted; filter on status for the drifted ones */
   territories: OfferDriftEntry[];
+  /**
+   * Set when the check was limited to a list of territories: the offer's
+   * other territories, sorted. They were not checked and don't affect inSync.
+   */
+  outOfScope?: string[];
   /** Offer-level read problems (e.g. a price Apple returned without a territory) */
   problems?: string[];
   /** Warnings from the derivation (e.g. deviation above threshold) */
@@ -349,7 +354,9 @@ export interface OfferDriftInput extends Omit<OfferDerivationInput, 'offer'> {
 /**
  * Compare an existing offer with the price its rule gives today in every
  * territory. Reports missing and extra territories and every snapped-price
- * mismatch. The result is plain JSON.
+ * mismatch. With a territory list, only those territories are checked; the
+ * offer's others are listed in `outOfScope`, not as extra. The result is
+ * plain JSON.
  */
 export function checkOfferDrift(input: OfferDriftInput): OfferDriftReport {
   const { offer } = input;
@@ -402,9 +409,17 @@ export function checkOfferDrift(input: OfferDriftInput): OfferDriftReport {
     }
   }
 
+  // A check limited to some territories says nothing about the others: list
+  // them as out of scope instead of "extra", so a scoped check can pass
+  const scoped = input.territories !== undefined && input.territories !== 'all';
+  const outOfScope: string[] = [];
   const offerTerritories = new Set([...Object.keys(offer.prices), ...Object.keys(offer.territoryProblems ?? {})]);
   for (const territory of offerTerritories) {
     if (covered.has(territory)) continue;
+    if (scoped) {
+      outOfScope.push(territory);
+      continue;
+    }
     const actual = offer.prices[territory];
     const unreadable = offer.territoryProblems?.[territory];
     if (unreadable) {
@@ -441,6 +456,7 @@ export function checkOfferDrift(input: OfferDriftInput): OfferDriftReport {
     inSync: entries.length > 0 && entries.every((e) => e.status === 'match') && !(offer.problems?.length),
     summary,
     territories: entries,
+    ...(scoped ? { outOfScope: outOfScope.sort() } : {}),
     ...(offer.problems?.length ? { problems: [...offer.problems] } : {}),
     ...(warnings.length ? { warnings } : {}),
   };
