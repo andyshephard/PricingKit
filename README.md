@@ -69,7 +69,7 @@ npm run preview   # build and run locally on the Workers runtime (reads .dev.var
 npm run deploy    # build and deploy with wrangler
 ```
 
-Set `ENCRYPTION_KEY` (and optionally `OPEN_EXCHANGE_RATES_APP_ID`) as Worker secrets, e.g. `npx --no-install wrangler secret put ENCRYPTION_KEY`. Workers have no filesystem, so exchange rates are cached in memory only; on Node they are also cached in `.exchange-rates.json`.
+Set `ENCRYPTION_KEY` (and optionally `OPEN_EXCHANGE_RATES_APP_ID`) as Worker secrets, e.g. `npx --no-install wrangler secret put ENCRYPTION_KEY`. Exchange rates are cached for 6 hours in memory and, on Workers, in Cloudflare's shared cache (on Node, in `.exchange-rates.json`); a forced refresh never spends the operator key, only a user's own key from Settings.
 
 ### Checks
 

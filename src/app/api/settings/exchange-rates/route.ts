@@ -80,7 +80,7 @@ export async function POST(request: Request) {
 
     // Validate the API key by making a test request
     const testUrl = `https://openexchangerates.org/api/latest.json?app_id=${encodeURIComponent(apiKey)}`;
-    const testResponse = await fetch(testUrl);
+    const testResponse = await fetch(testUrl, { signal: AbortSignal.timeout(10_000) });
 
     if (!testResponse.ok) {
       const errorData = await testResponse.json().catch(() => ({}));
