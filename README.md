@@ -511,9 +511,14 @@ every app the run will touch before the per-app details.
   that every plan file still has the hash the index records and is for the app it lists, and that
   every app passes the `PRICINGKIT_EXPECT_*` pins. It then applies the plans one by one (each with
   its own run log next to it) and stops at the first that doesn't complete. `--resume-runs`
-  continues from the logs; `--force` replaces them.
+  continues from the logs, after checking each log belongs to the plan next to it (a log of an
+  earlier plan with the same file name is refused with `INVALID_RUN` before anything is read);
+  `--force` replaces them, and with them the record `undo` needs. One request budget covers all
+  the plans of a run.
+- Planning a workspace again into the same `--out-dir` needs `--force`; the earlier plans' run
+  logs and undo plans are then moved aside to `<file>.stale-<timestamp>`, never deleted.
 - `undo --workspace-plan <index>` writes an undo plan per applied plan, newest first, and
-  `workspace-plan.undo.json` to apply the same way.
+  `<index>.undo.json` next to the input to apply the same way.
 - The pins take lists: `PRICINGKIT_EXPECT_BUNDLE_ID=com.example.app,com.example.other`.
 - Credentials stay per store: one App Store Connect key (`ASC_*`) for every bundle and one
   service account (`GOOGLE_*`) for every package. Products are checked to belong to their app
@@ -521,8 +526,11 @@ every app the run will touch before the per-app details.
 - **Parity.** Each mapping with a `target` adds that target to both apps' specs; each store snaps
   it separately (App Store price points, Play's price conversion). The plan output ends with the
   parity report on the planned prices; `pricingkit parity --workspace` reports the current ones,
-  read-only. Per territory: `same`, `withinThreshold`, `gap`, `notComparable` (the stores bill
-  different currencies; never converted), `appleOnly`, `playOnly` or `unreadable`. Prices are
+  read-only. Per territory: `same`, `withinThreshold`, `gap` (exactly: the difference is more
+  than the threshold times the lower price), `notComparable` (the stores bill different
+  currencies; never converted), `appleOnly`, `playOnly` or `unreadable`. A mapping is in parity,
+  has GAPS (exit 2), or is NOT CHECKED (exit 1) when a territory couldn't be compared or none is
+  priced on both stores; territories priced on one store only are listed in the headline. Prices are
   compared as each store lists them (both stores show tax-inclusive prices in most territories
   and tax-exclusive ones in a few, such as the United States).
 
@@ -533,17 +541,18 @@ every app the run will touch before the per-app details.
 
 ```csv
 # pricingkit.prices v1
-app,platform,product,base_plan,offer_kind,offer_key,territory,currency,price,proceeds
-com.example.app,apple,1234567890,,,,GB,GBP,44.99,36.62
-com.example.app,apple,1234567890,,apple.promo,retention_half,GB,GBP,22.99,18.71
-com.example.app,google,pro,annual,,,GB,GBP,49.99,
+app,platform,product_type,product,base_plan,offer_kind,offer_key,territory,currency,price,proceeds
+com.example.app,apple,subscription,1234567890,,,,GB,GBP,44.99,36.62
+com.example.app,apple,subscription,1234567890,,apple.promo,retention_half,GB,GBP,22.99,18.71
+com.example.app,google,basePlan,pro,annual,,,GB,GBP,49.99,
 ```
 
 | Column | Meaning |
 | --- | --- |
 | `app` | Bundle ID or package name |
 | `platform` | `apple` or `google` |
-| `product` | App Store: numeric subscription ID. Google Play: product ID |
+| `product_type` | `subscription` or `inAppPurchase` (App Store), `basePlan` or `oneTime` (Google Play). Optional on import (inferred); in-app purchase rows are refused on import, since plans don't cover App Store in-app purchases |
+| `product` | App Store: numeric subscription (or in-app purchase) ID. Google Play: product ID |
 | `base_plan` | Google Play base plan ID (empty on the App Store and for one-time products) |
 | `offer_kind`, `offer_key` | Empty for a base price; otherwise the offer's kind and key (promo offer code, offer code name, win-back offer ID, Play offer ID) |
 | `territory`, `currency`, `price` | ISO alpha-2, ISO 4217 and the customer price as a plain decimal |
@@ -560,7 +569,8 @@ wasn't planned exactly as written: snapped to another valid price, or not import
 as plan warnings, so `diff` shows them). An offer row whose currency isn't the territory's is
 refused. The file gets the same checks as `multipliersFile` (relative to the spec, inside the
 working directory, a regular file) and a 5 MB cap. Errors give the line and column, never a
-cell's contents. Exporting and importing an unchanged file plans no changes.
+cell's contents. The export's spreadsheet formula guard (a leading `'`) is removed on import.
+Exporting and importing an unchanged file plans no changes.
 
 ### Base prices from the CLI
 
