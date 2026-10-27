@@ -18,6 +18,7 @@ import {
   currencyCodeSchema,
 } from '@/lib/validation';
 import { RequestBudget } from '@/lib/utils/request-budget';
+import { rejectCrossSite, readJsonBody, LARGE_BODY_LIMIT } from '@/lib/request-guard';
 
 // GET /api/apple/products/[id] - Get a single product with prices
 export async function GET(
@@ -103,6 +104,8 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   try {
     const auth = await getAppleAuthFromCookies();
     if (!auth) {
@@ -130,15 +133,9 @@ export async function PATCH(
       throw error;
     }
 
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json(
-        { error: 'Invalid JSON in request body' },
-        { status: 400 }
-      );
-    }
+    const read = await readJsonBody(request, LARGE_BODY_LIMIT);
+    if (!read.ok) return read.response;
+    const body = read.body;
     const result = updatePriceSchema.safeParse(body);
 
     if (!result.success) {

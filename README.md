@@ -871,6 +871,7 @@ OPEN_EXCHANGE_RATES_APP_ID=your-api-key
 - The server does not persist credentials; it decrypts them in memory per request to call the Apple/Google APIs
 - Short-lived API tokens (Apple JWTs, Google access tokens) are cached in memory, keyed by a hash of the full credential
 - Without `ENCRYPTION_KEY`, sign-in is refused (except under `next dev`)
+- Requests that change something must come from the app's own pages (`Sec-Fetch-Site` / `Origin`), carry JSON, and stay under a size limit; sign-in is rate limited
 - Sessions expire 24 hours after sign-in, enforced by the server (the expiry is inside the encrypted cookie); `SESSION_VERSION` signs everyone out
 - Using a hosted instance means trusting its operator with your credentials; self-host for full control
 

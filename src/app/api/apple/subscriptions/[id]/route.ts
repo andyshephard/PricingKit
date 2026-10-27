@@ -19,6 +19,7 @@ import {
 import { RequestBudget } from '@/lib/utils/request-budget';
 import { assertSubscriptionInApp } from '@/lib/apple-connect/ownership';
 import { listSubscriptionPriceEntries } from '@/lib/apple-connect/price-points';
+import { rejectCrossSite, readJsonBody, LARGE_BODY_LIMIT } from '@/lib/request-guard';
 
 // Check if the ID is a numeric Apple subscription ID (e.g., "1234567890")
 function isNumericSubscriptionId(id: string): boolean {
@@ -104,6 +105,8 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   try {
     const auth = await getAppleAuthFromCookies();
     if (!auth) {
@@ -118,15 +121,9 @@ export async function PATCH(
     const budget = new RequestBudget();
     const ctx = { budget };
 
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json(
-        { error: 'Invalid JSON in request body' },
-        { status: 400 }
-      );
-    }
+    const read = await readJsonBody(request, LARGE_BODY_LIMIT);
+    if (!read.ok) return read.response;
+    const body = read.body;
     const result = updatePriceSchema.safeParse(body);
 
     if (!result.success) {
@@ -261,6 +258,8 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   try {
     const auth = await getAppleAuthFromCookies();
     if (!auth) {
@@ -270,15 +269,9 @@ export async function DELETE(
       );
     }
 
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json(
-        { error: 'Invalid JSON in request body' },
-        { status: 400 }
-      );
-    }
+    const read = await readJsonBody(request, LARGE_BODY_LIMIT);
+    if (!read.ok) return read.response;
+    const body = read.body;
     const result = deletePriceSchema.safeParse(body);
 
     if (!result.success) {

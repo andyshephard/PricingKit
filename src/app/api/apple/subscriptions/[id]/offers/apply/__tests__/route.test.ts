@@ -54,7 +54,7 @@ function makePlan(id = '123', bundleId = 'com.example.test', over: Partial<Offer
 }
 
 const call = (body: unknown, id = '123') =>
-  POST(new NextRequest(`http://localhost/api/apple/subscriptions/${id}/offers/apply`, { method: 'POST', body: JSON.stringify(body) }), { params: Promise.resolve({ id }) });
+  POST(new NextRequest(`http://localhost/api/apple/subscriptions/${id}/offers/apply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }), { params: Promise.resolve({ id }) });
 
 beforeEach(() => {
   getAppleAuthFromCookies.mockReset();

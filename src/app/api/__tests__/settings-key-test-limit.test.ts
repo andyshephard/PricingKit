@@ -14,7 +14,7 @@ function keyTest(ip: string) {
     new Request('http://localhost/api/settings/exchange-rates', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'cf-connecting-ip': ip },
-      body: JSON.stringify({ apiKey: 'test-key-0000' }),
+      body: JSON.stringify({ apiKey: 'testkey00000000' }),
     })
   );
 }

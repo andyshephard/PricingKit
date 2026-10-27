@@ -25,6 +25,7 @@ async function events(response: Response) {
 function request(territories: Record<string, { targetPrice: number; currency: string }>) {
   return new NextRequest('http://localhost/api/apple/subscriptions/123/price-points/batch', {
     method: 'POST',
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ territories }),
   });
 }

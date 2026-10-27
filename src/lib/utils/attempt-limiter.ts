@@ -93,3 +93,11 @@ export function trustedClientIp(headers: Headers, trustedHeader: string | undefi
   const ip = name === 'x-forwarded-for' ? value.split(',').at(-1)?.trim() : value.trim();
   return ip || undefined;
 }
+
+/**
+ * Sign-in attempts (both login routes): 10 per client per 10 minutes when the
+ * client IP comes from a trusted proxy header, and 300 per instance. Every
+ * attempt that would contact Apple or Google counts, so the login routes
+ * can't be used to check stolen keys at speed.
+ */
+export const signInAttempts = new AttemptLimiter({ limit: 10, globalLimit: 300, windowMs: 10 * 60 * 1000 });

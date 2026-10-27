@@ -18,21 +18,22 @@ import {
   readSessionCookie,
   writeSessionCookie,
 } from '@/lib/session';
+import { rejectCrossSite, readJsonBody, SMALL_BODY_LIMIT } from '@/lib/request-guard';
+import { signInAttempts, trustedClientIp } from '@/lib/utils/attempt-limiter';
+
+/** An App Store Connect key (P-256) is about 250 characters of PEM; anything far larger isn't one */
+const MAX_PRIVATE_KEY_CHARS = 2048;
 
 export async function POST(request: NextRequest) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   try {
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json(
-        { error: 'Invalid JSON in request body' },
-        { status: 400 }
-      );
-    }
+    const read = await readJsonBody(request, SMALL_BODY_LIMIT);
+    if (!read.ok) return read.response;
+    const body = (typeof read.body === 'object' && read.body !== null ? read.body : {}) as Record<string, unknown>;
     const { privateKey, keyId, issuerId } = body;
 
-    if (!privateKey || !keyId || !issuerId) {
+    if (typeof privateKey !== 'string' || typeof keyId !== 'string' || typeof issuerId !== 'string' || !privateKey || !keyId || !issuerId) {
       return NextResponse.json(
         { error: 'Missing required credentials' },
         { status: 400 }
@@ -46,7 +47,7 @@ export async function POST(request: NextRequest) {
       bundleId: '',
     };
 
-    if (!validateAppleCredentials(credentials)) {
+    if (privateKey.length > MAX_PRIVATE_KEY_CHARS || keyId.length > 64 || issuerId.length > 64 || !validateAppleCredentials(credentials)) {
       return NextResponse.json(
         { error: 'Invalid credentials format. Please check your .p8 key file.' },
         { status: 400 }
@@ -58,6 +59,15 @@ export async function POST(request: NextRequest) {
     if (!canStoreSessions()) {
       console.error(encryptionKeyMessage());
       return NextResponse.json({ error: encryptionKeyMessage() }, { status: 500 });
+    }
+
+    // Sign-in attempts are limited per client (with TRUSTED_CLIENT_IP_HEADER) and per instance
+    const decision = signInAttempts.attempt(trustedClientIp(request.headers, process.env.TRUSTED_CLIENT_IP_HEADER));
+    if (!decision.allowed) {
+      return NextResponse.json(
+        { error: 'Too many sign-in attempts. Try again later.' },
+        { status: 429, headers: { 'Retry-After': String(decision.retryAfterSeconds) } }
+      );
     }
 
     const testResult = await testAppleConnection(credentials);
@@ -118,7 +128,9 @@ export async function GET() {
   }
 }
 
-export async function DELETE() {
+export async function DELETE(request: Request) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   try {
     const cookieStore = await cookies();
     clearCookie(cookieStore, COOKIE_NAMES.appleSession);

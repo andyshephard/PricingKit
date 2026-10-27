@@ -40,7 +40,10 @@ key (`.p8` private key, Key ID, Issuer ID) and/or a Google Play service account 
    credential, including the private key. The cache holds at most 50 entries. Two users
    whose keys share a Key ID or client email never share a token.
 5. **Sign-in is read-only.** Connecting an account or switching apps only lists data. If
-   the key lacks pricing-write permission, you find out on your first edit.
+   the key lacks pricing-write permission, you find out on your first edit. Sign-in accepts
+   Google keys only as RSA keys of 2048 to 4096 bits (checked before the key is imported) and
+   is rate limited: 10 attempts per client per 10 minutes when `TRUSTED_CLIENT_IP_HEADER` is
+   set, and 300 per server instance.
 6. **`ENCRYPTION_KEY` is required, and must be random.** It must be base64 (or base64url)
    of at least 32 bytes, as `openssl rand -base64 32` prints. Without it, or with anything
    else (a passphrase, a short value), the server refuses to create or read sessions. The only
@@ -53,6 +56,17 @@ key (`.p8` private key, Key ID, Issuer ID) and/or a Google Play service account 
    on the request that reads them, with an expiry no later than that date; from then on they
    are refused. Anything that isn't a well-formed cookie of a plausible size is refused before
    any key is derived. Legacy cookies are refused at once when `SESSION_VERSION` is set.
+
+Requests that change something (`POST`, `PUT`, `PATCH`, `DELETE`):
+
+- must come from the app's own pages: a browser request whose `Sec-Fetch-Site` isn't
+  `same-origin`, or whose `Origin` names another host, is refused with `403`. A request with
+  neither header (curl, a script) is not from a browser, so no other site can make a visitor's
+  browser send it; it is allowed and still needs a session where the route does.
+- take a body only as `application/json` (`415` otherwise), so a cross-site HTML form can't
+  sign a visitor in to an attacker's account or plant an Open Exchange Rates key.
+- are size-limited: 16 KB for sign-in, app switching and settings, 1 MB for store edits,
+  plans, applies and bulk updates (`413`), by `Content-Length` and by the bytes actually read.
 
 Other data:
 

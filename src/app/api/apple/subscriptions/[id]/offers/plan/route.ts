@@ -12,6 +12,7 @@ import {
   type ProductRef,
 } from '@/lib/pricing';
 import { appleErrorResponse } from '../../../../_lib/error-response';
+import { rejectCrossSite, readJsonBody, LARGE_BODY_LIMIT } from '@/lib/request-guard';
 
 const rule = {
   percent: z.string().min(1).max(20),
@@ -40,6 +41,8 @@ const bodySchema = z.discriminatedUnion('action', [
 // (pricingkit.changeset), its hash (what an apply must confirm) and the
 // per-territory preview.
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   try {
     const auth = await getAppleAuthFromCookies();
     if (!auth) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
@@ -48,7 +51,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!/^\d+$/.test(id)) {
       return NextResponse.json({ error: 'Use the numeric App Store Connect subscription ID' }, { status: 400 });
     }
-    const parsed = bodySchema.safeParse(await request.json().catch(() => null));
+    const read = await readJsonBody(request, LARGE_BODY_LIMIT);
+    if (!read.ok) return read.response;
+    const parsed = bodySchema.safeParse(read.body);
     if (!parsed.success) {
       return NextResponse.json({ error: parsed.error.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`).join('; ') }, { status: 400 });
     }

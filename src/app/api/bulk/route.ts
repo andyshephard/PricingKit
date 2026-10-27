@@ -13,6 +13,7 @@ import {
 import type { Money, RegionalBasePlanConfig } from '@/lib/google-play/types';
 import { toApiError } from '@/lib/utils/api-error';
 import { RequestBudget } from '@/lib/utils/request-budget';
+import { rejectCrossSite, readJsonBody, LARGE_BODY_LIMIT } from '@/lib/request-guard';
 
 type SkippedRegion = { regionCode: string; reason: string };
 
@@ -38,6 +39,8 @@ const bulkUpdateSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   try {
     const auth = await getGoogleAuthFromCookies();
 
@@ -48,15 +51,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json(
-        { error: 'Invalid JSON in request body' },
-        { status: 400 }
-      );
-    }
+    const read = await readJsonBody(request, LARGE_BODY_LIMIT);
+    if (!read.ok) return read.response;
+    const body = read.body;
     const result = bulkUpdateSchema.safeParse(body);
     // One request budget for the whole bulk run
     const ctx = { budget: new RequestBudget() };

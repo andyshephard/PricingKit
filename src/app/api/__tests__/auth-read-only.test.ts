@@ -93,6 +93,7 @@ describe('login and app switch never write to the store', () => {
   it('POST /api/auth only issues GET requests to Google Play', async () => {
     const req = new NextRequest('http://localhost/api/auth', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ credentials, packageName: 'com.example.app' }),
     });
     const res = await authPOST(req);
@@ -106,6 +107,7 @@ describe('login and app switch never write to the store', () => {
     cookieStore = createCookieStore({ gplay_session: await sessionCookieValue('google', credentials) });
     const req = new NextRequest('http://localhost/api/active-app', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ packageName: 'com.example.other' }),
     });
     const res = await activeAppPOST(req);
@@ -125,6 +127,7 @@ describe('login and app switch never write to the store', () => {
     );
     const req = new NextRequest('http://localhost/api/auth', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ credentials, packageName: 'com.example.app' }),
     });
     const res = await authPOST(req);
@@ -145,6 +148,7 @@ describe('login and app switch never write to the store', () => {
       const placeholder = { ...credentials, private_key: '-----BEGIN PRIVATE KEY-----\nnot-a-key\n-----END PRIVATE KEY-----\n' };
       const req = new NextRequest('http://localhost/api/auth', {
         method: 'POST',
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ credentials: placeholder, packageName: 'com.example.app' }),
       });
       const res = await authPOST(req);
@@ -163,6 +167,7 @@ describe('login and app switch never write to the store', () => {
     vi.stubEnv('NODE_ENV', 'production');
     const req = new NextRequest('http://localhost/api/apple/auth', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         privateKey: '-----BEGIN PRIVATE KEY-----\nnot-a-key\n-----END PRIVATE KEY-----',
         keyId: 'KEYID12345',

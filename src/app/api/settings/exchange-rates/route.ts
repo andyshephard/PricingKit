@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { clearCookie, COOKIE_NAMES, EXCHANGE_RATES_KEY_MAX_AGE, hasAuthenticatedSession, readCookie, writeCookie } from '@/lib/session';
 import { AttemptLimiter, trustedClientIp } from '@/lib/utils/attempt-limiter';
+import { readJsonBody, rejectCrossSite, SMALL_BODY_LIMIT } from '@/lib/request-guard';
 
 // Without a store session, testing a key is limited so this endpoint can't be
 // used as a free Open Exchange Rates proxy: 50 tests per instance per 10
@@ -45,16 +46,10 @@ export async function GET() {
 
 // POST: Save a new API key
 export async function POST(request: Request) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   try {
-    const { apiKey } = await request.json();
-
-    if (!apiKey || typeof apiKey !== 'string') {
-      return NextResponse.json(
-        { success: false, error: 'API key is required' },
-        { status: 400 }
-      );
-    }
-
+    // The anonymous limit is checked before the body is read or parsed
     const cookieStore = await cookies();
     if (!(await hasAuthenticatedSession(cookieStore))) {
       const decision = anonymousKeyTests.attempt(
@@ -66,6 +61,21 @@ export async function POST(request: Request) {
           { status: 429, headers: { 'Retry-After': String(decision.retryAfterSeconds) } }
         );
       }
+    }
+
+    const read = await readJsonBody(request, SMALL_BODY_LIMIT);
+    if (!read.ok) return read.response;
+    const apiKey = (read.body as { apiKey?: unknown } | null)?.apiKey;
+
+    if (!apiKey || typeof apiKey !== 'string') {
+      return NextResponse.json(
+        { success: false, error: 'API key is required' },
+        { status: 400 }
+      );
+    }
+    // Open Exchange Rates app IDs are 32 hexadecimal characters
+    if (!/^[A-Za-z0-9]{8,64}$/.test(apiKey)) {
+      return NextResponse.json({ success: false, error: 'That is not an Open Exchange Rates app ID' }, { status: 400 });
     }
 
     // Validate the API key by making a test request
@@ -100,7 +110,9 @@ export async function POST(request: Request) {
 }
 
 // DELETE: Remove the saved API key
-export async function DELETE() {
+export async function DELETE(request: Request) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   const cookieStore = await cookies();
   clearCookie(cookieStore, COOKIE_NAMES.exchangeRatesKey);
 

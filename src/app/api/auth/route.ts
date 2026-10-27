@@ -3,7 +3,10 @@ import { cookies } from 'next/headers';
 import {
   validateServiceAccountJson,
   googlePlayFetch,
+  isAcceptedServiceAccountKey,
 } from '@/lib/google-play/client';
+import { packageNameSchema } from '@/lib/validation';
+import { signInAttempts, trustedClientIp } from '@/lib/utils/attempt-limiter';
 import type { ServiceAccountCredentials } from '@/lib/google-play/types';
 import {
   MissingEncryptionKeyError,
@@ -20,6 +23,7 @@ import {
   writeCookie,
   writeSessionCookie,
 } from '@/lib/session';
+import { rejectCrossSite, readJsonBody, SMALL_BODY_LIMIT } from '@/lib/request-guard';
 
 interface ProbeListResp<T> {
   subscriptions?: T[];
@@ -29,24 +33,25 @@ interface ProbeProduct {
 }
 
 export async function POST(request: NextRequest) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   try {
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json(
-        { error: 'Invalid JSON in request body' },
-        { status: 400 }
-      );
-    }
-    const { credentials, packageName } = body;
+    const read = await readJsonBody(request, SMALL_BODY_LIMIT);
+    if (!read.ok) return read.response;
+    const body = (typeof read.body === 'object' && read.body !== null ? read.body : {}) as { credentials?: unknown; packageName?: unknown };
+    const { credentials } = body;
 
-    if (!credentials || !packageName) {
+    if (!credentials || !body.packageName) {
       return NextResponse.json(
         { error: 'Missing credentials or package name' },
         { status: 400 }
       );
     }
+    const parsedPackage = packageNameSchema.safeParse(body.packageName);
+    if (!parsedPackage.success) {
+      return NextResponse.json({ error: 'Invalid package name' }, { status: 400 });
+    }
+    const packageName = parsedPackage.data;
 
     if (!validateServiceAccountJson(credentials)) {
       return NextResponse.json(
@@ -54,12 +59,29 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-
     // Fail closed before contacting Google: without ENCRYPTION_KEY (outside
     // `next dev`) the session could not be stored anyway.
     if (!canStoreSessions()) {
       console.error(encryptionKeyMessage());
       return NextResponse.json({ error: encryptionKeyMessage() }, { status: 500 });
+    }
+    // Checked before the key is imported: importing a huge RSA key costs real CPU
+    if (!isAcceptedServiceAccountKey((credentials as ServiceAccountCredentials).private_key)) {
+      return NextResponse.json(
+        { error: 'The service account key must be an RSA private key of 2048 to 4096 bits (Google issues 2048-bit keys).' },
+        { status: 400 }
+      );
+    }
+
+
+    // Sign-in attempts are limited per client (with TRUSTED_CLIENT_IP_HEADER) and
+    // per instance, so this route can't be used to test stolen keys at speed
+    const decision = signInAttempts.attempt(trustedClientIp(request.headers, process.env.TRUSTED_CLIENT_IP_HEADER));
+    if (!decision.allowed) {
+      return NextResponse.json(
+        { error: 'Too many sign-in attempts. Try again later.' },
+        { status: 429, headers: { 'Retry-After': String(decision.retryAfterSeconds) } }
+      );
     }
 
     // Test the connection by trying to list subscriptions (uses the newer monetization API)
@@ -108,7 +130,7 @@ export async function POST(request: NextRequest) {
       }
       if (error.code === 404) {
         return NextResponse.json(
-          { error: `App not found. Please verify the package name "${packageName}" is correct and the app exists in Play Console.` },
+          { error: 'App not found. Check the package name and that the app exists in Play Console.' },
           { status: 404 }
         );
       }
@@ -184,7 +206,9 @@ export async function GET() {
   }
 }
 
-export async function DELETE() {
+export async function DELETE(request: Request) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   try {
     const cookieStore = await cookies();
     clearCookie(cookieStore, COOKIE_NAMES.googleSession);

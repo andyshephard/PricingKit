@@ -10,6 +10,7 @@ import { executeWithRateLimit, RateLimitError } from '@/lib/utils/rate-limit';
 import { getErrorStatus } from '@/lib/utils/api-error';
 import { createNdjsonStream, NDJSON_HEADERS } from '@/lib/utils/ndjson-stream';
 import { isBudgetExceeded, RequestBudget } from '@/lib/utils/request-budget';
+import { rejectCrossSite, readJsonBody, LARGE_BODY_LIMIT } from '@/lib/request-guard';
 
 const batchSchema = z.object({
   territories: z.record(
@@ -27,6 +28,8 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const crossSite = rejectCrossSite(request);
+  if (crossSite) return crossSite;
   try {
     const auth = await getAppleAuthFromCookies();
     if (!auth) {
@@ -38,15 +41,9 @@ export async function POST(
 
     const { id } = await params;
 
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json(
-        { error: 'Invalid JSON in request body' },
-        { status: 400 }
-      );
-    }
+    const read = await readJsonBody(request, LARGE_BODY_LIMIT);
+    if (!read.ok) return read.response;
+    const body = read.body;
 
     const result = batchSchema.safeParse(body);
     if (!result.success) {
