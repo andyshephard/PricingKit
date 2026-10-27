@@ -241,7 +241,10 @@ export function buildUndoChangeSet(
     const clientRetried = (record.error?.clientAttempts ?? 1) > 1;
     const refused =
       record.attempts === 1 && record.error?.status !== undefined && record.error.status >= 400 && record.error.status < 500 && !wrote && !clientRetried;
-    const mayHaveApplied = record.status === 'ok' || (isOfferOp(op) && record.status === 'failed' && record.attempts > 0 && !refused);
+    // Base-price ops too: an Apple create that answered 5xx may have taken effect. Their inverse is
+    // safe either way: if the op never applied, the store is at the inverse's target and it is skipped.
+    const failedButSent = record.status === 'failed' && record.attempts > 0 && !refused;
+    const mayHaveApplied = record.status === 'ok' || failedButSent;
     if (!mayHaveApplied) continue;
     if (isOfferOp(op)) {
       const inverse = invertOfferOp(op, { ...(createdIds ? { createdIds } : {}), failed: record.status === 'failed', ...(record.response ? { response: record.response } : {}) });
@@ -257,7 +260,7 @@ export function buildUndoChangeSet(
       continue;
     }
     const inverse = invertOp(op as BasePriceOp);
-    if ('notReversible' in inverse) notReversible.push({ opId: op.id, reason: inverse.notReversible });
+    if ('notReversible' in inverse) notReversible.push({ opId: op.id, reason: record.status === 'failed' ? `If it took effect: ${inverse.notReversible}` : inverse.notReversible });
     else {
       inverseOf.set(op.id, inverses.length);
       inverses.push(inverse.op);

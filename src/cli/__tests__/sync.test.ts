@@ -145,12 +145,12 @@ describe('pricingkit plan --spec <base> --rules', () => {
     products: [{ product: subA, targets: { type: 'fixed', prices: { US: '54.99', GB: '49.99' } }, ...extra }],
   });
 
-  it('plans base prices and the offers derived from them in one plan; diff groups them; apply refuses the base ops', async () => {
+  it('plans base prices and the offers derived from them in one plan; diff groups them; apply needs --allow-base-prices', async () => {
     writeJson('base.json', baseSpec());
     const r = await run(['plan', '--spec', 'base.json', '--rules', 'rules.json', '--out', 'both.json'], { env, cwd: tmp.dir });
     expect(r.code).toBe(2);
     expect(r.stdout).toMatch(/example_annual_50\s+op-0003: re-price 2 territories \(against this plan's base prices\)/);
-    expect(r.stdout).toMatch(/"pricingkit apply" does not apply yet/);
+    expect(r.stdout).toMatch(/"pricingkit apply" applies it only with --allow-base-prices/);
     const plan = parseChangeSet(readFileSync(join(tmp.dir, 'both.json'), 'utf8'));
     expect(plan.ops.map((op) => op.kind)).toEqual(['setPrice', 'setPrice', 'updateOfferPrices', 'updateOfferPrices']);
     const offerA = plan.ops[2] as OfferOp;
@@ -165,8 +165,16 @@ describe('pricingkit plan --spec <base> --rules', () => {
 
     const apply = await run(['apply', 'both.json', '--confirm', changeSetHash(plan)], { env, cwd: tmp.dir });
     expect(apply.code).toBe(1);
-    expect(apply.stderr).toMatch(/offer plans only[\s\S]*plan --rules/);
+    expect(apply.stderr).toMatch(/Pass --allow-base-prices/);
     expect(store.writes()).toEqual([]);
+
+    const allowed = await run(['apply', 'both.json', '--confirm', changeSetHash(plan), '--allow-base-prices'], { env, cwd: tmp.dir });
+    expect(allowed.code).toBe(0);
+    // Base prices first; B's offer (no base change) in the same round after them; A's offer, derived
+    // from the new base prices, only in the next round
+    expect(store.writes()).toEqual(['POST /subscriptionPrices', 'POST /subscriptionPrices', `PATCH /subscriptionPromotionalOffers/${store.offers[1].id}`, `PATCH /subscriptionPromotionalOffers/${store.offers[0].id}`]);
+    expect(allowed.stdout).toMatch(/not yet confirmed on a test app/);
+    expect((await run(['drift', '--rules', 'rules.json'], { env, cwd: tmp.dir })).code).toBe(0);
   });
 
   it('holds offers over base prices scheduled for later, unless --scheduled-base now', async () => {

@@ -47,6 +47,7 @@ export async function undoCommand(ctx: CommandContext): Promise<CommandResult> {
   }
   const written = await writeOutputFileAtomic(ctx, out, serializeChangeSet(undo));
   const deletes = undo.ops.some((op) => isOfferOp(op) && op.kind === 'deleteOffer');
+  const basePrices = undo.ops.some((op) => !isOfferOp(op));
   const summary = summarizeChangeSet(undo);
 
   const text = [
@@ -56,7 +57,7 @@ export async function undoCommand(ctx: CommandContext): Promise<CommandResult> {
     ...(undo.ops.length > 0
       ? [
           'Review it, then apply it with:',
-          `  pricingkit apply ${out} --confirm <the plan hash above>${deletes ? ' --force-delete' : ''}`,
+          `  pricingkit apply ${out} --confirm <the plan hash above>${deletes ? ' --force-delete' : ''}${basePrices ? ' --allow-base-prices' : ''}`,
           ...(deletes
             ? [
                 'bundleId' in undo.app

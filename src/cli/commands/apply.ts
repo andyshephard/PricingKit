@@ -1,8 +1,9 @@
-// pricingkit apply: the CLI's only write. Applies an offer plan file (App
-// Store or Google Play, the app named in the plan), only
-// with --confirm set to the plan's hash (what `pricingkit diff` and `plan`
-// print), and saves the run log after every step so a failed or interrupted
-// run can be resumed with --resume and undone later.
+// pricingkit apply: the CLI's only write. Applies a plan file (App Store or
+// Google Play, the app named in the plan), only with --confirm set to the
+// plan's hash (what `pricingkit diff` and `plan` print), and saves the run
+// log before and after every write so a failed or interrupted run can be
+// resumed with --resume and undone later. Offer ops are applied by default;
+// a plan that changes base prices also needs --allow-base-prices.
 
 import { existsSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -32,6 +33,15 @@ export function defaultRunFile(planPath: string): string {
   return join(dirname(planPath), `${name}.run.json`);
 }
 
+/**
+ * What `apply --allow-base-prices` users must know. App Store base-price
+ * writes rest on two behaviours not yet confirmed on a test app (CLAUDE.md,
+ * Testing); the executor re-reads every territory before writing and refuses
+ * ambiguous state, but don't rely on them in production before that check.
+ */
+export const BASE_PRICE_NOTE =
+  "App Store base prices rely on two behaviours not yet confirmed on a test app: that an immediate price replaces the territory's older entries, and that a second scheduled price can be created before the old one is deleted. Try a base-price plan on a test app first.";
+
 export async function applyCommand(ctx: CommandContext): Promise<CommandResult> {
   const fromFlag = stringFlag(ctx.flags, 'plan');
   if (fromFlag && ctx.positionals.length > 0) throw new UsageError('Give the plan file once: as an argument or with --plan');
@@ -59,11 +69,11 @@ export async function applyCommand(ctx: CommandContext): Promise<CommandResult> 
     // Never print the right hash here: it must come from reviewing the plan
     throw new CliError(`--confirm doesn't match this plan. Review it with "pricingkit diff ${planPath}" and confirm the hash shown there.`, 'CONFIRM_MISMATCH');
   }
-  const notOffer = changeSet.ops.find((op) => !isOfferOp(op));
-  if (notOffer) {
-    // Base-price writes wait until the Apple base-price assumptions are confirmed on a test app (see CLAUDE.md)
+  const baseOps = changeSet.ops.filter((op) => !isOfferOp(op));
+  if (baseOps.length > 0 && ctx.flags['allow-base-prices'] !== true) {
+    // Base prices are an explicit opt-in: see BASE_PRICE_NOTE
     throw new UsageError(
-      `apply supports offer plans only in this version (op ${notOffer.id} is a ${notOffer.kind}). For a plan with base prices and synced offers: change the base prices in the web app, then run "pricingkit plan --rules <rules.json>" to re-derive the offers against the new prices, and apply that plan.`
+      `This plan changes base prices (${baseOps.length} ${baseOps.length === 1 ? 'op' : 'ops'}, e.g. ${baseOps[0].id} ${baseOps[0].kind}). Pass --allow-base-prices to apply it. ${BASE_PRICE_NOTE}`
     );
   }
 
@@ -96,6 +106,7 @@ export async function applyCommand(ctx: CommandContext): Promise<CommandResult> 
   });
 
   const counts = summarizeRun(run);
+  const resume = `pricingkit apply ${planPath} --confirm ${hash} --resume ${runOut}${baseOps.length > 0 ? ' --allow-base-prices' : ''}${ctx.flags['force-delete'] === true ? ' --force-delete' : ''}`;
   const text = [
     ...describeRun(changeSet, run),
     '',
@@ -105,7 +116,8 @@ export async function applyCommand(ctx: CommandContext): Promise<CommandResult> 
       .join(', ')})`,
     ...(run.stoppedReason ? [`Stopped: ${run.stoppedReason}${run.stoppedDetail ? ` (${run.stoppedDetail})` : ''}`] : []),
     `Run log written to ${saved || resolve(ctx.cwd, runOut)}`,
-    ...(run.status === 'completed' ? [] : [`Resume with: pricingkit apply ${planPath} --confirm ${hash} --resume ${runOut}`]),
+    ...(run.status === 'completed' ? [] : [`Resume with: ${resume}`]),
+    ...(baseOps.length > 0 && 'bundleId' in changeSet.app ? ['', `Note: ${BASE_PRICE_NOTE}`] : []),
   ].join('\n');
   return { exitCode: run.status === 'completed' ? EXIT_OK : EXIT_ERROR, json: run, text };
 }

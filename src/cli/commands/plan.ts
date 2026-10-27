@@ -30,6 +30,7 @@ import {
 import { appSelection, stringFlag } from '../args';
 import { appleAdapter, playAdapter, readInputFile, readOnly, writeOutputFile, type CommandContext, type CommandResult, type PriceReader } from '../context';
 import { CliError, EXIT_CHANGES, EXIT_ERROR, EXIT_OK, UsageError } from '../errors';
+import { BASE_PRICE_NOTE } from './apply';
 import { formatPlanSummary, summarizeChangeSet } from './diff';
 import { sameApp } from './drift';
 import { table } from '../format';
@@ -133,8 +134,17 @@ export async function planCommand(ctx: CommandContext): Promise<CommandResult> {
     `Plan written to ${written}`,
     ...(stateWritten ? [`State written to ${stateWritten}`] : []),
     'Dry run: nothing was changed in the store.',
+    ...(changeSet.ops.length > 0 ? ['', ...baseApplyNote(spec.app)] : []),
   ].join('\n');
   return { exitCode: changeSet.ops.length > 0 ? EXIT_CHANGES : EXIT_OK, json: changeSet, text };
+}
+
+/** How a plan with base-price ops is applied, and the App Store caveat */
+function baseApplyNote(app: PricingSpec['app']): string[] {
+  return [
+    'This plan changes base prices: "pricingkit apply" applies it only with --allow-base-prices (and --confirm <plan hash>).',
+    ...('bundleId' in app ? [BASE_PRICE_NOTE] : []),
+  ];
 }
 
 function specKind(text: string): unknown {
@@ -349,13 +359,7 @@ async function planSyncCommand(ctx: CommandContext, rulesPath: string, specPath:
     `Plan written to ${written}`,
     ...(stateWritten ? [`State written to ${stateWritten}`] : []),
     'Dry run: nothing was changed in the store.',
-    ...(hasBaseOps
-      ? [
-          '',
-          'This plan changes base prices, which "pricingkit apply" does not apply yet. Change the base prices in the web app,',
-          `then run "pricingkit plan --rules ${rulesPath}" to re-derive the offers against the new prices and apply that plan.`,
-        ]
-      : []),
+    ...(hasBaseOps ? ['', ...baseApplyNote(rules.app)] : []),
     ...deviationNote(deviating),
   ].join('\n');
   return {

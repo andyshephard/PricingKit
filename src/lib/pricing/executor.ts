@@ -62,7 +62,7 @@ export const OFFER_NOT_APPLIED = 'OFFER_NOT_APPLIED';
 export class ConfirmationRequiredError extends Error {
   constructor() {
     super(
-      "This plan changes offers and the confirmation doesn't match it. Review the plan (the preview, or `pricingkit diff`) and confirm with the hash shown there."
+      "The confirmation doesn't match this plan. Review the plan (the preview, or `pricingkit diff`) and confirm with the hash shown there."
     );
     this.name = 'ConfirmationRequiredError';
   }
@@ -88,7 +88,8 @@ export interface ApplyOptions {
   /**
    * Required when the plan has offer ops: changeSetHash() of the plan the
    * reviewer approved. Any other value refuses the whole apply before
-   * anything is read or sent.
+   * anything is read or sent. When given for a base-price plan, it is
+   * checked the same way (the CLI always passes it).
    */
   confirm?: string;
   /** Explicit overrides of safety checks */
@@ -180,9 +181,11 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
     throw new ChangeSetValidationError([`op ${wrongPlatform.id} is for ${wrongPlatform.platform}, adapter is ${adapter.platform}`]);
   }
   const hasOfferOps = changeSet.ops.some(isOfferOp);
+  // Offer plans always need the hash; any plan applied with a confirmation must match it
+  if (hasOfferOps || options.confirm !== undefined) {
+    if (options.confirm !== changeSetHash(changeSet)) throw new ConfirmationRequiredError();
+  }
   if (hasOfferOps) {
-    const hash = changeSetHash(changeSet);
-    if (options.confirm !== hash) throw new ConfirmationRequiredError();
     if (!adapter.fetchOffers || !adapter.applyOffer) {
       throw new ChangeSetValidationError([`the ${adapter.platform} adapter can't apply offer ops`]);
     }

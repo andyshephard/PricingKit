@@ -127,7 +127,7 @@ describe('pricingkit apply', () => {
     expect(parseRun(readFileSync(join(tmp.dir, 'plan.run.json'), 'utf8')).ops[0]).toMatchObject({ status: 'ok', response: { confirmedOnResume: true } });
   });
 
-  it('refuses a base-price plan', async () => {
+  it('refuses a base-price plan without --allow-base-prices, before any store request', async () => {
     writeFileSync(
       join(tmp.dir, 'base.json'),
       JSON.stringify({ schemaVersion: 1, kind: 'pricingkit.changeset', id: 'b', createdAt: 'x', app: { bundleId: BUNDLE }, ops: [] })
@@ -151,10 +151,13 @@ describe('pricingkit apply', () => {
       ],
     };
     writeFileSync(join(tmp.dir, 'base2.json'), JSON.stringify(withOp));
+    const callsBefore = appleApiRequest.mock.calls.length;
     const r2 = await run(['apply', 'base2.json', '--confirm', changeSetHash(parseChangeSet(withOp))], { env, cwd: tmp.dir });
     expect(r2.code).toBe(1);
-    expect(r2.stderr).toMatch(/offer plans only/);
+    expect(r2.stderr).toMatch(/changes base prices \(1 op, e\.g\. op-0001 setPrice\)\. Pass --allow-base-prices/);
+    expect(r2.stderr).toMatch(/not yet confirmed on a test app/);
     expect(store.writes()).toEqual([]);
+    expect(appleApiRequest.mock.calls.length).toBe(callsBefore);
   });
 });
 

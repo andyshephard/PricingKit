@@ -57,6 +57,7 @@ const OPTIONS: Record<CommandName, OptionSpec> = {
     'run-out': { type: 'string' },
     force: { type: 'boolean' },
     'force-delete': { type: 'boolean' },
+    'allow-base-prices': { type: 'boolean' },
   },
   undo: { ...COMMON, out: { type: 'string', short: 'o' }, force: { type: 'boolean' } },
 };
@@ -155,7 +156,7 @@ const SHARED_HELP = `Shared options:
   -h, --help        Help for the command`;
 
 export const MAIN_HELP = `pricingkit: read store prices, plan price and offer changes, check offers for drift,
-and apply reviewed offer plans. Only "apply" writes to a store, and only with --confirm.
+and apply reviewed plans. Only "apply" writes to a store, and only with --confirm.
 
 Usage: pricingkit <command> [options]
 
@@ -168,8 +169,8 @@ Commands:
            Google Play offers with their phases, eligibility, tags and regions
   drift    Check offers against their rules (one offer, or every offer in a rules file with
            --rules); App Store and Google Play
-  apply    Apply a reviewed offer plan, App Store or Google Play (needs --confirm <plan hash>);
-           saves the run log
+  apply    Apply a reviewed plan, App Store or Google Play (needs --confirm <plan hash>; base
+           prices also need --allow-base-prices); saves the run log
   undo     Turn a plan and its run log into an undo plan (offline), to review and apply
 
 ${SHARED_HELP}
@@ -244,10 +245,9 @@ default: offer prices change as soon as they are applied, so those
 territories keep their offer price and are listed for a sync on or after the
 date (the offer's other territories are still re-priced). --scheduled-base now re-prices
 them now, against the scheduled prices, with a warning.
-"pricingkit apply" applies offer-only plans; a plan that also changes base
-prices is refused there (change base prices in the web app, then run
-"plan --rules" on its own). Exit code 2 when the plan has ops or manual
-actions.
+"pricingkit apply" applies a plan with base prices only with
+--allow-base-prices: base prices first, then the offers derived from them.
+Exit code 2 when the plan has ops or manual actions.
 
 ${SHARED_HELP}`,
   diff: `Usage:
@@ -312,10 +312,17 @@ ${SHARED_HELP}`,
   apply: `Usage:
   pricingkit apply <plan.json> --confirm <plan hash> [--run-out <run.json>] [--force]
   pricingkit apply <plan.json> --confirm <plan hash> --resume <run.json>
-                   [--force-delete]
+                   [--force-delete] [--allow-base-prices]
 
-Applies an offer plan (made by "pricingkit plan" with an offer plan spec or
---rules), App Store or Google Play: the app comes from the plan.
+Applies a plan made by "pricingkit plan" (or "undo"),
+App Store or Google Play: the app comes from the plan.
+A plan that changes base prices (a base-price spec, or --spec with --rules)
+also needs --allow-base-prices: base prices go first and an offer derived
+from them is sent only once they are in place (BASE_NOT_APPLIED otherwise).
+App Store base prices rely on two behaviours not yet confirmed on a test app
+(an immediate price replacing the territory's older entries; a second
+scheduled price created before the old one is deleted): try a base-price
+plan on a test app before relying on it.
 --confirm must be the plan's hash, as printed by "plan" and "diff": any
 other value refuses the whole run before anything is read or sent. Each op
 is checked against the store first: one already done is skipped, one whose

@@ -266,7 +266,7 @@ describe('applyChangeSet', () => {
       expect(google.state(GOOGLE_PLAN).territories).toEqual(googleState().territories);
     });
 
-    it('reverses only what the run changed', async () => {
+    it('reverses what the run changed or may have changed, never a skipped op', async () => {
       const store = new FakeStore('apple', [appleState()]);
       store.failures.set('US', { times: 5, error: serverError });
       const plan = applePlan();
@@ -274,7 +274,24 @@ describe('applyChangeSet', () => {
       store.state(APPLE_SUB).territories.GB.current = { currency: 'GBP', amount: '19.99', pricePointId: 'pp-gb-1999' };
       const run = await applyChangeSet(plan, { adapter: store });
       expect(run.ops.map((r) => r.status)).toEqual(['ok', 'skipped', 'failed']);
-      expect(basePriceOps(buildUndoChangeSet(plan, run)).map((op) => op.target.territory)).toEqual(['DE']);
+      // US was sent and answered 5xx: it may have taken effect, so its revert is in the undo plan.
+      // If it didn't, the store is already at the revert's target and applying the undo skips it.
+      const undo = buildUndoChangeSet(plan, run);
+      expect(basePriceOps(undo).map((op) => op.target.territory)).toEqual(['US', 'DE']);
+      const undone = await applyChangeSet(undo, { adapter: store });
+      expect(undone.ops.map((r) => [r.status, r.skipReason])).toEqual([
+        ['skipped', 'ALREADY_AT_TARGET'],
+        ['ok', undefined],
+      ]);
+    });
+
+    it('leaves out a base-price op the store refused (4xx) on its only attempt', async () => {
+      const store = new FakeStore('apple', [appleState()]);
+      store.failures.set('US', { times: 1, error: () => new ApiError('refused', { status: 409, platform: 'apple', retryable: false }) });
+      const plan = applePlan();
+      const run = await applyChangeSet(plan, { adapter: store });
+      expect(run.ops.map((r) => r.status)).toEqual(['ok', 'ok', 'failed']);
+      expect(basePriceOps(buildUndoChangeSet(plan, run)).map((op) => op.target.territory)).toEqual(['GB', 'DE']);
     });
 
     it('lists what it cannot reverse', async () => {

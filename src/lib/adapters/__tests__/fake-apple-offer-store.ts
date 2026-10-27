@@ -12,7 +12,10 @@
 // promotional offer creates; a create can answer a transient 500 having
 // created nothing (inject it with a `failures` entry without `afterWrite`).
 // ASSUMED, not confirmed: the 10-promotional-offer cap (enforced here like
-// Apple's help pages describe).
+// Apple's help pages describe). Base prices (POST /subscriptionPrices,
+// DELETE /subscriptionPrices/{id}) follow fake-apple.ts's UNVERIFIED
+// assumptions: an immediate create replaces the territory's current price,
+// and a second scheduled price can exist until the old one is deleted.
 import { AppleApiError } from '@/lib/apple-connect/client';
 import type { RequestBudget } from '@/lib/utils/request-budget';
 
@@ -56,6 +59,8 @@ interface Sub {
   /** Subscription group; groups belong to apps (see `apps`) */
   group: string;
   base: Record<string, string>; // alpha3 -> customer price
+  /** Future base prices: alpha3 -> entries (more than one only between create and delete) */
+  scheduled?: Record<string, Array<{ id: string; price: string; startDate: string }>>;
 }
 
 export type Failure = { method: string; path: RegExp; status: number; afterWrite?: boolean; times?: number };
@@ -201,17 +206,20 @@ export class FakeOfferStore {
     }
     if (method === 'GET' && (m = endpoint.match(/^\/subscriptions\/(\d+)\/prices$/))) {
       const sub = this.subs.get(m[1])!;
-      const entries = Object.entries(sub.base).map(([alpha3, price]) => ({ alpha3, pid: this.point(sub.id, alpha3, price) }));
+      const entries = [
+        ...Object.entries(sub.base).map(([alpha3, price]) => ({ id: `base-${sub.id}-${alpha3}`, alpha3, startDate: null as string | null, pid: this.point(sub.id, alpha3, price) })),
+        ...Object.entries(sub.scheduled ?? {}).flatMap(([alpha3, list]) => list.map((e) => ({ id: e.id, alpha3, startDate: e.startDate as string | null, pid: this.point(sub.id, alpha3, e.price) }))),
+      ];
       return {
         data: entries.map((e) => ({
           type: 'subscriptionPrices',
-          id: `base-${sub.id}-${e.alpha3}`,
-          attributes: { startDate: null },
+          id: e.id,
+          attributes: { startDate: e.startDate },
           relationships: { territory: { data: { type: 'territories', id: e.alpha3 } }, subscriptionPricePoint: { data: { type: 'subscriptionPricePoints', id: e.pid } } },
         })),
         included: [
-          ...entries.map((e) => ({ type: 'subscriptionPricePoints', id: e.pid, attributes: { customerPrice: this.points.get(e.pid)!.customerPrice, proceeds: this.points.get(e.pid)!.proceeds } })),
-          ...entries.map((e) => ({ type: 'territories', id: e.alpha3, attributes: { currency: this.territories[e.alpha3].currency } })),
+          ...[...new Set(entries.map((e) => e.pid))].map((pid) => ({ type: 'subscriptionPricePoints', id: pid, attributes: { customerPrice: this.points.get(pid)!.customerPrice, proceeds: this.points.get(pid)!.proceeds } })),
+          ...[...new Set(entries.map((e) => e.alpha3))].map((alpha3) => ({ type: 'territories', id: alpha3, attributes: { currency: this.territories[alpha3].currency } })),
         ],
         links: { self: `${API}/x` },
       };
@@ -241,6 +249,35 @@ export class FakeOfferStore {
     }
 
     const data = (body?.data ?? {}) as { attributes?: Record<string, unknown>; relationships?: Record<string, { data: { id: string } }> };
+    if (method === 'POST' && endpoint === '/subscriptionPrices') {
+      const sub = this.subs.get(data.relationships!.subscription.data.id);
+      if (!sub) throw new AppleApiError(404, 'NOT_FOUND', 'Not found', 'No subscription');
+      const alpha3 = data.relationships!.territory.data.id;
+      const point = this.points.get(data.relationships!.subscriptionPricePoint.data.id);
+      if (!point || point.alpha3 !== alpha3 || !point.id.startsWith(`pp-${sub.id}-`)) throw new AppleApiError(409, 'ENTITY_ERROR', 'Error', 'Price point not valid here');
+      const startDate = (data.attributes?.startDate as string | null | undefined) ?? null;
+      const id = `sp-${++this.n}`;
+      if (startDate === null) {
+        // UNVERIFIED: an immediate create replaces the current price
+        sub.base[alpha3] = point.customerPrice;
+      } else {
+        sub.scheduled ??= {};
+        (sub.scheduled[alpha3] ??= []).push({ id, price: point.customerPrice, startDate });
+      }
+      return { data: { type: 'subscriptionPrices', id } };
+    }
+    if (method === 'DELETE' && (m = endpoint.match(/^\/subscriptionPrices\/([^/]+)$/))) {
+      for (const sub of this.subs.values()) {
+        for (const [alpha3, list] of Object.entries(sub.scheduled ?? {})) {
+          const i = list.findIndex((e) => e.id === m![1]);
+          if (i < 0) continue;
+          list.splice(i, 1);
+          if (list.length === 0) delete sub.scheduled![alpha3];
+          return {};
+        }
+      }
+      throw new AppleApiError(404, 'NOT_FOUND', 'Not found', 'No such price');
+    }
     if (method === 'POST' && (endpoint === '/subscriptionPromotionalOffers' || endpoint === '/subscriptionOfferCodes' || endpoint === '/winBackOffers')) {
       const type = endpoint.slice(1) as Offer['type'];
       const subId = data.relationships!.subscription.data.id;
