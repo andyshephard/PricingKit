@@ -1,11 +1,10 @@
 /**
  * Fixed-window attempt limiter, held in memory.
  *
- * Used to stop anonymous callers from turning an endpoint into a free proxy
- * (e.g. testing Open Exchange Rates keys). State is per process / per Worker
- * isolate, so this is a brake, not a guarantee: a determined caller spread
- * across isolates gets more attempts. Keys are client identifiers (an IP),
- * never credentials. The map is capped so it cannot grow without bound.
+ * Used as a per-instance brake on the App Store Connect connect check.
+ * State is per process / per Worker isolate, so this is a brake, not a
+ * guarantee: a determined caller spread across isolates gets more attempts.
+ * Keys are client identifiers, never credentials or tokens. The map is capped so it cannot grow without bound.
  */
 
 export interface AttemptLimiterOptions {
@@ -72,32 +71,3 @@ export class AttemptLimiter {
     return { allowed: true };
   }
 }
-
-/**
- * The client IP from a header set by a proxy the operator trusts, or
- * undefined. Client-supplied headers such as cf-connecting-ip or
- * x-forwarded-for can be forged by anyone who reaches the app directly, so
- * nothing is read unless the operator names the header:
- *
- * - TRUSTED_CLIENT_IP_HEADER=cf-connecting-ip  behind Cloudflare (including Workers)
- * - TRUSTED_CLIENT_IP_HEADER=x-real-ip         behind a proxy that sets it
- * - TRUSTED_CLIENT_IP_HEADER=x-forwarded-for   uses the LAST entry, the one your proxy appended
- *
- * Unset (the default), callers fall back to a per-instance cap only.
- */
-export function trustedClientIp(headers: Headers, trustedHeader: string | undefined): string | undefined {
-  const name = trustedHeader?.trim().toLowerCase();
-  if (!name) return undefined;
-  const value = headers.get(name);
-  if (!value) return undefined;
-  const ip = name === 'x-forwarded-for' ? value.split(',').at(-1)?.trim() : value.trim();
-  return ip || undefined;
-}
-
-/**
- * Sign-in attempts (both login routes): 10 per client per 10 minutes when the
- * client IP comes from a trusted proxy header, and 300 per instance. Every
- * attempt that would contact Apple or Google counts, so the login routes
- * can't be used to check stolen keys at speed.
- */
-export const signInAttempts = new AttemptLimiter({ limit: 10, globalLimit: 300, windowMs: 10 * 60 * 1000 });

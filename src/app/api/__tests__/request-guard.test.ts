@@ -1,17 +1,13 @@
-// Cross-site requests, request body limits, sign-in limits and the service
-// account key size check. No store is contacted: fetch is stubbed.
+// Cross-site requests, request body limits, the connect-check limit and the
+// service account key size check (CLI). No store is contacted: fetch is stubbed.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
-import { createCookieStore, TEST_ENCRYPTION_KEY, type TestCookieStore } from './helpers';
-
-let cookieStore: TestCookieStore;
-vi.mock('next/headers', () => ({ cookies: async () => cookieStore }));
+import { appleHeaders, googleHeaders } from './helpers';
 
 import { readJsonBody, rejectCrossSite } from '@/lib/request-guard';
 import { isAcceptedServiceAccountKey, rsaPrivateKeyBits } from '@/lib/google-play/client';
 import { POST as authPOST } from '../auth/route';
 import { POST as appleAuthPOST } from '../apple/auth/route';
-import { POST as settingsPOST } from '../settings/exchange-rates/route';
 
 const URL_ = 'https://pricing.example.com/api/auth';
 
@@ -113,26 +109,10 @@ describe('service account key size', () => {
   });
 });
 
-describe('login routes', () => {
+describe('connect routes', () => {
   const fetchMock = vi.fn();
-  const serviceAccount = (privateKey: string) => ({
-    type: 'service_account',
-    project_id: 'p',
-    private_key_id: 'kid',
-    private_key: privateKey,
-    client_email: 'svc@p.iam.gserviceaccount.com',
-    client_id: '1',
-    auth_uri: 'https://accounts.google.com/o/oauth2/auth',
-    token_uri: 'https://oauth2.googleapis.com/token',
-    auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
-    client_x509_cert_url: 'https://example.invalid/cert',
-  });
-  const login = (body: unknown, headers: Record<string, string> = {}) =>
-    authPOST(new Request('http://localhost/api/auth', { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) }) as never);
 
   beforeEach(() => {
-    vi.stubEnv('ENCRYPTION_KEY', TEST_ENCRYPTION_KEY);
-    cookieStore = createCookieStore();
     fetchMock.mockReset();
     fetchMock.mockImplementation(async () => new Response('{"error":{"code":401}}', { status: 401 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -140,68 +120,28 @@ describe('login routes', () => {
   });
   afterEach(() => {
     vi.unstubAllGlobals();
-    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
-  it('refuse a 16384-bit RSA key before importing it or calling Google', async () => {
-    const importKey = vi.spyOn(crypto.subtle, 'importKey');
-    const res = await login({ credentials: serviceAccount(fakeRsaPem(2048)), packageName: 'com.example.app' });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/2048 to 4096 bits/);
-    expect(importKey).not.toHaveBeenCalled();
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('refuse a cross-site form post (login CSRF) and an oversized body before doing anything', async () => {
-    const form = await authPOST(
-      new Request('http://localhost/api/auth', { method: 'POST', headers: { 'content-type': 'text/plain', origin: 'https://evil.example.com' }, body: '{}' }) as never
+  it('refuse a cross-site request before doing anything, even with token headers', async () => {
+    const google = await authPOST(
+      new Request('http://localhost/api/auth', { method: 'POST', headers: { ...googleHeaders(), origin: 'https://evil.example.com' } }) as never
     );
-    expect(form.status).toBe(403);
-    const plain = await authPOST(new Request('http://localhost/api/auth', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}' }) as never);
-    expect(plain.status).toBe(415);
-    const huge = await login({ credentials: serviceAccount('x'.repeat(20_000)), packageName: 'com.example.app' });
-    expect(huge.status).toBe(413);
-    const apple = await appleAuthPOST(new Request('http://localhost/api/apple/auth', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}' }) as never);
-    expect(apple.status).toBe(415);
+    expect(google.status).toBe(403);
+    const apple = await appleAuthPOST(
+      new Request('http://localhost/api/apple/auth', { method: 'POST', headers: { ...appleHeaders(null), 'sec-fetch-site': 'cross-site' } }) as never
+    );
+    expect(apple.status).toBe(403);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('refuse a package name that is not one', async () => {
-    const pem = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
-    const res = await login({ credentials: serviceAccount(pem), packageName: '../../evil' });
-    expect(res.status).toBe(400);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('limit sign-in attempts per client when the client IP header is trusted', async () => {
-    vi.stubEnv('TRUSTED_CLIENT_IP_HEADER', 'cf-connecting-ip');
-    const pem = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
+  it('limit App Store Connect connect checks per instance', async () => {
     const statuses: number[] = [];
-    for (let i = 0; i < 11; i++) statuses.push((await login({ credentials: serviceAccount(pem), packageName: 'com.example.app' }, { 'cf-connecting-ip': '203.0.113.77' })).status);
-    expect(statuses.slice(0, 10).every((s) => s === 401)).toBe(true);
-    expect(statuses[10]).toBe(429);
-    const calls = fetchMock.mock.calls.length;
-    // Another client is not affected
-    expect((await login({ credentials: serviceAccount(pem), packageName: 'com.example.app' }, { 'cf-connecting-ip': '203.0.113.78' })).status).toBe(401);
-    expect(fetchMock.mock.calls.length).toBeGreaterThan(calls);
-  });
-});
-
-describe('POST /api/settings/exchange-rates', () => {
-  beforeEach(() => {
-    vi.stubEnv('ENCRYPTION_KEY', TEST_ENCRYPTION_KEY);
-    cookieStore = createCookieStore();
-  });
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it('refuses a cross-site form that would plant an exchange-rates key', async () => {
-    const res = await settingsPOST(
-      new Request('http://localhost/api/settings/exchange-rates', { method: 'POST', headers: { 'content-type': 'text/plain', 'sec-fetch-site': 'cross-site' }, body: '{"apiKey":"0123456789abcdef"}' })
-    );
-    expect(res.status).toBe(403);
-    expect(cookieStore.jar.size).toBe(0);
+    for (let i = 0; i < 301; i++) {
+      statuses.push((await appleAuthPOST(new Request('http://localhost/api/apple/auth', { method: 'POST', headers: appleHeaders(null) }) as never)).status);
+    }
+    expect(statuses.slice(0, 300).every((s) => s === 401)).toBe(true);
+    expect(statuses[300]).toBe(429);
+    expect(fetchMock).toHaveBeenCalledTimes(300);
   });
 });

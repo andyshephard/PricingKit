@@ -1,5 +1,6 @@
-// Route files must get credentials from src/middleware/auth.ts, never define
-// their own cookie helper or import one from another route file.
+// Route files must get store tokens from src/middleware/auth.ts: never read
+// the X-PK-* headers themselves, define their own helper, or import one from
+// another route file.
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -20,9 +21,8 @@ describe('auth helpers', () => {
     for (const file of routeFiles(API)) {
       const source = readFileSync(file, 'utf8');
       if (/from\s+'[^']*auth\/route'/.test(source)) offenders.push(`${relative(API, file)} imports a route file`);
-      if (/export\s+async\s+function\s+get\w*AuthFromCookies/.test(source)) {
-        offenders.push(`${relative(API, file)} defines its own auth helper`);
-      }
+      if (/function\s+require\w*Auth\b/.test(source)) offenders.push(`${relative(API, file)} defines its own auth helper`);
+      if (/['"]x-pk-[a-z-]+['"]/i.test(source)) offenders.push(`${relative(API, file)} reads an X-PK-* header itself`);
     }
     expect(offenders).toEqual([]);
   });

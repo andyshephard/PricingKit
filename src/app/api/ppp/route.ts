@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 import { getCpiSeries, getPPPMultipliers } from '@/lib/world-bank/ppp';
 import {
   checkFreshness,
@@ -16,7 +15,7 @@ import { BIG_MAC_INDEX, DEFAULT_BIG_MAC_MULTIPLIER } from '@/lib/pricing/indexes
 import { NETFLIX_PRICE_INDEX, DEFAULT_NETFLIX_MULTIPLIER } from '@/lib/pricing/indexes/netflix';
 import { getExchangeRates } from '@/lib/exchange-rates/client';
 import { FALLBACK_EXCHANGE_RATES } from '@/lib/pricing/indexes/exchange-rates';
-import { COOKIE_NAMES, hasAuthenticatedSession, readCookie } from '@/lib/session';
+import { hasStoreTokenHeader, readUserOerKey } from '@/middleware/auth';
 
 const FALLBACK_RATES_SNAPSHOT_DATE = REFERENCE_DATA.fallbackExchangeRates.asOf;
 
@@ -57,17 +56,20 @@ export async function GET(request: Request) {
   }
   const now = new Date();
 
-  // Pull user-supplied key from cookie (Settings page) so prod works without a
-  // Cloudflare secret. Falls back to env var inside getExchangeRates().
-  const cookieStore = await cookies();
-  const userApiKey = readCookie(cookieStore, COOKIE_NAMES.exchangeRatesKey)?.value;
+  // The user's own Open Exchange Rates key (Settings), sent by the browser in
+  // X-PK-OER-Key and never stored here. It never fills the shared caches
+  // (getExchangeRates); without it the operator key is used.
+  const userApiKey = readUserOerKey(request);
 
-  // This endpoint is public (index checker), but ?refresh=true bypasses the caches
-  // and spends upstream API quota, so it requires a signed-in Google or Apple session.
-  if (forceRefresh && !(await hasAuthenticatedSession(cookieStore))) {
+  // This endpoint is public (index checker), but ?refresh=true bypasses the
+  // caches. It needs a store token header that passes the shape checks: a
+  // speed bump, not authentication (the token isn't verified). The real
+  // limits are below: a refresh never spends the operator's Open Exchange
+  // Rates key, and World Bank refreshes run at most every 10 minutes.
+  if (forceRefresh && !hasStoreTokenHeader(request)) {
     return NextResponse.json(
-      { success: false, error: 'Sign in to force a refresh of PPP data.' },
-      { status: 401 }
+      { success: false, error: 'Connect a store to force a refresh of PPP data.', code: 'REFRESH_NEEDS_STORE' },
+      { status: 403 }
     );
   }
 

@@ -1,59 +1,21 @@
 import { NextResponse } from 'next/server';
-import { appleApiRequest, AppleApiError } from '@/lib/apple-connect/client';
-import type { AppleApiListResponse } from '@/lib/apple-connect/types';
-import { getAppleSessionFromCookies } from '@/middleware/auth';
-import { appleKeyConnection } from '@/lib/key-token-source';
+import { AppleApiError } from '@/lib/apple-connect/client';
+import { requireAppleAuth, unauthorizedResponse } from '@/middleware/auth';
+import { listAppleApps } from '../_lib/apps';
 
-interface AppleAppListItem {
-  id: string;
-  type: 'apps';
-  attributes: {
-    name: string;
-    bundleId: string;
-    sku?: string;
-  };
-}
+export type { AppleAppSummary } from '../_lib/apps';
 
-export interface AppleAppSummary {
-  id: string;
-  name: string;
-  bundleId: string;
-  sku: string | null;
-}
-
-export async function GET() {
-  const credentials = await getAppleSessionFromCookies();
-  if (!credentials) {
-    return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-  }
+export async function GET(request: Request) {
+  const auth = requireAppleAuth(request, { app: 'none' });
+  if (!auth.ok) return auth.response;
 
   try {
-    const response = await appleApiRequest<AppleApiListResponse<AppleAppListItem>>(
-      appleKeyConnection(credentials),
-      '/apps',
-      {
-        queryParams: {
-          'fields[apps]': 'name,bundleId,sku',
-          limit: '200',
-        },
-      }
-    );
-
-    const apps: AppleAppSummary[] = (response.data ?? []).map((app) => ({
-      id: app.id,
-      name: app.attributes.name,
-      bundleId: app.attributes.bundleId,
-      sku: app.attributes.sku ?? null,
-    }));
-
+    const apps = await listAppleApps(auth.connection);
     return NextResponse.json({ apps });
   } catch (error) {
     if (error instanceof AppleApiError) {
       if (error.statusCode === 401) {
-        return NextResponse.json(
-          { error: 'Apple credentials are invalid or expired.' },
-          { status: 401 }
-        );
+        return unauthorizedResponse('Apple credentials are invalid or expired.', 'INVALID_TOKEN');
       }
       if (error.statusCode === 403) {
         return NextResponse.json(

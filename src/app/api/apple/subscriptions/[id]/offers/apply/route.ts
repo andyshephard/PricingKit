@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getAppleAuthFromCookies } from '@/middleware/auth';
-import { appleKeyConnection } from '@/lib/key-token-source';
+import { requireAppleAuth } from '@/middleware/auth';
 import { AppleAdapter } from '@/lib/adapters/apple';
 import { RequestBudget } from '@/lib/utils/request-budget';
 import {
@@ -45,9 +44,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const crossSite = rejectCrossSite(request);
   if (crossSite) return crossSite;
   try {
-    const auth = await getAppleAuthFromCookies();
-    if (!auth) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-    const connection = appleKeyConnection(auth.credentials);
+    const auth = requireAppleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { connection } = auth;
 
     const { id } = await params;
     if (!/^\d+$/.test(id)) {
@@ -62,7 +61,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const changeSet = parseChangeSet(parsed.data.changeSet);
     const run = parsed.data.run === undefined ? undefined : parseRun(parsed.data.run);
 
-    if (!('bundleId' in changeSet.app) || changeSet.app.bundleId !== auth.bundleId) {
+    if (!('bundleId' in changeSet.app) || changeSet.app.bundleId !== connection.bundleId) {
       return NextResponse.json({ error: 'This plan is for a different app than the one you are signed in to' }, { status: 409 });
     }
     for (const op of changeSet.ops) {
@@ -76,7 +75,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const budget = new RequestBudget();
     const adapter = new AppleAdapter({ ...connection, budget });
-    // API keys reach every app of a team: the subscription must be in the session's app
+    // API keys reach every app of a team: the subscription must be in the selected app (X-PK-App)
     // (APP_MISMATCH otherwise). The executor checks again before reading or writing.
     if (changeSet.ops.length > 0) await adapter.verifyProduct(changeSet.ops[0].target.product);
     const result = await applyChangeSet(changeSet, { adapter, budget, confirm: parsed.data.confirm, verify: true, ...(run ? { run } : {}) });

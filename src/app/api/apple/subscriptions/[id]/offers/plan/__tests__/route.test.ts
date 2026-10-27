@@ -1,12 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
 
-const session = {
-  credentials: { privateKey: 'unused', keyId: 'TESTKEY123', issuerId: 'issuer', bundleId: 'com.example.test' },
-  bundleId: 'com.example.test',
-};
-const getAppleAuthFromCookies = vi.fn();
-vi.mock('@/middleware/auth', () => ({ getAppleAuthFromCookies: () => getAppleAuthFromCookies() }));
+import { appleHeaders } from '@/app/api/__tests__/helpers';
+
+let signedIn = true;
 
 const planOffers = vi.fn();
 const fetchOffer = vi.fn();
@@ -26,13 +23,12 @@ vi.mock('@/lib/adapters/apple', () => ({
 import { POST } from '../route';
 
 const call = (body: unknown, id = '123') =>
-  POST(new NextRequest(`http://localhost/api/apple/subscriptions/${id}/offers/plan`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }), { params: Promise.resolve({ id }) });
+  POST(new NextRequest(`http://localhost/api/apple/subscriptions/${id}/offers/plan`, { method: 'POST', headers: { 'content-type': 'application/json', ...(signedIn ? appleHeaders() : {}) }, body: JSON.stringify(body) }), { params: Promise.resolve({ id }) });
 
 const create = { action: 'create', offerCode: 'example_half', name: 'Half', mode: 'PAY_UP_FRONT', duration: 'P1Y', percent: '50', basis: 'totalOverDuration', snap: 'nearest' };
 
 beforeEach(() => {
-  getAppleAuthFromCookies.mockReset();
-  getAppleAuthFromCookies.mockResolvedValue(session);
+  signedIn = true;
   planOffers.mockReset();
   planOffers.mockResolvedValue({ changeSet: { ops: [] }, hash: '0123456789abcdef', entries: [{ action: 'create' }] });
   fetchOffer.mockReset();
@@ -42,8 +38,8 @@ beforeEach(() => {
 });
 
 describe('POST offers/plan', () => {
-  it('returns 401 without a session and reads nothing', async () => {
-    getAppleAuthFromCookies.mockResolvedValue(null);
+  it('returns 401 without a token and reads nothing', async () => {
+    signedIn = false;
     expect((await call(create)).status).toBe(401);
     expect(constructed).toHaveLength(0);
   });

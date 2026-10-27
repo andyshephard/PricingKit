@@ -1,23 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 import { appleApiRequest, AppleApiError } from '@/lib/apple-connect/client';
-import { appleKeyConnection } from '@/lib/key-token-source';
-import type {
-  AppleApiListResponse,
-  AppleConnectCredentials,
-} from '@/lib/apple-connect/types';
-import { COOKIE_NAMES, readSessionCookie, SESSION_COOKIE_MAX_AGE, writeCookie } from '@/lib/session';
+import type { AppleApiListResponse } from '@/lib/apple-connect/types';
+import { requireAppleAuth, unauthorizedResponse } from '@/middleware/auth';
 import { readJsonBody, rejectCrossSite, SMALL_BODY_LIMIT } from '@/lib/request-guard';
 import { bundleIdSchema } from '@/lib/validation';
 
+// POST /api/apple/active-app { bundleId }
+// Checks that the app is visible with the browser's App Store Connect token.
+// Nothing is stored: the browser keeps the selection and sends it as X-PK-App.
 export async function POST(request: NextRequest) {
   const crossSite = rejectCrossSite(request);
   if (crossSite) return crossSite;
-  const cookieStore = await cookies();
-  const sessionCredentials = await readSessionCookie(cookieStore, 'apple');
-  if (!sessionCredentials) {
-    return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-  }
+  const auth = requireAppleAuth(request, { app: 'none', long: false });
+  if (!auth.ok) return auth.response;
 
   const read = await readJsonBody(request, SMALL_BODY_LIMIT);
   if (!read.ok) return read.response;
@@ -35,15 +30,10 @@ export async function POST(request: NextRequest) {
   }
   const bundleId = parsedBundle.data;
 
-  const credentials: AppleConnectCredentials = {
-    ...sessionCredentials,
-    bundleId,
-  };
-
   try {
     const response = await appleApiRequest<
       AppleApiListResponse<{ id: string; attributes: { bundleId: string } }>
-    >(appleKeyConnection(credentials), '/apps', {
+    >({ ...auth.connection, bundleId }, '/apps', {
       queryParams: {
         'filter[bundleId]': bundleId,
         'fields[apps]': 'bundleId',
@@ -64,10 +54,7 @@ export async function POST(request: NextRequest) {
     }
   } catch (error) {
     if (error instanceof AppleApiError && error.statusCode === 401) {
-      return NextResponse.json(
-        { error: 'Apple credentials are invalid or expired.' },
-        { status: 401 }
-      );
+      return unauthorizedResponse('Apple credentials are invalid or expired.', 'INVALID_TOKEN');
     }
     console.error('POST /api/apple/active-app verify failed:', error);
     return NextResponse.json(
@@ -75,8 +62,6 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
-
-  writeCookie(cookieStore, COOKIE_NAMES.appleBundle, bundleId, SESSION_COOKIE_MAX_AGE);
 
   return NextResponse.json({ ok: true, bundleId });
 }

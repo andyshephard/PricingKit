@@ -1,10 +1,6 @@
 // /api/ppp: data years, the stale-PPP policy (cap or inflate by CPI) and
 // freshness metadata. The World Bank and exchange-rate clients are mocked.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createCookieStore, type TestCookieStore } from '@/app/api/__tests__/helpers';
-
-let cookieStore: TestCookieStore;
-vi.mock('next/headers', () => ({ cookies: async () => cookieStore }));
 const getExchangeRates = vi.fn();
 vi.mock('@/lib/exchange-rates/client', () => ({ getExchangeRates: (...a: unknown[]) => getExchangeRates(...a) }));
 const getPPPMultipliers = vi.fn();
@@ -26,7 +22,6 @@ const get = async (query = '') => {
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
-  cookieStore = createCookieStore();
   getExchangeRates.mockReset().mockResolvedValue({ base: 'USD', rates: { USD: 1, GBP: 0.8, INR: 80 }, timestamp: Date.parse('2030-05-31T12:00:00Z') / 1000, fetchedAt: NOW.toISOString() });
   getPPPMultipliers.mockReset().mockResolvedValue({
     multipliers: { US: 1, GB: 1, IN: 0.5 },

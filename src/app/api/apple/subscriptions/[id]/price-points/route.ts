@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAppleAuthFromCookies } from '@/middleware/auth';
-import { appleKeyConnection } from '@/lib/key-token-source';
+import { requireAppleAuth } from '@/middleware/auth';
 import {
   getSubscriptionPricePoints,
 } from '@/lib/apple-connect';
@@ -16,14 +15,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const auth = await getAppleAuthFromCookies();
-    if (!auth) {
-      return NextResponse.json(
-        { error: 'Not authenticated' },
-        { status: 401 }
-      );
-    }
-    const connection = appleKeyConnection(auth.credentials);
+    const auth = requireAppleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { connection } = auth;
 
     const { id } = await params;
     // Only a numeric subscription ID reaches the App Store Connect path

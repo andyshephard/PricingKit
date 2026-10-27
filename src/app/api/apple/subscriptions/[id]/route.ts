@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getAppleAuthFromCookies } from '@/middleware/auth';
-import { appleKeyConnection } from '@/lib/key-token-source';
+import { requireAppleAuth } from '@/middleware/auth';
 import {
   getSubscription,
   getSubscriptionById,
@@ -34,14 +33,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const auth = await getAppleAuthFromCookies();
-    if (!auth) {
-      return NextResponse.json(
-        { error: 'Not authenticated' },
-        { status: 401 }
-      );
-    }
-    const connection = appleKeyConnection(auth.credentials);
+    const auth = requireAppleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { connection } = auth;
 
     const { id } = await params;
 
@@ -112,14 +106,9 @@ export async function PATCH(
   const crossSite = rejectCrossSite(request);
   if (crossSite) return crossSite;
   try {
-    const auth = await getAppleAuthFromCookies();
-    if (!auth) {
-      return NextResponse.json(
-        { error: 'Not authenticated' },
-        { status: 401 }
-      );
-    }
-    const connection = appleKeyConnection(auth.credentials);
+    const auth = requireAppleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { connection } = auth;
 
     const { id } = await params;
     // One budget for the whole run: reads, creates and deletes (Apple allows ~3600/hour per key)
@@ -265,14 +254,9 @@ export async function DELETE(
   const crossSite = rejectCrossSite(request);
   if (crossSite) return crossSite;
   try {
-    const auth = await getAppleAuthFromCookies();
-    if (!auth) {
-      return NextResponse.json(
-        { error: 'Not authenticated' },
-        { status: 401 }
-      );
-    }
-    const connection = appleKeyConnection(auth.credentials);
+    const auth = requireAppleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { connection } = auth;
 
     const read = await readJsonBody(request, LARGE_BODY_LIMIT);
     if (!read.ok) return read.response;
@@ -287,7 +271,7 @@ export async function DELETE(
     }
 
     // The price must belong to this subscription, and the subscription to the
-    // session's app: API keys reach every app of a team
+    // selected app (X-PK-App): API keys reach every app of a team
     const { id } = await params;
     const ctx = { budget: new RequestBudget() };
     let subscription;

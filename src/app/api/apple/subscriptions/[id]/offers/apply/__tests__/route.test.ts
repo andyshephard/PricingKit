@@ -2,12 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import { planOfferChanges, type ChangeSet, type OfferPlanInput } from '@/lib/pricing';
 
-const session = {
-  credentials: { privateKey: 'unused', keyId: 'TESTKEY123', issuerId: 'issuer', bundleId: 'com.example.test' },
-  bundleId: 'com.example.test',
-};
-const getAppleAuthFromCookies = vi.fn();
-vi.mock('@/middleware/auth', () => ({ getAppleAuthFromCookies: () => getAppleAuthFromCookies() }));
+import { appleHeaders } from '@/app/api/__tests__/helpers';
+
+let signedIn = true;
 
 const applyOffer = vi.fn();
 const fetchOffers = vi.fn();
@@ -54,11 +51,10 @@ function makePlan(id = '123', bundleId = 'com.example.test', over: Partial<Offer
 }
 
 const call = (body: unknown, id = '123') =>
-  POST(new NextRequest(`http://localhost/api/apple/subscriptions/${id}/offers/apply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }), { params: Promise.resolve({ id }) });
+  POST(new NextRequest(`http://localhost/api/apple/subscriptions/${id}/offers/apply`, { method: 'POST', headers: { 'content-type': 'application/json', ...(signedIn ? appleHeaders() : {}) }, body: JSON.stringify(body) }), { params: Promise.resolve({ id }) });
 
 beforeEach(() => {
-  getAppleAuthFromCookies.mockReset();
-  getAppleAuthFromCookies.mockResolvedValue(session);
+  signedIn = true;
   applyOffer.mockReset();
   applyOffer.mockResolvedValue({ createdOfferId: 'promo-1' });
   fetchOffers.mockReset();
@@ -68,8 +64,8 @@ beforeEach(() => {
 });
 
 describe('POST offers/apply', () => {
-  it('returns 401 without a session and sends nothing', async () => {
-    getAppleAuthFromCookies.mockResolvedValue(null);
+  it('returns 401 without a token and sends nothing', async () => {
+    signedIn = false;
     const plan = makePlan();
     expect((await call({ changeSet: plan.changeSet, confirm: plan.hash })).status).toBe(401);
     expect(fetchOffers).not.toHaveBeenCalled();

@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getAppleAuthFromCookies } from '@/middleware/auth';
-import { appleKeyConnection } from '@/lib/key-token-source';
+import { requireAppleAuth } from '@/middleware/auth';
 import {
   getAppPrices,
   updateAppPriceSchedule,
@@ -12,13 +11,11 @@ import { regionCodeSchema, currencyCodeSchema } from '@/lib/validation';
 import { rejectCrossSite, readJsonBody, LARGE_BODY_LIMIT } from '@/lib/request-guard';
 
 // GET /api/apple/app-price — fetch app price schedule + all territory prices
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const auth = await getAppleAuthFromCookies();
-    if (!auth) {
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-    }
-    const connection = appleKeyConnection(auth.credentials);
+    const auth = requireAppleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { connection } = auth;
 
     const { manual, automatic, baseTerritory } = await getAppPrices(connection);
 
@@ -58,17 +55,15 @@ const updateAppPriceSchema = z.object({
 });
 
 // PATCH /api/apple/app-price — update app price schedule
-// Writes only the session app's price schedule: updateAppPriceSchedule resolves the app from the
-// session's bundle ID (exact match), never from a client-supplied ID
+// Writes only the selected app's price schedule: updateAppPriceSchedule resolves the app from the
+// bundle ID in X-PK-App (exact match), never from an app ID in the body
 export async function PATCH(request: NextRequest) {
   const crossSite = rejectCrossSite(request);
   if (crossSite) return crossSite;
   try {
-    const auth = await getAppleAuthFromCookies();
-    if (!auth) {
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-    }
-    const connection = appleKeyConnection(auth.credentials);
+    const auth = requireAppleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { connection } = auth;
 
     const read = await readJsonBody(request, LARGE_BODY_LIMIT);
     if (!read.ok) return read.response;

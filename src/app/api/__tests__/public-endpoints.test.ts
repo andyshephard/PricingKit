@@ -1,10 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createCookieStore, sessionCookieValue, TEST_ENCRYPTION_KEY, type TestCookieStore } from './helpers';
-
-let cookieStore: TestCookieStore;
-vi.mock('next/headers', () => ({
-  cookies: async () => cookieStore,
-}));
+import { appleHeaders, googleHeaders, testAppleToken } from './helpers';
 
 const getExchangeRatesMock = vi.fn();
 vi.mock('@/lib/exchange-rates/client', async (importOriginal) => {
@@ -23,7 +18,6 @@ vi.mock('@/lib/world-bank/ppp', () => ({
 import { GET as settingsGET } from '../settings/exchange-rates/route';
 import { GET as exchangeRatesGET } from '../exchange-rates/route';
 import { GET as pppGET } from '../ppp/route';
-import type { ServiceAccountCredentials } from '@/lib/google-play/types';
 
 const ENV_KEY = 'abcdef0123456789operatorkey9876';
 
@@ -36,8 +30,6 @@ const RATES = {
 
 describe('public data endpoints', () => {
   beforeEach(() => {
-    vi.stubEnv('ENCRYPTION_KEY', TEST_ENCRYPTION_KEY);
-    cookieStore = createCookieStore();
     getExchangeRatesMock.mockReset().mockResolvedValue(RATES);
     getPPPMultipliersMock.mockReset().mockRejectedValue(new Error('World Bank down: internal detail'));
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -69,45 +61,50 @@ describe('public data endpoints', () => {
     });
   });
 
-  describe('?refresh=true requires a session', () => {
+  describe('?refresh=true needs a store token header', () => {
     it('anonymous GET /api/exchange-rates still works', async () => {
       const res = await exchangeRatesGET(new Request('http://localhost/api/exchange-rates'));
       expect(res.status).toBe(200);
       expect(getExchangeRatesMock).toHaveBeenCalledWith(false, undefined);
     });
 
-    it('anonymous refresh on /api/exchange-rates returns 401 without hitting upstream', async () => {
+    it('anonymous refresh on /api/exchange-rates is refused without hitting upstream', async () => {
       const res = await exchangeRatesGET(new Request('http://localhost/api/exchange-rates?refresh=true'));
-      expect(res.status).toBe(401);
+      expect(res.status).toBe(403);
       expect(getExchangeRatesMock).not.toHaveBeenCalled();
     });
 
-    it('anonymous refresh on /api/ppp returns 401 without hitting upstream', async () => {
+    it('anonymous refresh on /api/ppp is refused without hitting upstream', async () => {
       const res = await pppGET(new Request('http://localhost/api/ppp?refresh=true'));
-      expect(res.status).toBe(401);
+      expect(res.status).toBe(403);
       expect(getPPPMultipliersMock).not.toHaveBeenCalled();
       expect(getExchangeRatesMock).not.toHaveBeenCalled();
     });
 
-    it('a forged session cookie does not unlock refresh', async () => {
-      cookieStore = createCookieStore({ gplay_session: 'not-a-valid-session', apple_session: 'nope' });
-      const res = await exchangeRatesGET(new Request('http://localhost/api/exchange-rates?refresh=true'));
-      expect(res.status).toBe(401);
+    it('a malformed or expired token does not unlock refresh', async () => {
+      for (const headers of [{ 'x-pk-apple-token': 'nope' }, appleHeaders(null, testAppleToken({ iat: Math.floor(Date.now() / 1000) - 3600 })), { 'x-pk-google-token': 'short' }]) {
+        const res = await exchangeRatesGET(new Request('http://localhost/api/exchange-rates?refresh=true', { headers }));
+        expect(res.status).toBe(403);
+      }
     });
 
-    it('a valid Google session can force a refresh', async () => {
-      const session = await sessionCookieValue('google', {
-        type: 'service_account',
-        client_email: 'svc@example.iam.gserviceaccount.com',
-        private_key_id: 'kid',
-        private_key: 'unused',
-        project_id: 'example',
-      } as ServiceAccountCredentials);
-      cookieStore = createCookieStore({ gplay_session: session });
-
-      const res = await exchangeRatesGET(new Request('http://localhost/api/exchange-rates?refresh=true'));
-      expect(res.status).toBe(200);
+    it('a store token header allows a refresh (a speed bump: upstream caps still apply)', async () => {
+      for (const headers of [googleHeaders(null), appleHeaders(null)]) {
+        const res = await exchangeRatesGET(new Request('http://localhost/api/exchange-rates?refresh=true', { headers }));
+        expect(res.status).toBe(200);
+      }
       expect(getExchangeRatesMock).toHaveBeenCalledWith(true, undefined);
+    });
+  });
+
+  describe("the user's Open Exchange Rates key comes from X-PK-OER-Key", () => {
+    it('is passed on when well formed, and ignored otherwise', async () => {
+      await exchangeRatesGET(new Request('http://localhost/api/exchange-rates', { headers: { 'x-pk-oer-key': '0123456789abcdef0123456789abcdef' } }));
+      expect(getExchangeRatesMock).toHaveBeenLastCalledWith(false, '0123456789abcdef0123456789abcdef');
+      await exchangeRatesGET(new Request('http://localhost/api/exchange-rates', { headers: { 'x-pk-oer-key': 'bad key!' } }));
+      expect(getExchangeRatesMock).toHaveBeenLastCalledWith(false, undefined);
+      await pppGET(new Request('http://localhost/api/ppp', { headers: { 'x-pk-oer-key': '0123456789abcdef0123456789abcdef' } }));
+      expect(getExchangeRatesMock).toHaveBeenLastCalledWith(false, '0123456789abcdef0123456789abcdef');
     });
   });
 

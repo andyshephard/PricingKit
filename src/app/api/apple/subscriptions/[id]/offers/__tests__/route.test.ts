@@ -3,14 +3,9 @@ import { NextRequest } from 'next/server';
 import { ApiError } from '@/lib/utils/api-error';
 import { RequestBudget } from '@/lib/utils/request-budget';
 
-const session = {
-  credentials: { privateKey: 'unused', keyId: 'TESTKEY123', issuerId: 'issuer', bundleId: 'com.example.test' },
-  bundleId: 'com.example.test',
-};
-const getAppleAuthFromCookies = vi.fn();
-vi.mock('@/middleware/auth', () => ({
-  getAppleAuthFromCookies: () => getAppleAuthFromCookies(),
-}));
+import { appleHeaders, TEST_APPLE_ISSUER_ID } from '@/app/api/__tests__/helpers';
+
+let signedIn = true;
 
 const fetchOffers = vi.fn();
 const constructed: Array<{ budget?: unknown }> = [];
@@ -29,13 +24,12 @@ vi.mock('@/lib/apple-connect/ownership', () => ({ assertSubscriptionInApp: (...a
 import { GET } from '../route';
 
 function call(id: string) {
-  return GET(new NextRequest(`http://localhost/api/apple/subscriptions/${id}/offers`), { params: Promise.resolve({ id }) });
+  return GET(new NextRequest(`http://localhost/api/apple/subscriptions/${id}/offers`, { headers: signedIn ? appleHeaders() : {} }), { params: Promise.resolve({ id }) });
 }
 
 beforeEach(() => {
   fetchOffers.mockReset();
-  getAppleAuthFromCookies.mockReset();
-  getAppleAuthFromCookies.mockResolvedValue(session);
+  signedIn = true;
   constructed.length = 0;
   assertSubscriptionInApp.mockReset();
   assertSubscriptionInApp.mockResolvedValue(undefined);
@@ -46,9 +40,9 @@ describe('GET offers ownership', () => {
     assertSubscriptionInApp.mockRejectedValue(new ApiError('Subscription 456 is not in com.example.test', { status: 409, code: 'APP_MISMATCH', platform: 'apple' }));
     const res = await call('456');
     expect(res.status).toBe(409);
-    // The session's app, with tokens signed from the session key
+    // The app named in X-PK-App, with the token from X-PK-Apple-Token (labelled by its non-secret IDs)
     expect(assertSubscriptionInApp).toHaveBeenCalledWith(
-      { bundleId: 'com.example.test', tokens: expect.objectContaining({ platform: 'apple', label: 'issuer:TESTKEY123' }) },
+      { bundleId: 'com.example.test', tokens: expect.objectContaining({ platform: 'apple', label: `${TEST_APPLE_ISSUER_ID}:TESTKEY123` }) },
       '456',
       expect.objectContaining({ budget: expect.any(RequestBudget) })
     );
@@ -69,8 +63,8 @@ describe('GET offers', () => {
     expect(constructed[1].budget).not.toBe(constructed[0].budget);
   });
 
-  it('returns 401 without a session and never builds an adapter', async () => {
-    getAppleAuthFromCookies.mockResolvedValue(null);
+  it('returns 401 without a token and never builds an adapter', async () => {
+    signedIn = false;
     expect((await call('123')).status).toBe(401);
     expect(constructed).toHaveLength(0);
     expect(fetchOffers).not.toHaveBeenCalled();

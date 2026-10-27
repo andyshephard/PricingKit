@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAppleAuthFromCookies } from '@/middleware/auth';
-import { appleKeyConnection } from '@/lib/key-token-source';
+import { requireAppleAuth } from '@/middleware/auth';
 import { AppleAdapter } from '@/lib/adapters/apple';
 import { RequestBudget } from '@/lib/utils/request-budget';
 import { appleErrorResponse } from '../../../_lib/error-response';
@@ -10,11 +9,11 @@ import { assertSubscriptionInApp } from '@/lib/apple-connect/ownership';
 // Read-only: every offer of the subscription (introductory, promotional, offer
 // codes, win-back) with its prices per territory. [id] is Apple's numeric
 // subscription ID.
-export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const auth = await getAppleAuthFromCookies();
-    if (!auth) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-    const connection = appleKeyConnection(auth.credentials);
+    const auth = requireAppleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { connection } = auth;
 
     const { id } = await params;
     if (!/^\d+$/.test(id)) {

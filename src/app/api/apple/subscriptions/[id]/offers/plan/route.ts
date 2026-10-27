@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getAppleAuthFromCookies } from '@/middleware/auth';
-import { appleKeyConnection } from '@/lib/key-token-source';
+import { requireAppleAuth } from '@/middleware/auth';
 import { AppleAdapter } from '@/lib/adapters/apple';
 import { RequestBudget } from '@/lib/utils/request-budget';
 import {
@@ -45,9 +44,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const crossSite = rejectCrossSite(request);
   if (crossSite) return crossSite;
   try {
-    const auth = await getAppleAuthFromCookies();
-    if (!auth) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-    const connection = appleKeyConnection(auth.credentials);
+    const auth = requireAppleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { connection } = auth;
 
     const { id } = await params;
     if (!/^\d+$/.test(id)) {
@@ -62,7 +61,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const body = parsed.data;
     const product: ProductRef = { platform: 'apple', type: 'subscription', id };
     const adapter = new AppleAdapter({ ...connection, budget: new RequestBudget() });
-    // API keys reach every app of a team: the subscription must be in the session's app (APP_MISMATCH otherwise)
+    // API keys reach every app of a team: the subscription must be in the selected app (X-PK-App) (APP_MISMATCH otherwise)
     await adapter.verifyProduct(product);
     const pricing = { type: 'percentOfCurrent' as const, percent: body.percent, basis: body.basis, snap: body.snap };
 
@@ -104,7 +103,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       throw error;
     }
 
-    const plan = await adapter.planOffers({ app: { bundleId: auth.bundleId }, offers: [spec] });
+    const plan = await adapter.planOffers({ app: { bundleId: connection.bundleId }, offers: [spec] });
     return NextResponse.json({ changeSet: plan.changeSet, hash: plan.hash, entry: plan.entries[0] });
   } catch (error) {
     if (error instanceof OfferRuleError) return NextResponse.json({ error: error.message }, { status: 422 });

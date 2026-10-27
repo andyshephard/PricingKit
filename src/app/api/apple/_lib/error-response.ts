@@ -23,9 +23,11 @@ export function getAppleErrorMessage(error: unknown, fallback: string): string {
 export function appleErrorResponse(error: unknown, fallback: string): NextResponse {
   if (error instanceof ApiError) {
     if (error.status === 401) {
+      // Apple refused the token: the browser re-signs (correcting its clock
+      // from Date) and retries once
       return NextResponse.json(
-        { error: 'Session expired. Please reconnect.', code: error.code },
-        { status: 401 }
+        { error: 'App Store Connect refused the access token. Connect again if this keeps happening.', code: error.code },
+        { status: 401, headers: { Date: new Date().toUTCString() } }
       );
     }
     if (error.status === 403) {

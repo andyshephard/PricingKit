@@ -2,10 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { NextRequest } from 'next/server';
+import { appleHeaders, googleHeaders } from '@/app/api/__tests__/helpers';
 
 const mocks = vi.hoisted(() => ({
-  getAuthFromCookies: vi.fn(),
-  getAppleAuthFromCookies: vi.fn(),
   getInAppProductRaw: vi.fn(),
   getGoogleSubscription: vi.fn(),
   getInAppPurchase: vi.fn(),
@@ -16,10 +15,6 @@ const mocks = vi.hoisted(() => ({
   getAppleSubscriptionPrices: vi.fn(),
 }));
 
-vi.mock('@/middleware/auth', () => ({
-  getGoogleAuthFromCookies: mocks.getAuthFromCookies,
-  getAppleAuthFromCookies: mocks.getAppleAuthFromCookies,
-}));
 // Only read functions are provided: any write call would fail as undefined.
 vi.mock('@/lib/google-play/products', () => ({ getInAppProductRaw: mocks.getInAppProductRaw }));
 vi.mock('@/lib/google-play/subscriptions', () => ({ getSubscription: mocks.getGoogleSubscription }));
@@ -40,15 +35,17 @@ vi.mock('@/lib/apple-connect/ownership', () => ({
 
 import * as route from '../route';
 
-function request(query: string) {
-  return new NextRequest(`http://localhost/api/export?${query}`);
-}
+/** Which store token the request carries */
+let signedIn: 'google' | 'apple' | null = null;
 
-const googleAuth = { credentials: {}, packageName: 'com.example.app' };
-const appleAuth = { credentials: {}, bundleId: 'com.example.app' };
+function request(query: string) {
+  const headers = signedIn === 'google' ? googleHeaders('com.example.app') : signedIn === 'apple' ? appleHeaders('com.example.app') : {};
+  return new NextRequest(`http://localhost/api/export?${query}`, { headers });
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
+  signedIn = null;
   assertSubscriptionInApp.mockResolvedValue(undefined);
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -91,14 +88,14 @@ describe('/api/export', () => {
     expect(res3.status).toBe(400);
   });
 
-  it('returns 401 without a session', async () => {
-    mocks.getAuthFromCookies.mockResolvedValue(null);
+  it('returns 401 without a token', async () => {
+    signedIn = null;
     const res = await route.GET(request('platform=google&type=inapp&id=coins'));
     expect(res.status).toBe(401);
   });
 
   it('exports a Google one-time product as CSV attachment', async () => {
-    mocks.getAuthFromCookies.mockResolvedValue(googleAuth);
+    signedIn = 'google';
     mocks.getInAppProductRaw.mockResolvedValue({
       productId: 'coins',
       purchaseOptions: [
@@ -123,14 +120,14 @@ describe('/api/export', () => {
   });
 
   it('maps a Google 404 to 404', async () => {
-    mocks.getAuthFromCookies.mockResolvedValue(googleAuth);
+    signedIn = 'google';
     mocks.getInAppProductRaw.mockRejectedValue({ code: 404 });
     const res = await route.GET(request('platform=google&type=inapp&id=missing'));
     expect(res.status).toBe(404);
   });
 
   it('exports a Google base plan as JSON', async () => {
-    mocks.getAuthFromCookies.mockResolvedValue(googleAuth);
+    signedIn = 'google';
     mocks.getGoogleSubscription.mockResolvedValue({
       productId: 'premium',
       basePlans: [
@@ -154,7 +151,7 @@ describe('/api/export', () => {
   });
 
   it('exports an Apple IAP and refuses empty price reads', async () => {
-    mocks.getAppleAuthFromCookies.mockResolvedValue(appleAuth);
+    signedIn = 'apple';
     mocks.getInAppPurchase.mockResolvedValue({ id: '123', productId: 'com.example.app.coins', prices: {} });
     mocks.getBaseTerritoryForProduct.mockResolvedValue('USA');
     mocks.getInAppPurchasePrices.mockResolvedValue({
@@ -174,7 +171,7 @@ describe('/api/export', () => {
   });
 
   it('fails the export when the base territory lookup resolves to null', async () => {
-    mocks.getAppleAuthFromCookies.mockResolvedValue(appleAuth);
+    signedIn = 'apple';
     mocks.getInAppPurchase.mockResolvedValue({ id: '123', productId: 'com.example.app.coins', prices: {} });
     mocks.getBaseTerritoryForProduct.mockResolvedValue(null);
     mocks.getInAppPurchasePrices.mockResolvedValue({
@@ -194,7 +191,7 @@ describe('/api/export', () => {
     [403, 403],
     [429, 429],
   ])('fails the whole export with a clear error when the base territory lookup throws %i', async (thrown, expected) => {
-    mocks.getAppleAuthFromCookies.mockResolvedValue(appleAuth);
+    signedIn = 'apple';
     mocks.getInAppPurchase.mockResolvedValue({ id: '123', productId: 'com.example.app.coins', prices: {} });
     mocks.getBaseTerritoryForProduct.mockRejectedValue(
       Object.assign(new Error('Apple failed'), { status: thrown })
@@ -212,7 +209,7 @@ describe('/api/export', () => {
   });
 
   it('exports an Apple subscription by numeric id with scheduled prices', async () => {
-    mocks.getAppleAuthFromCookies.mockResolvedValue(appleAuth);
+    signedIn = 'apple';
     mocks.getAppleSubscriptionById.mockResolvedValue({ id: '6700000000', productId: 'com.example.app.pro' });
     mocks.getAppleSubscriptionPrices.mockResolvedValue({
       current: { US: { territoryCode: 'US', currency: 'USD', customerPrice: '9.99', proceeds: '8.49', pricePointId: 'a' } },
@@ -229,7 +226,7 @@ describe('/api/export', () => {
   });
 
   it("refuses to export another app's subscription by numeric id (it would carry this app's bundle ID)", async () => {
-    mocks.getAppleAuthFromCookies.mockResolvedValue(appleAuth);
+    signedIn = 'apple';
     assertSubscriptionInApp.mockRejectedValue(Object.assign(new Error('not in app'), { status: 409, code: 'APP_MISMATCH' }));
     const res = await route.GET(request('platform=apple&type=subscription&id=6700000001'));
     expect(res.status).toBe(409);
@@ -238,7 +235,7 @@ describe('/api/export', () => {
   });
 
   it('returns 502 when a store amount is not an exact decimal', async () => {
-    mocks.getAppleAuthFromCookies.mockResolvedValue(appleAuth);
+    signedIn = 'apple';
     mocks.getAppleSubscription.mockResolvedValue({ id: '1', productId: 'com.example.app.pro' });
     mocks.getAppleSubscriptionPrices.mockResolvedValue({
       current: { US: { territoryCode: 'US', currency: 'USD', customerPrice: '9.99e0', proceeds: '8', pricePointId: 'a' } },
@@ -257,7 +254,7 @@ describe('/api/export', () => {
     }
 
     beforeEach(() => {
-      mocks.getAppleAuthFromCookies.mockResolvedValue(appleAuth);
+      signedIn = 'apple';
       mocks.getInAppPurchase.mockResolvedValue({ id: '123', productId: 'com.example.app.coins' });
       mocks.getBaseTerritoryForProduct.mockResolvedValue('USA');
       mocks.getAppleSubscription.mockResolvedValue({ id: '1', productId: 'com.example.app.pro' });

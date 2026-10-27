@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getGoogleAuthFromCookies } from '@/middleware/auth';
-import { GoogleKeyTokenSource } from '@/lib/key-token-source';
+import { requireGoogleAuth } from '@/middleware/auth';
 import {
   getSubscription,
   updateBasePlanPrices,
@@ -40,15 +39,9 @@ export async function GET(
   context: RouteParams
 ) {
   try {
-    const auth = await getGoogleAuthFromCookies();
-
-    if (!auth) {
-      return NextResponse.json(
-        { error: 'Not authenticated' },
-        { status: 401 }
-      );
-    }
-    const tokens = new GoogleKeyTokenSource(auth.credentials);
+    const auth = requireGoogleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { tokens } = auth;
 
     const params = await context.params;
 
@@ -101,15 +94,9 @@ export async function PATCH(
   const crossSite = rejectCrossSite(request);
   if (crossSite) return crossSite;
   try {
-    const auth = await getGoogleAuthFromCookies();
-
-    if (!auth) {
-      return NextResponse.json(
-        { error: 'Not authenticated' },
-        { status: 401 }
-      );
-    }
-    const tokens = new GoogleKeyTokenSource(auth.credentials);
+    const auth = requireGoogleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { tokens } = auth;
 
     const params = await context.params;
 
@@ -186,15 +173,9 @@ export async function DELETE(
   const crossSite = rejectCrossSite(request);
   if (crossSite) return crossSite;
   try {
-    const auth = await getGoogleAuthFromCookies();
-
-    if (!auth) {
-      return NextResponse.json(
-        { error: 'Not authenticated' },
-        { status: 401 }
-      );
-    }
-    const tokens = new GoogleKeyTokenSource(auth.credentials);
+    const auth = requireGoogleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { tokens } = auth;
 
     const params = await context.params;
 

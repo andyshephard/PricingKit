@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getGoogleAuthFromCookies } from '@/middleware/auth';
-import { GoogleKeyTokenSource } from '@/lib/key-token-source';
+import { requireGoogleAuth } from '@/middleware/auth';
 import {
   getInAppProduct,
   updateInAppProductPrices,
@@ -157,15 +156,9 @@ export async function POST(request: NextRequest) {
   const crossSite = rejectCrossSite(request);
   if (crossSite) return crossSite;
   try {
-    const auth = await getGoogleAuthFromCookies();
-
-    if (!auth) {
-      return NextResponse.json(
-        { error: 'Not authenticated' },
-        { status: 401 }
-      );
-    }
-    const tokens = new GoogleKeyTokenSource(auth.credentials);
+    const auth = requireGoogleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { tokens } = auth;
 
     const read = await readJsonBody(request, LARGE_BODY_LIMIT);
     if (!read.ok) return read.response;

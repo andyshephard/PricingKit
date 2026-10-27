@@ -2,13 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import type { InAppProduct } from '@/lib/google-play/types';
 
-// No network: auth and every Google Play call are mocked
-vi.mock('@/middleware/auth', () => ({
-  getGoogleAuthFromCookies: vi.fn(async () => ({
-    credentials: { client_email: 'test@example.com', private_key: 'unused' },
-    packageName: 'com.example.app',
-  })),
-}));
+import { googleHeaders } from '@/app/api/__tests__/helpers';
+
+// No network: every Google Play call is mocked
 
 const getInAppProduct = vi.fn();
 const updateInAppProductPrices = vi.fn();
@@ -33,7 +29,7 @@ import { POST } from '../route';
 function bulkRequest(body: unknown) {
   return new NextRequest('http://localhost/api/bulk', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...googleHeaders() },
     body: JSON.stringify(body),
   });
 }

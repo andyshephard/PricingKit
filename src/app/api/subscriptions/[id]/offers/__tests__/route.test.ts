@@ -5,11 +5,9 @@ import { NextRequest } from 'next/server';
 import { ApiError } from '@/lib/utils/api-error';
 import { RequestBudget } from '@/lib/utils/request-budget';
 
-const session = { credentials: { client_email: 'robot@example-project.iam.gserviceaccount.com' }, packageName: 'com.example.app' };
-const getGoogleAuthFromCookies = vi.fn();
-vi.mock('@/middleware/auth', () => ({
-  getGoogleAuthFromCookies: () => getGoogleAuthFromCookies(),
-}));
+import { googleHeaders } from '@/app/api/__tests__/helpers';
+
+let signedIn = true;
 
 const fetchOffers = vi.fn();
 const fetchSubscriptionOffers = vi.fn();
@@ -27,19 +25,18 @@ vi.mock('@/lib/adapters/play', () => ({
 import { GET } from '../route';
 
 function call(id: string, query = '') {
-  return GET(new NextRequest(`http://localhost/api/subscriptions/${id}/offers${query}`), { params: Promise.resolve({ id }) });
+  return GET(new NextRequest(`http://localhost/api/subscriptions/${id}/offers${query}`, { headers: signedIn ? googleHeaders() : {} }), { params: Promise.resolve({ id }) });
 }
 
 beforeEach(() => {
   fetchOffers.mockReset();
   fetchSubscriptionOffers.mockReset();
-  getGoogleAuthFromCookies.mockReset();
-  getGoogleAuthFromCookies.mockResolvedValue(session);
+  signedIn = true;
   constructed.length = 0;
 });
 
 describe('GET /api/subscriptions/[id]/offers (Google Play, read-only)', () => {
-  it("lists every base plan's offers for the session's app, with a fresh budget per request", async () => {
+  it("lists every base plan's offers for the selected app, with a fresh budget per request", async () => {
     const offers = [{ kind: 'play.offer', storeId: 'com.example.pro/annual/annual-half-off', key: 'annual-half-off', mode: null, duration: null, prices: {} }];
     fetchSubscriptionOffers.mockResolvedValue(offers);
     const response = await call('com.example.pro');
@@ -58,8 +55,8 @@ describe('GET /api/subscriptions/[id]/offers (Google Play, read-only)', () => {
     expect(fetchOffers).toHaveBeenCalledWith({ platform: 'google', type: 'subscription', productId: 'com.example.pro', basePlanId: 'annual' });
   });
 
-  it('returns 401 without a session and never builds an adapter', async () => {
-    getGoogleAuthFromCookies.mockResolvedValue(null);
+  it('returns 401 without a token and never builds an adapter', async () => {
+    signedIn = false;
     expect((await call('com.example.pro')).status).toBe(401);
     expect(constructed).toHaveLength(0);
   });

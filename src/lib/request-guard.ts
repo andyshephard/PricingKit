@@ -1,9 +1,9 @@
 // Guards for API routes that change something (POST, PUT, PATCH, DELETE).
 //
-// Cross-site requests: session cookies are SameSite=Strict, but sign-in, app
-// switching and saving an Open Exchange Rates key work without a session, and
-// a cross-site HTML form can POST text/plain that parses as JSON. So every
-// non-GET route:
+// Cross-site requests: there are no cookies; store routes need X-PK-* token
+// headers, which a cross-site page can't send without a CORS preflight these
+// routes never grant. This guard is a second layer: a cross-site HTML form
+// can POST text/plain that parses as JSON. So every non-GET route:
 // - refuses a browser request that isn't same-origin: Sec-Fetch-Site must be
 //   "same-origin" when sent; otherwise Origin, when sent, must name this host.
 //   A request with neither header comes from a non-browser client (curl, a

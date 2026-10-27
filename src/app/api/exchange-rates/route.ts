@@ -1,27 +1,30 @@
 import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 import {
   getExchangeRates,
   getCacheStatus,
   NoApiKeyError,
 } from '@/lib/exchange-rates/client';
-import { COOKIE_NAMES, hasAuthenticatedSession, readCookie } from '@/lib/session';
+import { hasStoreTokenHeader, readUserOerKey } from '@/middleware/auth';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const forceRefresh = searchParams.get('refresh') === 'true';
   const statusOnly = searchParams.get('status') === 'true';
 
-  // Get API key from cookie (user-provided) or fall back to env var
-  const cookieStore = await cookies();
-  const userApiKey = readCookie(cookieStore, COOKIE_NAMES.exchangeRatesKey)?.value;
+  // The user's own Open Exchange Rates key (Settings), sent by the browser in
+  // X-PK-OER-Key and never stored here. It never fills the shared caches
+  // (getExchangeRates); without it the operator key is used.
+  const userApiKey = readUserOerKey(request);
 
-  // This endpoint is public (index checker), but ?refresh=true bypasses the cache
-  // and spends upstream API quota, so it requires a signed-in Google or Apple session.
-  if (forceRefresh && !(await hasAuthenticatedSession(cookieStore))) {
+  // This endpoint is public (index checker), but ?refresh=true bypasses the
+  // caches. It needs a store token header that passes the shape checks: a
+  // speed bump, not authentication (the token isn't verified). The real
+  // limits are below: a refresh never spends the operator's Open Exchange
+  // Rates key, and World Bank refreshes run at most every 10 minutes.
+  if (forceRefresh && !hasStoreTokenHeader(request)) {
     return NextResponse.json(
-      { success: false, error: 'Sign in to force a refresh of exchange rates.' },
-      { status: 401 }
+      { success: false, error: 'Connect a store to force a refresh of exchange rates.', code: 'REFRESH_NEEDS_STORE' },
+      { status: 403 }
     );
   }
 

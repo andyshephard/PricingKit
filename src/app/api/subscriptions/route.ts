@@ -1,19 +1,12 @@
 import { NextResponse } from 'next/server';
-import { getGoogleAuthFromCookies } from '@/middleware/auth';
-import { GoogleKeyTokenSource } from '@/lib/key-token-source';
+import { requireGoogleAuth } from '@/middleware/auth';
 import { listSubscriptions } from '@/lib/google-play/subscriptions';
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const auth = await getGoogleAuthFromCookies();
-
-    if (!auth) {
-      return NextResponse.json(
-        { error: 'Not authenticated' },
-        { status: 401 }
-      );
-    }
-    const tokens = new GoogleKeyTokenSource(auth.credentials);
+    const auth = requireGoogleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { tokens } = auth;
 
     const subscriptions = await listSubscriptions(tokens, auth.packageName);
 

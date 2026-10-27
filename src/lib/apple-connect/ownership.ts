@@ -104,7 +104,7 @@ export class SubscriptionOwnership {
   }
 }
 
-/** One-off check for routes: the subscription must be in the session's app */
+/** One-off check for routes: the subscription must be in the selected app (X-PK-App) */
 export async function assertSubscriptionInApp(connection: AppleConnection, subscriptionId: string, ctx: RequestContext = {}): Promise<void> {
   await new SubscriptionOwnership(connection, connection.bundleId, ctx).assert(subscriptionId);
 }

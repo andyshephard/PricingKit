@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getAppleAuthFromCookies, getGoogleAuthFromCookies } from '@/middleware/auth';
-import { appleKeyConnection, GoogleKeyTokenSource } from '@/lib/key-token-source';
+import { requireAppleAuth, requireGoogleAuth } from '@/middleware/auth';
 import { APP_MISMATCH, assertSubscriptionInApp } from '@/lib/apple-connect/ownership';
 import { getInAppProductRaw } from '@/lib/google-play/products';
 import { getSubscription as getGoogleSubscription } from '@/lib/google-play/subscriptions';
@@ -87,12 +86,10 @@ function errorStatus(error: unknown): number | undefined {
   return undefined;
 }
 
-async function buildGoogleExport(query: ExportQuery): Promise<PriceExport | Response> {
-  const auth = await getGoogleAuthFromCookies();
-  if (!auth) {
-    return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-  }
-  const tokens = new GoogleKeyTokenSource(auth.credentials);
+async function buildGoogleExport(request: Request, query: ExportQuery): Promise<PriceExport | Response> {
+  const auth = requireGoogleAuth(request);
+  if (!auth.ok) return auth.response;
+  const { tokens } = auth;
 
   if (query.type === 'inapp') {
     let product;
@@ -150,12 +147,11 @@ async function getAppleBaseTerritory(
   }
 }
 
-async function buildAppleExport(query: ExportQuery): Promise<PriceExport | Response> {
-  const auth = await getAppleAuthFromCookies();
-  if (!auth) {
-    return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-  }
-  const connection = appleKeyConnection(auth.credentials);
+async function buildAppleExport(request: Request, query: ExportQuery): Promise<PriceExport | Response> {
+  // An export makes many reads: refuse a token that could expire halfway
+  const auth = requireAppleAuth(request, { long: true });
+  if (!auth.ok) return auth.response;
+  const { connection } = auth;
 
   if (query.type === 'inapp') {
     const product = await getInAppPurchase(connection, query.id);
@@ -169,7 +165,7 @@ async function buildAppleExport(query: ExportQuery): Promise<PriceExport | Respo
     // Prices exist, so a price schedule (and its base territory) must too
     if (!baseTerritory) throw new ExportHttpError(502, APPLE_BASE_TERRITORY_ERROR);
 
-    return appleInAppPurchaseToExport(auth.bundleId, {
+    return appleInAppPurchaseToExport(connection.bundleId, {
       id: product.id,
       productId: product.productId,
       baseTerritory,
@@ -197,7 +193,7 @@ async function buildAppleExport(query: ExportQuery): Promise<PriceExport | Respo
     throw new ExportHttpError(502, APPLE_EMPTY_PRICES_ERROR);
   }
 
-  return appleSubscriptionToExport(auth.bundleId, {
+  return appleSubscriptionToExport(connection.bundleId, {
     id: subscription.id,
     productId: subscription.productId,
     prices: prices.current,
@@ -217,7 +213,7 @@ export async function GET(request: NextRequest) {
 
   try {
     const result =
-      query.platform === 'google' ? await buildGoogleExport(query) : await buildAppleExport(query);
+      query.platform === 'google' ? await buildGoogleExport(request, query) : await buildAppleExport(request, query);
     if (result instanceof Response) return result;
 
     const body = query.format === 'csv' ? priceExportToCsv(result) : query.format === 'prices-csv' ? priceExportToPricesCsv(result) : priceExportToJson(result);

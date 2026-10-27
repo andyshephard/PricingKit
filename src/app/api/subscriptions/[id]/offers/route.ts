@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getGoogleAuthFromCookies } from '@/middleware/auth';
-import { GoogleKeyTokenSource } from '@/lib/key-token-source';
+import { requireGoogleAuth } from '@/middleware/auth';
 import { PlayAdapter } from '@/lib/adapters/play';
 import { getErrorStatus, toApiError } from '@/lib/utils/api-error';
 import { RequestBudget } from '@/lib/utils/request-budget';
@@ -11,12 +10,12 @@ import { googlePlayBasePlanIdSchema, validateAndDecodeSku, ValidationError } fro
 // basePlanId, of every base plan of the subscription) with their state,
 // eligibility, tags and each phase's price per region. Offers Play returned
 // in a shape PricingKit can't read exactly carry `problems`. The app is the
-// session's app; every request gets its own request budget.
+// selected app (X-PK-App); every request gets its own request budget.
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const auth = await getGoogleAuthFromCookies();
-    if (!auth) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-    const tokens = new GoogleKeyTokenSource(auth.credentials);
+    const auth = requireGoogleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { tokens } = auth;
 
     const { id } = await params;
     let productId: string;

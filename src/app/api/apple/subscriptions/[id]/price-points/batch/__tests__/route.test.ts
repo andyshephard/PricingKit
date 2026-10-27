@@ -3,12 +3,7 @@ import { NextRequest } from 'next/server';
 import { ApiError } from '@/lib/utils/api-error';
 import { RequestBudget } from '@/lib/utils/request-budget';
 
-vi.mock('@/middleware/auth', () => ({
-  getAppleAuthFromCookies: vi.fn(async () => ({
-    credentials: { privateKey: 'unused', keyId: 'TESTKEY123', issuerId: 'issuer', bundleId: 'com.example.test' },
-    bundleId: 'com.example.test',
-  })),
-}));
+import { appleHeaders } from '@/app/api/__tests__/helpers';
 
 const getSubscriptionPricePoints = vi.fn();
 vi.mock('@/lib/apple-connect', async (importOriginal) => ({
@@ -29,7 +24,7 @@ async function events(response: Response) {
 function request(territories: Record<string, { targetPrice: number; currency: string }>) {
   return new NextRequest('http://localhost/api/apple/subscriptions/123/price-points/batch', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...appleHeaders() },
     body: JSON.stringify({ territories }),
   });
 }

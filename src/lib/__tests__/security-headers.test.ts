@@ -11,6 +11,11 @@ describe('security headers', () => {
     expect(csp).toContain("frame-ancestors 'none'");
   });
 
+  it("connect-src: this origin, Google's token endpoint and Open Exchange Rates only", () => {
+    const connect = contentSecurityPolicy(false).split('; ').find((d) => d.startsWith('connect-src '));
+    expect(connect).toBe("connect-src 'self' https://oauth2.googleapis.com https://openexchangerates.org");
+  });
+
   it("allows 'unsafe-eval' under next dev only", () => {
     expect(contentSecurityPolicy(true)).toContain("'unsafe-eval'");
   });

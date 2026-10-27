@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { AttemptLimiter, trustedClientIp } from '../attempt-limiter';
+import { AttemptLimiter } from '../attempt-limiter';
 
 describe('AttemptLimiter', () => {
   it('allows `limit` attempts per key per window, then reports Retry-After', () => {
@@ -27,23 +27,6 @@ describe('AttemptLimiter', () => {
     limiter.attempt('b');
     limiter.attempt('c'); // evicts 'a'
     expect(limiter.attempt('a').allowed).toBe(true);
-  });
-});
-
-describe('trustedClientIp', () => {
-  const forged = new Headers({ 'cf-connecting-ip': '203.0.113.1', 'x-forwarded-for': '198.51.100.1, 10.0.0.1', 'x-real-ip': '192.0.2.9' });
-
-  it('reads nothing unless the operator names a header', () => {
-    expect(trustedClientIp(forged, undefined)).toBeUndefined();
-    expect(trustedClientIp(forged, '')).toBeUndefined();
-  });
-
-  it('reads only the configured header', () => {
-    expect(trustedClientIp(forged, 'cf-connecting-ip')).toBe('203.0.113.1');
-    expect(trustedClientIp(forged, 'X-Real-IP')).toBe('192.0.2.9');
-    // The last x-forwarded-for entry is the one the trusted proxy appended
-    expect(trustedClientIp(forged, 'x-forwarded-for')).toBe('10.0.0.1');
-    expect(trustedClientIp(new Headers(), 'cf-connecting-ip')).toBeUndefined();
   });
 });
 

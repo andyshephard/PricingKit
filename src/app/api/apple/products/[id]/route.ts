@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getAppleAuthFromCookies } from '@/middleware/auth';
-import { appleKeyConnection } from '@/lib/key-token-source';
+import { requireAppleAuth } from '@/middleware/auth';
 import {
   getInAppPurchase,
   getBaseTerritoryForProduct,
@@ -27,14 +26,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const auth = await getAppleAuthFromCookies();
-    if (!auth) {
-      return NextResponse.json(
-        { error: 'Not authenticated' },
-        { status: 401 }
-      );
-    }
-    const connection = appleKeyConnection(auth.credentials);
+    const auth = requireAppleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { connection } = auth;
 
     const { id } = await params;
 
@@ -109,14 +103,9 @@ export async function PATCH(
   const crossSite = rejectCrossSite(request);
   if (crossSite) return crossSite;
   try {
-    const auth = await getAppleAuthFromCookies();
-    if (!auth) {
-      return NextResponse.json(
-        { error: 'Not authenticated' },
-        { status: 401 }
-      );
-    }
-    const connection = appleKeyConnection(auth.credentials);
+    const auth = requireAppleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { connection } = auth;
 
     const { id } = await params;
     // One budget for the whole run (Apple allows ~3600 requests/hour per key)
@@ -148,7 +137,7 @@ export async function PATCH(
       );
     }
 
-    // Get the product to find its internal ID. Looked up by SKU in the session app's own
+    // Get the product to find its internal ID. Looked up by SKU in the selected app's own
     // in-app purchase list, so another app's product (API keys are team-wide) is never found
     const product = await getInAppPurchase(connection, productId, ctx);
     if (!product) {

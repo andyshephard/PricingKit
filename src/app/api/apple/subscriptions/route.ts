@@ -1,21 +1,15 @@
 import { NextResponse } from 'next/server';
-import { getAppleAuthFromCookies } from '@/middleware/auth';
-import { appleKeyConnection } from '@/lib/key-token-source';
+import { requireAppleAuth } from '@/middleware/auth';
 import {
   listSubscriptionGroups,
 } from '@/lib/apple-connect';
 import { appleErrorResponse } from '../_lib/error-response';
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const auth = await getAppleAuthFromCookies();
-    if (!auth) {
-      return NextResponse.json(
-        { error: 'Not authenticated' },
-        { status: 401 }
-      );
-    }
-    const connection = appleKeyConnection(auth.credentials);
+    const auth = requireAppleAuth(request);
+    if (!auth.ok) return auth.response;
+    const { connection } = auth;
 
     const subscriptionGroups = await listSubscriptionGroups(connection);
 

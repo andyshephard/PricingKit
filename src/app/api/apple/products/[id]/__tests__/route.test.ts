@@ -2,18 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import { ApiError } from '@/lib/utils/api-error';
 
-// No network: auth and every Apple call are mocked
-vi.mock('@/middleware/auth', () => ({
-  getAppleAuthFromCookies: vi.fn(async () => ({
-    credentials: {
-      privateKey: 'unused',
-      keyId: 'TESTKEY123',
-      issuerId: '00000000-0000-0000-0000-000000000000',
-      bundleId: 'com.example.test',
-    },
-    bundleId: 'com.example.test',
-  })),
-}));
+import { appleHeaders } from '@/app/api/__tests__/helpers';
+
+// No network: every Apple call is mocked
 
 const getInAppPurchase = vi.fn();
 const getInAppPurchasePrices = vi.fn();
@@ -57,18 +48,21 @@ describe('GET /api/apple/products/[id]', () => {
   it.each([401, 403, 429, 503])('maps a %i read failure to its status', async (status) => {
     getInAppPurchase.mockRejectedValue(appleFailure(status));
 
-    const response = await GET(new NextRequest('http://localhost/x'), params());
+    const response = await GET(new NextRequest('http://localhost/x', { headers: appleHeaders() }), params());
 
     expect(response.status).toBe(status);
     const { error } = await response.json();
-    if (status === 401) expect(error).toBe('Session expired. Please reconnect.');
+    if (status === 401) {
+      expect(error).toMatch(/refused the access token/);
+      expect(response.headers.get('date')).toBeTruthy();
+    }
     if (status === 403) expect(error).toMatch(/Access denied/);
   });
 
   it('returns 404 only when the product genuinely does not exist', async () => {
     getInAppPurchase.mockResolvedValue(null);
 
-    const response = await GET(new NextRequest('http://localhost/x'), params());
+    const response = await GET(new NextRequest('http://localhost/x', { headers: appleHeaders() }), params());
 
     expect(response.status).toBe(404);
     expect((await response.json()).error).toBe('Product not found');
@@ -79,7 +73,7 @@ describe('GET /api/apple/products/[id]', () => {
     getInAppPurchasePrices.mockRejectedValue(appleFailure(500));
     getBaseTerritoryForProduct.mockResolvedValue('USA');
 
-    const response = await GET(new NextRequest('http://localhost/x'), params());
+    const response = await GET(new NextRequest('http://localhost/x', { headers: appleHeaders() }), params());
 
     expect(response.status).toBe(500);
   });
@@ -89,7 +83,7 @@ describe('GET /api/apple/products/[id]', () => {
     getInAppPurchasePrices.mockResolvedValue({});
     getBaseTerritoryForProduct.mockRejectedValue(appleFailure(503));
 
-    const response = await GET(new NextRequest('http://localhost/x'), params());
+    const response = await GET(new NextRequest('http://localhost/x', { headers: appleHeaders() }), params());
 
     expect(response.status).toBe(503);
   });
@@ -106,7 +100,7 @@ describe('PATCH /api/apple/products/[id]', () => {
     const response = await PATCH(
       new NextRequest('http://localhost/x', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...appleHeaders() },
         body: JSON.stringify({ prices: { USA: { pricePointId: 'pp-usa' } } }),
       }),
       params()
@@ -124,7 +118,7 @@ describe('PATCH /api/apple/products/[id]', () => {
     return PATCH(
       new NextRequest('http://localhost/x', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...appleHeaders() },
         body: JSON.stringify({ prices }),
       }),
       params()
