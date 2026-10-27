@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Header } from '@/components/layout';
 import { AppleSubscriptionPricingEditor } from '@/components/subscriptions/apple-subscription-pricing-editor';
+import { AppleSubscriptionOffers } from '@/components/subscriptions/apple-subscription-offers';
 import { ExportPricesButton } from '@/components/pricing/export-prices-button';
 import { formatMoney, parseMoney } from '@/lib/google-play/types';
 import type { AppleProductPrice } from '@/lib/apple-connect/types';
@@ -219,6 +220,8 @@ export default function AppleSubscriptionDetailPage({
               <h2 className="text-lg font-semibold mb-4">Subscription Plan</h2>
               <AppleSubscriptionPricingEditor subscription={subscription} />
             </div>
+
+            <AppleSubscriptionOffers subscriptionId={subscription.id} />
           </>
         ) : (
           <Card>
