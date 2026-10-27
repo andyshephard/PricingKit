@@ -217,8 +217,7 @@ export async function fetchPPPData(): Promise<PPPData[]> {
   const urls = [
     'https://api.worldbank.org/v2/country/all/indicator/PA.NUS.PPP?format=json&per_page=300&mrnev=1',
     'https://api.worldbank.org/v2/en/country/all/indicator/PA.NUS.PPP?format=json&per_page=300&mrnev=1',
-    'http://api.worldbank.org/v2/country/all/indicator/PA.NUS.PPP?format=json&per_page=300&mrnev=1',
-    'https://api.worldbank.org/v2/country/WLD;USA;DEU;FRA;GBR;JPN;CHN;IND;BRA;RUS;TUR;ARG;TUR;MEX/indicator/PA.NUS.PPP?format=json&per_page=300&mrnev=1'
+    'https://api.worldbank.org/v2/country/WLD;USA;DEU;FRA;GBR;JPN;CHN;IND;BRA;RUS;TUR;ARG;MEX/indicator/PA.NUS.PPP?format=json&per_page=300&mrnev=1'
   ];
 
   let lastError: Error | null = null;

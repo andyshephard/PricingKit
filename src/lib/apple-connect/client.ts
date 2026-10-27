@@ -3,34 +3,32 @@ import type {
   AppleApiListResponse,
   AppleApiErrorResponse,
 } from './types';
+import { TokenCache, hashCredentialFields } from '../token-cache';
 
 const JWT_EXPIRY_SECONDS = 20 * 60; // 20 minutes (max allowed)
 const TOKEN_REFRESH_MARGIN = 60; // Refresh 1 minute before expiry
 
-// Cached JWT token
-interface CachedToken {
-  token: string;
-  expiresAt: number; // Unix timestamp
-  credentialsHash: string;
-}
+// Cached JWTs, keyed on a hash of the full credential (including the private key)
+// so different tenants sharing a key ID / issuer ID never reuse each other's token.
+const tokenCache = new TokenCache();
 
-let cachedToken: CachedToken | null = null;
-
-// Hash credentials for cache validation
-function hashCredentials(credentials: AppleConnectCredentials): string {
-  return `${credentials.keyId}-${credentials.issuerId}`;
+// Hash credentials for cache lookup
+function hashCredentials(credentials: AppleConnectCredentials): Promise<string> {
+  return hashCredentialFields([
+    credentials.keyId,
+    credentials.issuerId,
+    credentials.privateKey,
+  ]);
 }
 
 // Generate JWT for App Store Connect API
 export async function generateJWT(credentials: AppleConnectCredentials): Promise<string> {
-  const credHash = hashCredentials(credentials);
+  const credHash = await hashCredentials(credentials);
 
   // Check if we have a valid cached token
-  if (cachedToken && cachedToken.credentialsHash === credHash) {
-    const now = Math.floor(Date.now() / 1000);
-    if (cachedToken.expiresAt - now > TOKEN_REFRESH_MARGIN) {
-      return cachedToken.token;
-    }
+  const cached = tokenCache.get(credHash, TOKEN_REFRESH_MARGIN);
+  if (cached) {
+    return cached;
   }
 
   const now = Math.floor(Date.now() / 1000);
@@ -88,11 +86,7 @@ export async function generateJWT(credentials: AppleConnectCredentials): Promise
   const token = `${encodedHeader}.${encodedPayload}.${encodedSignature}`;
 
   // Cache the token
-  cachedToken = {
-    token,
-    expiresAt,
-    credentialsHash: credHash,
-  };
+  tokenCache.set(credHash, { token, expiresAt });
 
   return token;
 }
@@ -112,7 +106,7 @@ function base64ToBase64Url(base64: string): string {
 
 // Clear token cache
 export function clearTokenCache(): void {
-  cachedToken = null;
+  tokenCache.clear();
 }
 
 // Validate Apple Connect credentials structure
@@ -251,18 +245,25 @@ export class AppleApiError extends Error {
 
 // Cookie-based encrypted session management
 // Credentials are encrypted and stored directly in the cookie (no server-side state)
-import { encrypt, decrypt, isEncryptionAvailable } from '../encryption';
+import {
+  encrypt,
+  decrypt,
+  isEncryptionAvailable,
+  isPlaintextSessionAllowed,
+  MissingEncryptionKeyError,
+  MISSING_ENCRYPTION_KEY_MESSAGE,
+} from '../encryption';
 
 export async function createAppleSession(
   credentials: AppleConnectCredentials
 ): Promise<string> {
   if (isEncryptionAvailable()) {
     return await encrypt(JSON.stringify(credentials));
-  } else if (process.env.NODE_ENV === 'production') {
-    throw new Error('ENCRYPTION_KEY environment variable is required in production. Set it to a 32+ character random string.');
-  } else {
-    console.warn('Warning: ENCRYPTION_KEY not set. Apple credentials stored in plaintext cookie (development only).');
+  } else if (isPlaintextSessionAllowed()) {
+    console.warn('Warning: ENCRYPTION_KEY not set. Apple credentials stored in plaintext cookie (next dev only).');
     return Buffer.from(JSON.stringify(credentials)).toString('base64');
+  } else {
+    throw new MissingEncryptionKeyError();
   }
 }
 
@@ -273,9 +274,12 @@ export async function getAppleSessionCredentials(
     if (isEncryptionAvailable()) {
       const decrypted = await decrypt(cookieValue);
       return JSON.parse(decrypted) as AppleConnectCredentials;
-    } else {
+    } else if (isPlaintextSessionAllowed()) {
       const decoded = Buffer.from(cookieValue, 'base64').toString('utf-8');
       return JSON.parse(decoded) as AppleConnectCredentials;
+    } else {
+      console.error(MISSING_ENCRYPTION_KEY_MESSAGE);
+      return null;
     }
   } catch (error) {
     console.error('Error decrypting Apple session credentials:', error);

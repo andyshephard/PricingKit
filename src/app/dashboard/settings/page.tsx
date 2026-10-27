@@ -17,7 +17,7 @@ import { Badge } from '@/components/ui/badge';
 
 interface ApiKeyStatus {
   hasKey: boolean;
-  apiKey: string;
+  apiKey?: string;
   source: 'user' | 'environment' | 'none';
 }
 
@@ -131,7 +131,9 @@ export default function SettingsPage() {
                     API Key Configured
                   </p>
                   <p className="text-sm text-green-600 dark:text-green-400">
-                    {status.apiKey}
+                    {status.source === 'environment'
+                      ? 'Set by the server operator'
+                      : status.apiKey}
                   </p>
                 </div>
               </div>

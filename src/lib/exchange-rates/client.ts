@@ -83,7 +83,7 @@ async function fetchFromApi(providedApiKey?: string): Promise<ExchangeRatesData>
     throw new NoApiKeyError();
   }
 
-  const url = `${API_BASE_URL}/latest.json?app_id=${apiKey}`;
+  const url = `${API_BASE_URL}/latest.json?app_id=${encodeURIComponent(apiKey)}`;
 
   const response = await fetch(url, {
     headers: {

@@ -8,6 +8,11 @@ import {
   testAppleConnection,
 } from '@/lib/apple-connect/client';
 import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
+import {
+  MissingEncryptionKeyError,
+  MISSING_ENCRYPTION_KEY_MESSAGE,
+  canStoreSessions,
+} from '@/lib/encryption';
 
 const SESSION_COOKIE = 'apple_session';
 const BUNDLE_ID_COOKIE = 'apple_bundle_id';
@@ -47,6 +52,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Fail closed before contacting Apple: without ENCRYPTION_KEY (outside
+    // `next dev`) the session could not be stored anyway.
+    if (!canStoreSessions()) {
+      console.error(MISSING_ENCRYPTION_KEY_MESSAGE);
+      return NextResponse.json({ error: MISSING_ENCRYPTION_KEY_MESSAGE }, { status: 500 });
+    }
+
     const testResult = await testAppleConnection(credentials);
     if (!testResult.success) {
       return NextResponse.json(
@@ -74,6 +86,10 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error('Apple auth error:', error);
+    if (error instanceof MissingEncryptionKeyError) {
+      // Operator misconfiguration; message is safe to show (no secrets).
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
     return NextResponse.json(
       { error: 'Failed to authenticate. Please try again.' },
       { status: 500 }

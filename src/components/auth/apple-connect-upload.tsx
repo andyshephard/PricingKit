@@ -255,8 +255,8 @@ export function AppleConnectUpload() {
 
         <div className="mt-4 pt-4 border-t">
           <p className="text-xs text-muted-foreground">
-            Your API key is encrypted and stored securely in your browser.
-            It is never saved to disk on our servers.
+            Your API key is sent to this server, encrypted into an HttpOnly
+            cookie, and never stored server-side.
           </p>
         </div>
       </CardContent>

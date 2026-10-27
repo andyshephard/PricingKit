@@ -6,6 +6,7 @@ import { BIG_MAC_INDEX, DEFAULT_BIG_MAC_MULTIPLIER } from '@/lib/conversion-inde
 import { NETFLIX_PRICE_INDEX, DEFAULT_NETFLIX_MULTIPLIER } from '@/lib/conversion-indexes/netflix';
 import { getExchangeRates } from '@/lib/exchange-rates/client';
 import { FALLBACK_EXCHANGE_RATES } from '@/lib/conversion-indexes/exchange-rates';
+import { hasAuthenticatedSession } from '@/lib/session';
 
 const EXCHANGE_RATES_COOKIE = 'exchange_rates_api_key';
 const FALLBACK_RATES_SNAPSHOT_DATE = '2026-02-01';
@@ -18,6 +19,15 @@ export async function GET(request: Request) {
   // Cloudflare secret. Falls back to env var inside getExchangeRates().
   const cookieStore = await cookies();
   const userApiKey = cookieStore.get(EXCHANGE_RATES_COOKIE)?.value;
+
+  // This endpoint is public (index checker), but ?refresh=true bypasses the caches
+  // and spends upstream API quota, so it requires a signed-in Google or Apple session.
+  if (forceRefresh && !(await hasAuthenticatedSession(cookieStore))) {
+    return NextResponse.json(
+      { success: false, error: 'Sign in to force a refresh of PPP data.' },
+      { status: 401 }
+    );
+  }
 
   // Run both fetches independently so a missing/failed exchange-rates key does
   // not nuke the entire response with static fallback.
@@ -59,14 +69,15 @@ export async function GET(request: Request) {
         worldBankRegions: 0,
         totalRegions: Object.keys(staticData).length,
         fallback: true,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: 'Live PPP data unavailable',
       },
     });
   }
 
   const pppData = pppResult.value;
+  // Raw upstream error is logged below; clients only get a generic message.
   const exchangeRatesError = ratesResult.status === 'rejected'
-    ? (ratesResult.reason instanceof Error ? ratesResult.reason.message : 'Unknown error')
+    ? 'Live exchange rates unavailable'
     : null;
 
   // Three-tier FX chain:
@@ -85,7 +96,7 @@ export async function GET(request: Request) {
   if (exchangeRatesError) {
     console.warn(
       `Exchange rates unavailable, falling back to ${FALLBACK_RATES_SNAPSHOT_DATE} snapshot:`,
-      exchangeRatesError
+      ratesResult.status === 'rejected' ? ratesResult.reason : undefined
     );
   }
 
@@ -202,7 +213,7 @@ export async function GET(request: Request) {
         worldBankRegions: 0,
         totalRegions: Object.keys(staticData).length,
         fallback: true,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: 'Live PPP data unavailable',
       },
     });
   }

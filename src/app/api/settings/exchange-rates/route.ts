@@ -3,19 +3,34 @@ import { cookies } from 'next/headers';
 
 const COOKIE_NAME = 'exchange_rates_api_key';
 
-// GET: Return the current API key (from cookie or env)
+// GET: Report whether a key is configured. Never returns any part of the
+// operator's environment key; a user-saved key is shown by its last 4 chars only.
 export async function GET() {
   const cookieStore = await cookies();
   const savedKey = cookieStore.get(COOKIE_NAME)?.value;
 
-  // Use saved key from cookie, or fall back to environment variable
-  const apiKey = savedKey || process.env.OPEN_EXCHANGE_RATES_APP_ID || '';
+  if (savedKey) {
+    return NextResponse.json({
+      success: true,
+      hasKey: true,
+      apiKey: `••••${savedKey.slice(-4)}`,
+      source: 'user',
+    });
+  }
+
+  if (process.env.OPEN_EXCHANGE_RATES_APP_ID) {
+    return NextResponse.json({
+      success: true,
+      hasKey: true,
+      configured: true,
+      source: 'environment',
+    });
+  }
 
   return NextResponse.json({
     success: true,
-    apiKey: apiKey ? `${apiKey.slice(0, 8)}...${apiKey.slice(-4)}` : '', // Masked for display
-    hasKey: !!apiKey,
-    source: savedKey ? 'user' : (process.env.OPEN_EXCHANGE_RATES_APP_ID ? 'environment' : 'none'),
+    hasKey: false,
+    source: 'none',
   });
 }
 
@@ -32,7 +47,7 @@ export async function POST(request: Request) {
     }
 
     // Validate the API key by making a test request
-    const testUrl = `https://openexchangerates.org/api/latest.json?app_id=${apiKey}`;
+    const testUrl = `https://openexchangerates.org/api/latest.json?app_id=${encodeURIComponent(apiKey)}`;
     const testResponse = await fetch(testUrl);
 
     if (!testResponse.ok) {

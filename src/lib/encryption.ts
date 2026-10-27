@@ -95,3 +95,36 @@ export async function decrypt(encryptedBase64: string): Promise<string> {
 export function isEncryptionAvailable(): boolean {
   return typeof process.env.ENCRYPTION_KEY === 'string' && process.env.ENCRYPTION_KEY.length > 0;
 }
+
+export const MISSING_ENCRYPTION_KEY_MESSAGE =
+  'ENCRYPTION_KEY is not set, so credentials cannot be stored securely. Set ENCRYPTION_KEY to a random string of 32+ characters (e.g. `openssl rand -base64 32`) and restart the server.';
+
+/**
+ * Thrown when a session would have to be stored without encryption outside
+ * `next dev`. The message is safe to show to the user (it contains no secrets).
+ */
+export class MissingEncryptionKeyError extends Error {
+  constructor() {
+    super(MISSING_ENCRYPTION_KEY_MESSAGE);
+    this.name = 'MissingEncryptionKeyError';
+  }
+}
+
+/**
+ * Plaintext (base64) session cookies are only permitted under `next dev`.
+ * `next build` inlines NODE_ENV as 'production', so built servers always fail
+ * closed; checking for 'development' (rather than !== 'production') also
+ * covers code run outside Next, such as tests and scripts.
+ */
+export function isPlaintextSessionAllowed(): boolean {
+  return process.env.NODE_ENV === 'development';
+}
+
+/**
+ * Whether a new session can be stored at all. Login routes check this before
+ * contacting the store, so a missing ENCRYPTION_KEY is reported with any
+ * credentials and no upstream call is made.
+ */
+export function canStoreSessions(): boolean {
+  return isEncryptionAvailable() || isPlaintextSessionAllowed();
+}

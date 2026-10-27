@@ -257,8 +257,8 @@ export function ServiceAccountUpload() {
 
         <div className="mt-4 pt-4 border-t">
           <p className="text-xs text-muted-foreground">
-            Your credentials are encrypted and stored securely in your browser.
-            They are never saved to disk on our servers.
+            Your credentials are sent to this server, encrypted into an HttpOnly
+            cookie, and never stored server-side.
           </p>
         </div>
       </CardContent>

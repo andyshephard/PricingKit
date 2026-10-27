@@ -8,15 +8,17 @@ import {
   googlePlayFetch,
 } from '@/lib/google-play/client';
 import type { ServiceAccountCredentials } from '@/lib/google-play/types';
-import { GOOGLE_PRICING_WRITE_DENIED_ERROR } from '@/lib/google-play/errors';
+import {
+  MissingEncryptionKeyError,
+  MISSING_ENCRYPTION_KEY_MESSAGE,
+  canStoreSessions,
+} from '@/lib/encryption';
 
 interface ProbeListResp<T> {
-  oneTimeProducts?: T[];
   subscriptions?: T[];
 }
 interface ProbeProduct {
   productId?: string;
-  listings?: unknown;
 }
 
 const SESSION_COOKIE = 'gplay_session';
@@ -48,6 +50,13 @@ export async function POST(request: NextRequest) {
         { error: 'Invalid service account JSON structure' },
         { status: 400 }
       );
+    }
+
+    // Fail closed before contacting Google: without ENCRYPTION_KEY (outside
+    // `next dev`) the session could not be stored anyway.
+    if (!canStoreSessions()) {
+      console.error(MISSING_ENCRYPTION_KEY_MESSAGE);
+      return NextResponse.json({ error: MISSING_ENCRYPTION_KEY_MESSAGE }, { status: 500 });
     }
 
     // Test the connection by trying to list subscriptions (uses the newer monetization API)
@@ -103,76 +112,10 @@ export async function POST(request: NextRequest) {
       throw apiError;
     }
 
-    // Verify write permission for pricing edits. Probe = no-op PATCH on first existing
-    // product or subscription, sending the same listings back (true no-op data-wise).
-    // Google validates resource existence before IAM perm, so we must use a real resource.
-    //   - 403 → service account lacks pricing write perm; block login.
-    //   - any other error → inconclusive; proceed (the route-level 403 handlers catch the
-    //     real edit later with a clear message).
-    try {
-      const appsBase = `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}`;
-
-      // Try a one-time product first.
-      const otpList = await googlePlayFetch<ProbeListResp<ProbeProduct>>(
-        creds,
-        `${appsBase}/oneTimeProducts`,
-        { query: { pageSize: 1 } }
-      );
-      const probeProduct = otpList.oneTimeProducts?.[0];
-
-      if (probeProduct?.productId) {
-        const full = await googlePlayFetch<ProbeProduct>(
-          creds,
-          `${appsBase}/oneTimeProducts/${encodeURIComponent(probeProduct.productId)}`
-        );
-        // PATCH path is lowercase per Google's discovery doc (only this one method is).
-        // updateMask=purchaseOptions tests the actual pricing-edit permission.
-        await googlePlayFetch<unknown>(
-          creds,
-          `${appsBase}/onetimeproducts/${encodeURIComponent(probeProduct.productId)}`,
-          {
-            method: 'PATCH',
-            query: { 'regionsVersion.version': '2025/03', updateMask: 'purchaseOptions' },
-            body: full,
-          }
-        );
-      } else {
-        const subList = await googlePlayFetch<ProbeListResp<ProbeProduct>>(
-          creds,
-          `${appsBase}/subscriptions`,
-          { query: { pageSize: 1 } }
-        );
-        const probeSub = subList.subscriptions?.[0];
-
-        if (probeSub?.productId) {
-          const fullSub = await googlePlayFetch<ProbeProduct>(
-            creds,
-            `${appsBase}/subscriptions/${encodeURIComponent(probeSub.productId)}`
-          );
-          // updateMask=basePlans tests the pricing-edit permission for subscriptions.
-          await googlePlayFetch<unknown>(
-            creds,
-            `${appsBase}/subscriptions/${encodeURIComponent(probeSub.productId)}`,
-            {
-              method: 'PATCH',
-              query: { 'regionsVersion.version': '2025/03', updateMask: 'basePlans' },
-              body: fullSub,
-            }
-          );
-        }
-        // No products or subscriptions on this app — cannot probe write perm.
-        // The route-level 403 handlers will surface the issue at first edit.
-      }
-    } catch (apiError: unknown) {
-      const error = apiError as { code?: number; message?: string; errors?: Array<{ reason?: string; message?: string }> };
-
-      if (error.code === 403) {
-        console.error('Google write-permission probe denied:', JSON.stringify(error, null, 2));
-        return NextResponse.json(GOOGLE_PRICING_WRITE_DENIED_ERROR, { status: 403 });
-      }
-      // Inconclusive — read probe already confirmed auth + app exist.
-      console.warn('Write-permission probe inconclusive:', error.code, error.message);
-    }
+    // Login is read-only: the list call above confirms auth and app access.
+    // Pricing write permission is not probed here (that would mean writing to the
+    // live store); a missing permission surfaces on the first real edit, where the
+    // product/subscription routes return GOOGLE_PRICING_WRITE_DENIED_ERROR.
 
     // Create session and store session ID in cookie
     const sessionId = await createSession(creds);
@@ -209,8 +152,12 @@ export async function POST(request: NextRequest) {
         { status: 401 }
       );
     }
+    if (error instanceof MissingEncryptionKeyError) {
+      // Operator misconfiguration; message is safe to show (no secrets).
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
     return NextResponse.json(
-      { error: err.message || 'Failed to authenticate. Please try again.' },
+      { error: 'Failed to authenticate. Please try again.' },
       { status: 500 }
     );
   }

@@ -47,7 +47,7 @@ export default function Home() {
                 </span>
                 <span className="flex items-center gap-1.5">
                   <Shield className="h-3.5 w-3.5" />
-                  Credentials never stored
+                  Credentials never stored server-side
                 </span>
                 <span className="flex items-center gap-1.5">
                   <Code className="h-3.5 w-3.5" />
@@ -61,7 +61,7 @@ export default function Home() {
                 <div className="flex items-center justify-center h-7 w-7 rounded-full bg-primary text-white text-sm font-medium shrink-0">1</div>
                 <div>
                   <p className="font-medium">Connect your App Store or Google Play account</p>
-                  <p className="text-sm text-muted-foreground">Upload your API credentials &mdash; they never leave your browser.</p>
+                  <p className="text-sm text-muted-foreground">Upload your API credentials &mdash; they&apos;re encrypted into an HttpOnly cookie and never stored on the server.</p>
                 </div>
               </div>
               <div className="flex items-start gap-3">
@@ -192,7 +192,7 @@ export default function Home() {
               <AccordionItem value="connect">
                 <AccordionTrigger>How does PricingKit connect to the App Store and Google Play?</AccordionTrigger>
                 <AccordionContent>
-                  For Apple, you provide an API key (.p8 file), Key ID, and Issuer ID from App Store Connect. For Google Play, you upload a service account JSON key. PricingKit uses these to authenticate directly with each platform&apos;s API. Your credentials are encrypted in a session cookie and never stored on any server.
+                  For Apple, you provide an API key (.p8 file), Key ID, and Issuer ID from App Store Connect. For Google Play, you upload a service account JSON key. The PricingKit server you&apos;re using calls each platform&apos;s API on your behalf. Your credentials are encrypted into an HttpOnly session cookie, used in memory per request, and never stored on the server. Self-host PricingKit if you want full control.
                 </AccordionContent>
               </AccordionItem>
               <AccordionItem value="currencies">
