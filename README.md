@@ -12,6 +12,7 @@ Free, open-source regional pricing tool for the App Store and Google Play. Set P
 - **Bulk updates** - Update prices across multiple products/regions at once, with skipped items and regions reported
 - **Price export** - Download a product's or subscription's current prices as CSV or JSON before you change them
 - **Plan, diff, apply (library)** - Build a reviewable JSON plan of price changes, apply it idempotently within a request budget, resume a partial run and undo it from its log (see [Plans](#plans-plan-diff-apply))
+- **Offers in step with base prices** - A checked-in rules file says which App Store offers follow "X% of each territory's price"; one command checks them all for drift, and sync plans re-price them against new base prices (see [sync](#keeping-offers-in-step-with-base-prices-sync))
 - **Currency conversion** - Automatic exchange rate lookups; regions without a rate are flagged and never priced
 - **Multiple pricing strategies** - PPP (World Bank), Big Mac Index or Netflix Index for regional pricing
 - **Public Index Checker** - Compare regional prices across strategies at `/index-checker` (no auth required)
@@ -224,6 +225,82 @@ Before reading or writing a subscription, PricingKit checks it belongs to the pl
 group must be one of the app's subscription groups). App Store Connect API keys work across a
 team's apps, so a subscription ID copied from another app is refused with `APP_MISMATCH`.
 
+### Keeping offers in step with base prices (sync)
+
+Apple offer prices are absolute: when a base price changes, an offer priced at "50% of each
+territory's price" no longer is. The stores don't record an offer's rule, so you keep the rules in
+a file in your repository and PricingKit uses it to check and re-derive the offers:
+
+```json
+{
+  "kind": "pricingkit.offerRules", "schemaVersion": 1, "app": { "bundleId": "com.example.app" },
+  "offers": [{
+    "product": { "platform": "apple", "type": "subscription", "id": "1234567890" },
+    "kind": "apple.promo", "key": "example_annual_50",
+    "pricing": { "type": "percentOfCurrent", "percent": "50", "basis": "totalOverDuration", "snap": "nearest" },
+    "syncWithBase": true
+  }]
+}
+```
+
+- `key` is the offer's key as `pricingkit offers` lists it (promotional offer code, offer code
+  name, win-back offer ID, or an introductory offer's key) or its store ID. `basis` may be left out:
+  pay-up-front offers then use `totalOverDuration`, others `perPeriod`. Optional: `territories`
+  (default: all of the offer's), `deviationThreshold` (default `"0.05"`).
+- `syncWithBase: false` keeps an offer in the drift check but out of sync plans.
+- App Store offers only. PricingKit doesn't read Google Play offers yet, so a rules file for a Play
+  app is refused. (Play offers priced with a relative discount follow the base price by themselves.)
+
+**Drift.** `pricingkit drift --rules offer-rules.json` checks every offer in the file against its
+rule and today's base prices and prints one `pricingkit.rulesDrift` report (each offer's
+`pricingkit.offerDrift` report inside). Exit code 2 when any offer drifted or doesn't exist; 1 when
+nothing drifted but an offer couldn't be checked (for example a rule on a free trial); 0 when all
+are in sync. This is what a weekly CI job runs (`examples/github-actions/drift.yml`).
+
+**Sync plans.** `pricingkit plan --rules offer-rules.json` re-derives every `syncWithBase` offer
+against the current base prices and plans `updateOfferPrices` for the ones out of step, for
+example right after base prices changed. With a base-price spec,
+`pricingkit plan --spec pricing.json --rules offer-rules.json` plans both in one file: the
+base-price ops, then offer ops re-derived against the prices that plan sets (not today's). Each
+offer op lists the base ops of its product it depends on (`dependsOn`):
+
+- The executor applies every base-price op before any offer op. If a base op an offer op depends
+  on fails (or the price moved since planning), the offer op fails with `BASE_NOT_APPLIED` and
+  nothing is sent for it; a resume applies it once the base ops are done.
+- Sync only changes prices of territories the offer already has. A territory the rule can't price
+  keeps its offer price and is listed as skipped.
+- Only promotional offers can be re-priced. Offer codes, win-back offers and introductory offers
+  whose prices no longer match are listed under "Needs manual action" (`manualActions` in the plan)
+  with what to do, such as "create a new offer code at the new prices and deactivate this one".
+  PricingKit never deletes or re-creates an offer by itself. Missing offers, unreadable ones and
+  rules on free trials are listed there too.
+- **Scheduled base prices** (a spec `startDate`): an offer's new prices apply as soon as the plan
+  is applied, so re-deriving an offer against a base price that starts in June would charge the
+  June-based offer price from today. By default sync **holds** those offers: they get no op and a
+  `BASE_SCHEDULED` manual action saying to sync again on or after the date (the weekly drift check
+  flags them then). `--scheduled-base now` re-derives them against the scheduled prices anyway,
+  with a warning in the plan. A base price already scheduled in the store is warned about too: the
+  offer will drift when it takes effect.
+- `pricingkit diff` shows base prices and offers in separate groups, in the order they are
+  applied, and lists the manual actions.
+
+**Applying.** `pricingkit apply` applies offer plans only: base-price writes through the CLI wait
+until the Apple base-price behaviour is confirmed on a test app. So `apply` applies a
+`plan --rules` plan, but refuses a plan that also changes base prices. Until that changes, ship a
+base price change and its offers like this: change the base prices in the web app (or apply the
+base-price plan with the library), then run `pricingkit plan --rules offer-rules.json`, review it
+with `pricingkit diff` and apply it. The library (`applyChangeSet`) applies combined plans, in the
+order above.
+
+```ts
+import { parseOfferRules } from '@/lib/pricing';
+
+const rules = parseOfferRules(await readFile('offer-rules.json', 'utf8'));
+const report = await apple.checkRulesDrift(rules);                     // reads only
+const sync = await apple.planOfferSync({ rules, base: basePlan, states }); // reads only
+// sync.changeSet: base ops, then offer ops; sync.manualActions: what needs a person
+```
+
 ## Command line: `pricingkit`
 
 A CLI over the same core and adapters, for scripts, CI and agents. It runs from a
@@ -245,6 +322,8 @@ Only `apply` writes to a store, and only with `--confirm <plan hash>`.
 | `apply <plan.json> --confirm <hash>` | Applies an App Store offer plan. `--confirm` must be the plan's hash (shown by `plan` and `diff`). Saves the run log after every step (`--run-out`, default `<plan>.run.json` next to the plan file, never overwritten) and continues one with `--resume <run.json>`. Deleting offers needs `--force-delete`. |
 | `undo <plan.json> <run.json>` | Writes the plan that undoes a run (`--out`, default `<plan>.undo.json` next to the plan file, replaced only with `--force`) and prints its summary, hash and anything that can't be reversed. Offline: no credentials, no store requests. Apply it with `apply --confirm`, plus `--force-delete` when it deletes offers. |
 | `drift` | Checks an App Store offer against "`--percent` of each territory's current price" (`--basis perPeriod\|totalOverDuration`, `--snap nearest\|floor\|ceil`, `--threshold`) and prints a `pricingkit.offerDrift` report. `--territories GB,US` checks only those territories: the offer's others are listed in `outOfScope` and don't count against it. |
+| `drift --rules <rules.json>` | Checks every offer in an offer rules file and prints one `pricingkit.rulesDrift` report. See [sync](#keeping-offers-in-step-with-base-prices-sync). |
+| `plan --rules <rules.json> [--spec <spec.json>]` | Plans keeping `syncWithBase` offers in step: against current base prices, or with `--spec`, against the prices that base-price plan sets (one plan, base ops first). `--scheduled-base hold\|now` (default `hold`). Offers the store can't re-price are listed as manual actions. |
 
 ```bash
 export ASC_KEY_ID=... ASC_ISSUER_ID=... ASC_PRIVATE_KEY_PATH=~/keys/AuthKey_XXXX.p8
@@ -255,11 +334,13 @@ npx pricingkit diff plan.json
 npx pricingkit offers --bundle-id com.example.app --subscription 1234567890
 npx pricingkit drift --bundle-id com.example.app --subscription 1234567890 \
   --kind apple.promo --offer example_half --percent 50 --json
+npx pricingkit drift --rules offer-rules.json
+npx pricingkit plan --spec pricing.json --rules offer-rules.json --out plan.json
 ```
 
 **Shared options.** `--json` prints machine-readable JSON on stdout: the document itself
 (`pricingkit.state`, `pricingkit.changeset`, `pricingkit.planSummary`, `pricingkit.offers` or
-`pricingkit.offerDrift`), or `{"error": {"message", "code", "status"}}` on failure. Store client
+`pricingkit.offerDrift`, `pricingkit.rulesDrift`), or `{"error": {"message", "code", "status"}}` on failure. Store client
 logs and the request count (when any requests were sent) go to stderr. `--budget <n>` caps the
 store requests one run may send (default 1000, leaving room within App Store Connect's 3600 per
 hour for anything else using the same key). Every command runs inside a `RequestBudget`, and a
@@ -271,7 +352,7 @@ spent budget stops the run with an error rather than a partial result.
 | --- | --- |
 | `0` | OK. For `plan` and `diff`: no changes. For `drift`: every territory matches. |
 | `1` | Error: bad arguments, invalid spec or plan, missing credentials, a store error, or a spent request budget. |
-| `2` | Something to act on: `plan`/`diff` found changes, or `drift` found the offer out of sync (any mismatch, missing, extra, unresolved or unreadable territory among those checked). |
+| `2` | Something to act on: `plan`/`diff` found changes (or, for sync plans, manual actions), or `drift` found the offer out of sync (any mismatch, missing, extra, unresolved or unreadable territory among those checked). `drift --rules`: any offer drifted or missing; when none did but one couldn't be checked, the exit code is `1`. |
 
 **Credentials** come only from environment variables, never from flags or files in the repo:
 
