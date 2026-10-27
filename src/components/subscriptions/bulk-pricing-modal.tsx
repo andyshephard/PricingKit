@@ -28,6 +28,7 @@ import {
 } from '@/components/ui/table';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ReviewDialog } from '@/components/pricing/review-dialog';
+import { isReviewStale, selectedRegionPrices, STALE_REVIEW_MESSAGE, takeReviewSnapshot, type ReviewSnapshot } from '@/components/pricing/review-snapshot';
 import { Badge } from '@/components/ui/badge';
 import {
   Select,
@@ -51,7 +52,6 @@ import {
 } from '@/lib/google-play/types';
 import {
   calculateBulkPrices,
-  filterApplicablePrices,
   calculatePriceChange,
   formatPriceChange,
   type PricingStrategy,
@@ -129,6 +129,8 @@ export function SubscriptionBulkPricingModal({
   const [updateSummary, setUpdateSummary] = useState<{
     changing: Array<{ name: string; old: string; new: string; regionCode: string; oldAmount: number | null; newAmount: number }>;
     staying: Array<{ name: string; price: string; regionCode: string }>;
+    /** Exactly what Apply sends, frozen when the review opened */
+    snapshot: ReviewSnapshot<Money>;
   } | null>(null);
   const [sortConfig, setSortConfig] = useState<{
     key: string;
@@ -456,20 +458,22 @@ export function SubscriptionBulkPricingModal({
       );
     }
 
+    // The review lists, and Apply sends, exactly this snapshot
+    const snapshot = takeReviewSnapshot(selectedRegionPrices(previewPrices, selectedRegions));
+
     allRegions.forEach(region => {
-      const previewItem = previewPrices.find(p => p.regionCode === region.code);
-      const isSelected = selectedRegions.has(region.code);
+      const newPrice = snapshot.prices[region.code];
       const currentPrice = getCurrentPrice(region.code);
       const currentPriceFormatted = currentPrice ? formatMoney(currentPrice) : 'None';
 
-      if (isSelected && previewItem && !previewItem.error) {
+      if (newPrice) {
         changing.push({
           name: region.name,
           regionCode: region.code,
           old: currentPriceFormatted,
-          new: formatMoney(previewItem.price),
+          new: formatMoney(newPrice),
           oldAmount: currentPrice ? moneyToNumber(currentPrice) : null,
-          newAmount: moneyToNumber(previewItem.price),
+          newAmount: moneyToNumber(newPrice),
         });
       } else {
         staying.push({
@@ -480,18 +484,22 @@ export function SubscriptionBulkPricingModal({
       }
     });
 
-    setUpdateSummary({ changing, staying });
+    setUpdateSummary({ changing, staying, snapshot });
     setShowConfirmDialog(true);
   };
 
+  // A PPP or exchange-rate fetch can land while the review is open: if the
+  // live preview no longer matches the snapshot, the review is stale
+  const reviewStale = showConfirmDialog && isReviewStale(updateSummary?.snapshot ?? null, selectedRegionPrices(previewPrices, selectedRegions));
+
   const executeApply = async () => {
-    // Exclude regions flagged with an error (e.g. missing exchange rate)
-    const regionalConfigs = filterApplicablePrices(previewPrices)
-      .filter((calculated) => selectedRegions.has(calculated.regionCode))
-      .map((calculated) => ({
-        regionCode: calculated.regionCode,
-        price: calculated.price,
-      }));
+    if (!updateSummary || reviewStale) {
+      toast.error(STALE_REVIEW_MESSAGE);
+      return;
+    }
+    // Only what the review showed, never the live preview
+    const { snapshot } = updateSummary;
+    const regionalConfigs = snapshot.regions.map((regionCode) => ({ regionCode, price: snapshot.prices[regionCode] }));
 
     if (regionalConfigs.length === 0) {
       toast.error('No regions selected to update');
@@ -1021,8 +1029,10 @@ export function SubscriptionBulkPricingModal({
           }))}
           unchangedCount={updateSummary?.staying.length}
           note="Google Play keeps existing subscribers on their current price. New prices apply to new subscribers."
+          warning={reviewStale ? STALE_REVIEW_MESSAGE : undefined}
           planSubject={`${subscription.productId}-${basePlan.basePlanId}`}
           applying={isApplying}
+          applyDisabled={reviewStale}
           onApply={executeApply}
         />
       </DialogContent>

@@ -29,6 +29,7 @@ import {
 } from '@/components/ui/table';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ReviewDialog } from '@/components/pricing/review-dialog';
+import { isReviewStale, selectedTierTargets, STALE_REVIEW_MESSAGE, takeReviewSnapshot, type ReviewSnapshot } from '@/components/pricing/review-snapshot';
 import { Badge } from '@/components/ui/badge';
 import {
   Tooltip,
@@ -137,6 +138,11 @@ interface AppleSubscriptionBulkPricingModalProps {
   onPreserveCurrentPriceChange: (value: boolean) => void;
 }
 
+/** What Apply sends per territory: the target the server resolves to a price point */
+type TierTarget = { targetPrice: number; currency: string };
+/** The other inputs Apply sends, frozen with the targets */
+type ApplyOptions = { startDate: string | null; preserveCurrentPrice: boolean };
+
 interface PreviewPrice {
   territoryCode: string; // alpha-2 code (e.g., "US")
   territoryAlpha3: string; // alpha-3 code for API (e.g., "USA")
@@ -181,6 +187,8 @@ export function AppleSubscriptionBulkPricingModal({
   const [updateSummary, setUpdateSummary] = useState<{
     changing: Array<{ name: string; old: string; new: string; regionCode: string; oldAmount: number | null; newAmount: number }>;
     staying: Array<{ name: string; price: string; regionCode: string }>;
+    /** Exactly what Apply sends, frozen when the review opened */
+    snapshot: ReviewSnapshot<TierTarget, ApplyOptions>;
   } | null>(null);
   const [sortConfig, setSortConfig] = useState<{
     key: string;
@@ -576,6 +584,9 @@ export function AppleSubscriptionBulkPricingModal({
     }
   };
 
+  /** The start date and existing-subscriber choice as Apply would send them now */
+  const currentApplyOptions = (): ApplyOptions => ({ startDate: isApproved && startDate ? startDate : null, preserveCurrentPrice });
+
   // Apply bulk pricing
   const handleApplyClick = () => {
     if (selectedRegions.size === 0) {
@@ -602,22 +613,41 @@ export function AppleSubscriptionBulkPricingModal({
       price: string;
     }> = [];
 
+    // Regions that can't be priced are left out of the review and never sent
+    const selectedPreview = previewPrices.filter((p) => selectedRegions.has(p.territoryCode));
+    const withoutRates = selectedPreview.filter((p) => p.error);
+    if (withoutRates.length > 0) {
+      toast.warning(`Skipping ${withoutRates.length} regions without an exchange rate`, {
+        description: withoutRates.map((p) => p.territoryCode).join(', '),
+      });
+    }
+    const withoutTiers = selectedPreview.filter((p) => p.noTierData && !p.error);
+    if (withoutTiers.length > 0) {
+      toast.warning(`Skipping ${withoutTiers.length} regions without Apple tier data`);
+    }
+
+    // The review lists, and Apply sends, exactly this snapshot
+    const snapshot = takeReviewSnapshot(selectedTierTargets(previewPrices, selectedRegions), currentApplyOptions());
+    if (snapshot.regions.length === 0) {
+      toast.error('No valid price tiers found for any selected region');
+      return;
+    }
+
     allTerritories.forEach(territory => {
-      const previewItem = previewPrices.find(p => p.territoryCode === territory.alpha2);
-      const isSelected = selectedRegions.has(territory.alpha2);
+      const target = snapshot.prices[territory.alpha2];
       const currentPriceData = subscription.prices[territory.alpha2];
       const currentPriceFormatted = currentPriceData 
         ? formatPrice(currentPriceData.customerPrice, currentPriceData.currency)
         : 'None';
 
-      if (isSelected && previewItem && !previewItem.noTierData) {
+      if (target) {
         changing.push({
           name: territory.name,
           regionCode: territory.alpha2,
           old: currentPriceFormatted,
-          new: formatPrice(previewItem.tierPrice, previewItem.currency),
+          new: formatPrice(target.targetPrice, target.currency),
           oldAmount: currentPriceData ? parseFloat(currentPriceData.customerPrice) : null,
-          newAmount: previewItem.tierPrice,
+          newAmount: target.targetPrice,
         });
       } else {
         staying.push({
@@ -628,48 +658,30 @@ export function AppleSubscriptionBulkPricingModal({
       }
     });
 
-    setUpdateSummary({ changing, staying });
+    setUpdateSummary({ changing, staying, snapshot });
     setShowConfirmDialog(true);
   };
 
+  // A PPP or exchange-rate fetch can land while the review is open: if the
+  // live preview no longer matches the snapshot, the review is stale
+  const reviewStale =
+    showConfirmDialog && isReviewStale(updateSummary?.snapshot ?? null, selectedTierTargets(previewPrices, selectedRegions), currentApplyOptions());
+
   const executeApply = async () => {
-    // Filter to only selected regions
-    const selectedPreviewPrices = previewPrices.filter(p => selectedRegions.has(p.territoryCode));
-
-    // Regions with no exchange rate are never applied
-    const regionsWithoutRates = selectedPreviewPrices.filter(p => p.error);
-    if (regionsWithoutRates.length > 0) {
-      toast.warning(`Skipping ${regionsWithoutRates.length} regions without an exchange rate`, {
-        description: regionsWithoutRates.map(p => p.territoryCode).join(', '),
-      });
-    }
-
-    // Check for regions without tier data
-    const regionsWithoutTiers = selectedPreviewPrices.filter(p => p.noTierData && !p.error);
-    if (regionsWithoutTiers.length > 0) {
-      toast.warning(`Skipping ${regionsWithoutTiers.length} regions without Apple tier data`);
-    }
-
-    // Filter to only regions with valid tier data
-    const validPrices = selectedPreviewPrices.filter(p => !p.noTierData && p.tier);
-
-    if (validPrices.length === 0) {
-      toast.error('No valid price tiers found for any selected region');
+    if (!updateSummary || reviewStale) {
+      toast.error(STALE_REVIEW_MESSAGE);
       return;
     }
+    // Only what the review showed, never the live preview
+    const { snapshot } = updateSummary;
+    const { startDate: snapshotStartDate, preserveCurrentPrice: snapshotPreserve } = snapshot.meta;
 
     setIsSaving(true);
     setShowConfirmDialog(false);
 
     try {
       // Phase 1: Resolve price points server-side in a single request
-      const territories: Record<string, { targetPrice: number; currency: string }> = {};
-      for (const p of validPrices) {
-        territories[p.territoryCode] = {
-          targetPrice: p.tierPrice,
-          currency: p.currency,
-        };
-      }
+      const territories: Record<string, TierTarget> = { ...snapshot.prices };
 
       const { resolved, skipped, skippedReasons } = await resolveMutation.mutateAsync({
         subscriptionId: subscription.id,
@@ -694,14 +706,14 @@ export function AppleSubscriptionBulkPricingModal({
       for (const [territoryCode, { pricePointId }] of Object.entries(resolved)) {
         prices[territoryCode] = {
           pricePointId,
-          ...(isApproved && startDate ? { startDate } : {}),
+          ...(snapshotStartDate ? { startDate: snapshotStartDate } : {}),
         };
       }
 
       await updateMutation.mutateAsync({
         subscriptionId: subscription.id,
         prices,
-        preserveCurrentPrice,
+        preserveCurrentPrice: snapshotPreserve,
       });
 
       const successCount = Object.keys(resolved).length;
@@ -1334,14 +1346,21 @@ export function AppleSubscriptionBulkPricingModal({
             afterAmount: item.newAmount,
           }))}
           unchangedCount={updateSummary?.staying.length}
-          warning={isApproved && startDate ? <>New prices take effect on {startDate}.</> : undefined}
+          warning={
+            reviewStale ? (
+              STALE_REVIEW_MESSAGE
+            ) : updateSummary?.snapshot.meta.startDate ? (
+              <>New prices take effect on {updateSummary.snapshot.meta.startDate}.</>
+            ) : undefined
+          }
           note={
-            preserveCurrentPrice
+            (updateSummary?.snapshot.meta.preserveCurrentPrice ?? preserveCurrentPrice)
               ? 'Existing subscribers keep their current price; new prices apply to new subscribers. Decreases reach everyone.'
               : 'Existing subscribers move to the new prices too. Apple notifies them of any increase.'
           }
           planSubject={subscription.productId}
           applying={isSaving}
+          applyDisabled={reviewStale}
           onApply={executeApply}
         />
       </DialogContent>

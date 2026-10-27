@@ -28,6 +28,7 @@ import {
 } from '@/components/ui/table';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ReviewDialog } from '@/components/pricing/review-dialog';
+import { isReviewStale, selectedRegionPrices, STALE_REVIEW_MESSAGE, takeReviewSnapshot, type ReviewSnapshot } from '@/components/pricing/review-snapshot';
 import { Badge } from '@/components/ui/badge';
 import {
   Tooltip,
@@ -58,7 +59,6 @@ import {
 import {
   calculateBulkPrices,
   calculatePriceChange,
-  filterApplicablePrices,
   formatPriceChange,
   type PricingStrategy,
   type RoundingMode,
@@ -237,6 +237,8 @@ export function BulkPricingModal({
   const [updateSummary, setUpdateSummary] = useState<{
     changing: Array<{ name: string; old: string; new: string; regionCode: string; isRequired: boolean ; oldAmount: number | null; newAmount: number }>;
     staying: Array<{ name: string; price: string; regionCode: string }>;
+    /** Exactly what Apply sends, frozen when the review opened */
+    snapshot: ReviewSnapshot<Money>;
   } | null>(null);
   const [sortConfig, setSortConfig] = useState<{
     key: string;
@@ -623,21 +625,23 @@ export function BulkPricingModal({
       );
     }
 
+    // The review lists, and Apply sends, exactly this snapshot
+    const snapshot = takeReviewSnapshot(selectedRegionPrices(previewPrices, selectedRegions, appleBaseRegion));
+
     allRegions.forEach(region => {
       const currentPrice = getCurrentPrice(region.code);
-      const newPriceItem = previewPrices.find(p => p.regionCode === region.code);
-      const isSelected = selectedRegions.has(region.code);
+      const newPrice = snapshot.prices[region.code];
       const isRequired = region.code === appleBaseRegion;
 
-      if ((isSelected || isRequired) && newPriceItem && !newPriceItem.error) {
+      if (newPrice) {
         changing.push({
           name: region.name,
           regionCode: region.code,
           old: currentPrice ? formatMoney(currentPrice) : 'None',
-          new: formatMoney(newPriceItem.price),
+          new: formatMoney(newPrice),
           isRequired,
           oldAmount: currentPrice ? moneyToNumber(currentPrice) : null,
-          newAmount: moneyToNumber(newPriceItem.price),
+          newAmount: moneyToNumber(newPrice),
         });
       } else {
         staying.push({
@@ -648,20 +652,23 @@ export function BulkPricingModal({
       }
     });
 
-    setUpdateSummary({ changing, staying });
+    setUpdateSummary({ changing, staying, snapshot });
     setShowConfirmDialog(true);
   };
 
-  const executeApply = async () => {
-    const prices: Record<string, Money> = {};
-    const appleBaseRegion = platform === 'apple' ? baseRegion : null;
+  // A PPP or exchange-rate fetch can land while the review is open: if the
+  // live preview no longer matches the snapshot, the review is stale
+  const reviewStale =
+    showConfirmDialog &&
+    isReviewStale(updateSummary?.snapshot ?? null, selectedRegionPrices(previewPrices, selectedRegions, platform === 'apple' ? baseRegion : null));
 
-    // Exclude regions flagged with an error (e.g. missing exchange rate)
-    filterApplicablePrices(previewPrices).forEach((calculated) => {
-      if (selectedRegions.has(calculated.regionCode) || calculated.regionCode === appleBaseRegion) {
-        prices[calculated.regionCode] = calculated.price;
-      }
-    });
+  const executeApply = async () => {
+    if (!updateSummary || reviewStale) {
+      toast.error(STALE_REVIEW_MESSAGE);
+      return;
+    }
+    // Only what the review showed, never the live preview
+    const prices: Record<string, Money> = { ...updateSummary.snapshot.prices };
 
     if (Object.keys(prices).length === 0) {
       toast.error('No prices selected to update');
@@ -694,7 +701,7 @@ export function BulkPricingModal({
         );
       }
 
-      const successCount = updated ?? selectedRegions.size;
+      const successCount = updated ?? Object.keys(prices).length;
       toast.success(`Updated prices for ${successCount} regions`);
       onOpenChange(false);
     } catch (error) {
@@ -1319,13 +1326,11 @@ export function BulkPricingModal({
             note: item.isRequired ? 'Base region' : undefined,
           }))}
           unchangedCount={updateSummary?.staying.length}
-          warning={
-            platform === 'apple'
-              ? 'For App Store products, regions you did not select go back to automatic pricing.'
-              : undefined
-          }
+          warning={reviewStale ? STALE_REVIEW_MESSAGE : undefined}
+          note={platform === 'apple' ? 'Regions you did not select keep their current prices.' : undefined}
           planSubject={product.sku}
           applying={isApplying}
+          applyDisabled={reviewStale}
           onApply={executeApply}
         />
       </DialogContent>
