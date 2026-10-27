@@ -110,6 +110,11 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
     if (rest[0] !== undefined && !isCommand(rest[0])) throw new UsageError(`Unknown command "${rest[0]}". Commands: ${COMMANDS.join(', ')}`);
     return { kind: 'help', command: rest[0] as CommandName | undefined };
   }
+  if (first === 'mcp') {
+    throw new UsageError(
+      rest.length > 0 ? 'pricingkit mcp takes no options' : '"pricingkit mcp" is a server over stdio: start it as its own process, e.g. from your MCP client\'s configuration'
+    );
+  }
   if (!isCommand(first)) {
     throw new UsageError(
       first.startsWith('-') ? `Give a command first. Commands: ${COMMANDS.join(', ')}` : `Unknown command "${first}". Commands: ${COMMANDS.join(', ')}`
@@ -186,6 +191,9 @@ Commands:
   apply    Apply a reviewed plan, App Store or Google Play (needs --confirm <plan hash>; base
            prices also need --allow-base-prices); saves the run log
   undo     Turn a plan and its run log into an undo plan (offline), to review and apply
+  mcp      Run an MCP server over stdio for agents: offers, drift, plan and diff tools, and
+           apply_command, which returns the apply command for a person to run (it never
+           applies anything). Credentials come from the server's environment.
 
 ${SHARED_HELP}
 

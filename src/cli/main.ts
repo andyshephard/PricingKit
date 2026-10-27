@@ -162,6 +162,18 @@ export async function runCli(argv: string[], io: CliIO): Promise<ExitCode> {
 
 /** Process entry used by bin/pricingkit.mjs */
 export async function main(argv = process.argv.slice(2)): Promise<ExitCode> {
+  if (argv[0] === 'mcp' && argv.length === 1) {
+    // A long-running MCP server over stdio: stdout carries protocol messages only
+    const { serveMcp } = await import('./mcp');
+    await serveMcp({
+      cwd: process.cwd(),
+      env: process.env,
+      input: process.stdin,
+      output: (line) => process.stdout.write(`${line}\n`),
+      log: (text) => process.stderr.write(text),
+    });
+    return EXIT_OK;
+  }
   return runCli(argv, {
     stdout: (text) => process.stdout.write(text),
     stderr: (text) => process.stderr.write(text),
