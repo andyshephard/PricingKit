@@ -148,6 +148,7 @@ Touchpoints (all required, in order):
 - Never call a live store API or read real credentials. Mock `fetch` with `vi.stubGlobal('fetch', ...)` or mock store modules with `vi.mock`. Tests that need a signing key generate a throwaway one with Web Crypto.
 - Reset mocks in a block-bodied `beforeEach(() => { mock.mockReset(); })`. vitest runs a function returned from `beforeEach` as a teardown, so `beforeEach(() => mock.mockReset())` calls the mock again after each test.
 - Plan and executor tests use the in-memory `FakeStore` (`src/lib/pricing/__tests__/fixtures`); adapter tests use `src/lib/adapters/__tests__/fake-apple.ts` or a mocked `googlePlayFetch`.
+- `fake-apple.ts` encodes guesses about App Store Connect that are **not verified against a real account**: that an immediate subscription price create replaces the territory's older active entries, and that a scheduled price can be created while another exists (create-then-delete). Treat tests relying on them as unverified until checked against a test app (planned for Phase 2b).
 - See `CONTRIBUTING.md` for the full conventions.
 
 ## Environment Variables

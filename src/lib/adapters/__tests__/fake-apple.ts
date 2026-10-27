@@ -130,7 +130,11 @@ export class FakeAppleServer {
       const alpha2 = Object.entries(TERRITORIES).find(([, t]) => t.alpha3 === alpha3)![0];
       const startDate = body.data.attributes.startDate;
       if (!startDate) {
-        // An immediate change replaces the territory's active price
+        // UNVERIFIED ASSUMPTION: an immediate create replaces the territory's
+        // older active (null-dated or past) entries. Real App Store Connect may
+        // keep them and date the new entry instead; the strict reader treats a
+        // tie on the latest start date as ambiguous. To be checked against a
+        // test app (Phase 2b) before relying on this fake for that case.
         this.prices = this.prices.filter((p) => p.alpha2 !== alpha2 || (p.startDate !== null && new Date(p.startDate) > new Date()));
       }
       const id = b64({ s: SUB_ID, c: alpha2, n: ++this.counter });
