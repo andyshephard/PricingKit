@@ -14,7 +14,7 @@ Free, open-source regional pricing tool for the App Store and Google Play. Set P
 - **Plan, diff, apply (library)** - Build a reviewable JSON plan of price changes, apply it idempotently within a request budget, resume a partial run and undo it from its log (see [Plans](#plans-plan-diff-apply))
 - **Google Play offers** - List, plan, preview, apply, resume and undo Play subscription offers: phases (free, relative or absolute discount, fixed price), eligibility (new customers, upgrades, developer-determined), offer tags and regions (see [Google Play offers](#google-play-subscription-offers))
 - **Offers in step with base prices** - A checked-in rules file says which offers follow which rule (App Store: "X% of each territory's price"; Google Play: also Play's own discounts and fixed prices); one command checks them all for drift, and sync plans re-price them against new base prices (see [sync](#keeping-offers-in-step-with-base-prices-sync))
-- **Headless** - A `pricingkit` CLI (JSON or YAML specs, `--json` output, exit codes for CI), GitHub Actions templates for plan-on-PR and apply-on-merge with approval, and an MCP server so agents can plan while people apply (see [Command line](#command-line-pricingkit))
+- **Headless** - A `pricingkit` CLI (JSON or YAML specs, `--json` output, exit codes for CI) and an MCP server so agents can plan while people apply (see [Command line](#command-line-pricingkit))
 - **Currency conversion** - Automatic exchange rate lookups; regions without a rate are flagged and never priced
 - **Multiple pricing strategies** - PPP (World Bank), Big Mac Index, Netflix Index or your own per-territory multipliers (Custom) for regional pricing
 - **Pricing quality** - Target what you receive (proceeds, net of tax and commission) instead of the customer price; every planned change says what existing subscribers see (decrease, new subscribers only, notified, or needs consent); reference data shows its age and stale PPP data is capped or inflated (see [Pricing quality](#pricing-quality))
@@ -95,7 +95,6 @@ CI runs all three on every pull request. See [CONTRIBUTING.md](CONTRIBUTING.md) 
 
 ```
 bin/pricingkit.mjs        # CLI launcher (runs src/cli through tsx)
-examples/github-actions/  # Example workflows to copy (not run in this repo)
 src/
 ├── cli/                  # pricingkit CLI: export, plan, diff, offers, offer, drift, apply (--confirm), undo, mcp
 ├── app/
@@ -368,7 +367,7 @@ one `pricingkit.rulesDrift` report (each offer's
 `pricingkit.offerDrift` report inside). Exit code 2 when any offer drifted or doesn't exist; 1 when
 nothing drifted but an offer couldn't be checked (for example a rule on a free trial); 0 when all
 are in sync. The text report's first line says `DRIFT`, `NOT CHECKED` or `In sync`, and offers that
-couldn't be checked are listed right under it, also when the exit code is 2 for drift. This is what a weekly CI job runs (`examples/github-actions/drift.yml`).
+couldn't be checked are listed right under it, also when the exit code is 2 for drift.
 
 **Sync plans.** `pricingkit plan --rules offer-rules.json` re-derives every `syncWithBase` offer
 against the current base prices and plans `updateOfferPrices` for the ones out of step, for
@@ -830,23 +829,6 @@ products:
   - product: { platform: apple, type: subscription, id: "1234567890" }
     targets: { type: strategy, strategy: ppp, base: { territory: US, amount: 9.99 } }
 ```
-
-**In CI.** Examples to copy into your own repository (they don't run here; actions are pinned
-by commit SHA, with least-privilege permissions):
-
-- [`drift.yml`](examples/github-actions/drift.yml): a weekly drift check that opens (or comments
-  on) an issue and fails the job when an offer drifts.
-- [`plan-on-pr.yml`](examples/github-actions/plan-on-pr.yml): on a pull request that changes the
-  pricing files, comments the committed plan's `diff` and hash and a fresh read-only plan against
-  current prices. On `pull_request`, anyone who can push a branch can read the secrets that job
-  uses, and App Store Connect has no API key role that reads prices without being able to change
-  them: use a separate planning key, or put it behind an environment with required reviewers (the
-  file explains both).
-- [`apply-on-merge.yml`](examples/github-actions/apply-on-merge.yml): on merge to main, a preview
-  job (no secrets) writes the plan's diff and hash to the run summary; the apply job waits for a
-  required reviewer of a protected environment, applies the committed plan with that hash, uploads
-  the run log as an artifact and, on failure, says how to resume (only from a run of the same
-  workflow on main). Protect main: require pull requests and dismiss stale approvals.
 
 ## Environment Variables
 
