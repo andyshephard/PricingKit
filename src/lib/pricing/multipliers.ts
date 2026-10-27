@@ -5,7 +5,7 @@
 // (pricingkit export / the web app's CSV, see src/lib/export/csv.ts) with a
 // "multiplier" column added works as it is: rows with an empty multiplier
 // are skipped. RFC 4180 quoting is understood. Errors give line numbers and
-// column names only, never cell contents.
+// column names only, never cell contents (territory codes included).
 // Framework-free: no file access (the CLI reads the file).
 
 import { compareDecimal, isDecimalString, normalizeDecimal, type Decimal } from './decimal';
@@ -90,11 +90,11 @@ export function parseMultiplierCsv(text: string): Record<string, Decimal> {
       return;
     }
     if (!isDecimalString(multiplier)) {
-      issues.push(`line ${line}: multiplier for ${territory} must be a plain decimal such as 0.8`);
+      issues.push(`line ${line}: the multiplier must be a plain decimal such as 0.8`);
       return;
     }
     if (territory in out) {
-      issues.push(`line ${line}: ${territory} is listed twice`);
+      issues.push(`line ${line}: the territory is listed twice`);
       return;
     }
     out[territory] = normalizeDecimal(multiplier);
@@ -131,14 +131,14 @@ export function parseMultiplierText(text: string): Record<string, Decimal> {
         return;
       }
       const territory = match[1].toUpperCase();
-      if (territory in table) issues.push(`line ${index + 1}: ${territory} is listed twice`);
+      if (territory in table) issues.push(`line ${index + 1}: the territory is listed twice`);
       else table[territory] = normalizeDecimal(match[2]);
     });
     if (issues.length === 0 && Object.keys(table).length === 0) issues.push('no multipliers');
     if (issues.length > 0) throw new MultiplierCsvError(issues);
   }
   const outOfRange = Object.entries(table).filter(([, m]) => compareDecimal(m, MIN_CUSTOM_MULTIPLIER) < 0 || compareDecimal(m, MAX_CUSTOM_MULTIPLIER) > 0);
-  if (outOfRange.length > 0) throw new MultiplierCsvError(outOfRange.map(([t]) => `${t}: a multiplier must be from ${MIN_CUSTOM_MULTIPLIER} to ${MAX_CUSTOM_MULTIPLIER}`));
+  if (outOfRange.length > 0) throw new MultiplierCsvError([`${outOfRange.length} multiplier(s) outside ${MIN_CUSTOM_MULTIPLIER} to ${MAX_CUSTOM_MULTIPLIER}`]);
   return table;
 }
 

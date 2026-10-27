@@ -58,20 +58,22 @@ export async function readInputFile(ctx: CommandContext, path: string, what: str
 export async function writeOutputFile(ctx: CommandContext, path: string, content: string): Promise<string> {
   const full = resolve(ctx.cwd, path);
   const fail = (why: string) => new CliError(`Can't write ${path} (${why})`);
-  const checkTarget = async () => {
+  /** The existing target's permission bits (kept on the new file), or undefined for a new file */
+  const checkTarget = async (): Promise<number | undefined> => {
     let stat;
     try {
       stat = await lstat(full);
     } catch (error) {
       const code = (error as { code?: string }).code;
-      if (code === 'ENOENT') return;
+      if (code === 'ENOENT') return undefined;
       throw fail(code ?? 'unreadable');
     }
     if (stat.isSymbolicLink()) throw fail('it is a symbolic link; it won\'t be written through or replaced');
     if (!stat.isFile()) throw fail('it exists and is not a plain file');
     if (stat.nlink > 1) throw fail(`it has ${stat.nlink} hard links; it won't be replaced`);
+    return stat.mode & 0o7777;
   };
-  await checkTarget();
+  const existingMode = await checkTarget();
   const temp = join(dirname(full), `.${basename(full)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
   let created = false;
   try {
@@ -79,6 +81,10 @@ export async function writeOutputFile(ctx: CommandContext, path: string, content
     created = true;
     try {
       await handle.writeFile(content, 'utf8');
+      // Replacing a file keeps its permissions; a new one gets the default (0666 less the umask)
+      if (existingMode !== undefined) await handle.chmod(existingMode);
+      // On disk before the rename makes it visible, so a crash never leaves an empty file in its place
+      await handle.sync();
     } finally {
       await handle.close();
     }

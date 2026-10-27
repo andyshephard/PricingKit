@@ -1,7 +1,7 @@
 // CLI output files (plans, snapshots, run logs) are written atomically and
 // never through a link.
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { linkSync, readdirSync, readFileSync, symlinkSync, writeFileSync, lstatSync } from 'node:fs';
+import { chmodSync, linkSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { writeOutputFile, type CommandContext } from '../context';
 import { CliError } from '../errors';
@@ -21,6 +21,14 @@ describe('writeOutputFile', () => {
     await writeOutputFile(ctx, 'out.json', 'two');
     expect(readFileSync(join(tmp.dir, 'out.json'), 'utf8')).toBe('two');
     expect(readdirSync(tmp.dir)).toEqual(['out.json']);
+  });
+
+  it('keeps the permissions of a file it replaces', async () => {
+    writeFileSync(join(tmp.dir, 'private.json'), 'one');
+    chmodSync(join(tmp.dir, 'private.json'), 0o600);
+    await writeOutputFile(ctx, 'private.json', 'two');
+    expect(statSync(join(tmp.dir, 'private.json')).mode & 0o777).toBe(0o600);
+    expect(readFileSync(join(tmp.dir, 'private.json'), 'utf8')).toBe('two');
   });
 
   it('refuses a symbolic link at the target and leaves its target alone', async () => {

@@ -157,8 +157,8 @@ describe('multiplier CSV', () => {
     expect(fail('country,multiplier\nGB,1')).toEqual(['the header has no "territory" column']);
     expect(fail('territory,multiplier\nsecret-value,1\nGB,=cmd()\nGB,1\nGB,2')).toEqual([
       'line 2: territory must be ISO 3166-1 alpha-2, e.g. "GB"',
-      'line 3: multiplier for GB must be a plain decimal such as 0.8',
-      'line 5: GB is listed twice',
+      'line 3: the multiplier must be a plain decimal such as 0.8',
+      'line 5: the territory is listed twice',
     ]);
     expect(fail('territory,multiplier\nGB,')).toEqual(['no row has a multiplier']);
     expect(fail('territory,multiplier\n"GB,1')).toEqual(['a quoted field is not closed']);
@@ -173,6 +173,11 @@ describe('multiplier tables typed in the web app', () => {
     expect(() => parseMultiplierText('GB=0.9\nGB=1')).toThrow(/listed twice/);
     expect(() => parseMultiplierText('GB=twelve')).toThrow(/line 1: expected a territory and a multiplier/);
     expect(() => parseMultiplierText('GB=0.001\nIN=20')).toThrow(MultiplierCsvError);
+    try {
+      parseMultiplierText('GB=0.001\nIN=20');
+    } catch (error) {
+      expect((error as MultiplierCsvError).issues).toEqual(['2 multiplier(s) outside 0.01 to 10']);
+    }
     expect(relativeMultipliers({ US: '2', IN: '0.5' }, 'US')).toEqual({ US: 1, IN: 0.25 });
     expect(relativeMultipliers({ IN: '0.5' }, 'US')).toEqual({ US: 1, IN: 0.5 });
   });

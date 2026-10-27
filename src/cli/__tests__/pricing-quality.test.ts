@@ -192,13 +192,27 @@ describe('custom multipliers from CSV', () => {
     writeFileSync(join(tmp.dir, 'm.csv'), 'territory,multiplier\nGB,lots\n');
     writeSpec(custom({ multipliersFile: 'm.csv' }));
     const bad = JSON.parse((await plan(appleEnv, ['--json'])).stdout).error;
-    expect(bad).toMatchObject({ code: 'INVALID_SPEC', message: expect.stringMatching(/line 2: multiplier for GB must be a plain decimal/) });
+    expect(bad).toMatchObject({ code: 'INVALID_SPEC', message: expect.stringMatching(/line 2: the multiplier must be a plain decimal/) });
     expect(bad.message).not.toContain('lots');
+    expect(bad.message).not.toContain('GB');
+    // A regular file of at most 1 MB
+    mkdirSync(join(tmp.dir, 'dir.csv'));
+    writeSpec(custom({ multipliersFile: 'dir.csv' }));
+    expect((await plan(appleEnv, ['--json'])).stdout).toMatch(/dir\.csv is not a regular file/);
+    writeFileSync(join(tmp.dir, 'big.csv'), `territory,multiplier\n${'GB,1\n'.repeat(250_001)}`);
+    writeSpec(custom({ multipliersFile: 'big.csv' }));
+    expect((await plan(appleEnv, ['--json'])).stdout).toMatch(/big\.csv is larger than 1000000 bytes/);
     writeSpec(custom({ multipliersFile: 'm.csv', multipliers: { GB: '1' } }));
     expect((await plan(appleEnv, ['--json'])).stdout).toMatch(/give multipliers or multipliersFile, not both/);
     writeSpec(custom({ multipliersFile: 'missing.csv' }));
     expect((await plan(appleEnv, ['--json'])).stdout).toMatch(/can't read missing\.csv/);
     expect(appleApiRequest).not.toHaveBeenCalled();
+  });
+
+  it('a file whose name starts with ".." is inside the working directory', async () => {
+    writeFileSync(join(tmp.dir, '..x.csv'), 'territory,multiplier\nDE,1.5\n');
+    writeSpec(custom({ multipliersFile: '..x.csv' }));
+    expect((await plan()).code).toBe(2);
   });
 
   it('inline multipliers work in YAML specs', async () => {

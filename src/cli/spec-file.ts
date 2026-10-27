@@ -9,8 +9,8 @@
 // several documents in one file, duplicate keys and alias bombs are refused.
 // Error messages give the line and column only, never the file's text.
 
-import { readFile, realpath } from 'node:fs/promises';
-import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
+import { readFile, realpath, stat } from 'node:fs/promises';
+import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { isPair, isScalar, parseDocument, visit } from 'yaml';
 import { parseMultiplierCsv } from '@/lib/pricing';
 import { readInputFile, type CommandContext } from './context';
@@ -104,6 +104,9 @@ export async function readSpecText(ctx: CommandContext, path: string, what: stri
  * directory (symlinks resolved), and must be a .csv file. Errors never quote
  * the file's contents.
  */
+/** Largest multiplier CSV read (a table of ~250 territories is a few KB) */
+export const MAX_MULTIPLIER_FILE_BYTES = 1_000_000;
+
 export async function inlineMultiplierFiles(ctx: CommandContext, specText: string, specPath: string): Promise<string> {
   let spec: unknown;
   try {
@@ -126,8 +129,12 @@ export async function inlineMultiplierFiles(ctx: CommandContext, specText: strin
     const full = resolve(ctx.cwd, dirname(specPath), file);
     const [root, real] = await Promise.all([realpath(ctx.cwd), realpath(full).catch(() => undefined)]);
     if (real === undefined) throw new CliError(`${where}: can't read ${file}`, 'INVALID_SPEC');
+    // Inside the working directory: a relative path that doesn't climb out ("..x.csv" is a fine name)
     const rel = relative(root, real);
-    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) throw new CliError(`${where}: ${file} is outside the working directory`, 'INVALID_SPEC');
+    if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new CliError(`${where}: ${file} is outside the working directory`, 'INVALID_SPEC');
+    const info = await stat(real);
+    if (!info.isFile()) throw new CliError(`${where}: ${file} is not a regular file`, 'INVALID_SPEC');
+    if (info.size > MAX_MULTIPLIER_FILE_BYTES) throw new CliError(`${where}: ${file} is larger than ${MAX_MULTIPLIER_FILE_BYTES} bytes`, 'INVALID_SPEC');
     let text: string;
     try {
       text = await readFile(real, 'utf8');
