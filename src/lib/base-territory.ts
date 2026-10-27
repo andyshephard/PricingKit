@@ -33,3 +33,52 @@ export function pickBasePrice<T>(prices: Record<string, T> | undefined, candidat
 export function inAppBaseTerritory(productBase: string | null | undefined, appBase: string | null | undefined): string {
   return productBase || appBase || 'USA';
 }
+
+/** The fields of an App Store subscription the list needs */
+interface ListedAppleSubscription {
+  productId: string;
+  name?: string;
+  state?: string;
+  period?: string;
+  prices?: Record<string, { customerPrice: string; currency?: string }>;
+}
+
+/**
+ * App Store subscriptions shaped like Google subscriptions for the table,
+ * each showing its base price in its own base territory (remembered per
+ * product), then the display default, then US. Pure, so the list can apply
+ * it in a query `select` and a base territory change never refetches.
+ */
+export function normalizeAppleSubscriptionList<T extends { subscriptions?: unknown[] }>(
+  data: T,
+  options: { bundleId: string | null | undefined; productBases: Record<string, string>; displayDefault: string },
+  parseMoney: (amount: number, currency: string) => unknown
+): T {
+  if (!data?.subscriptions) return data;
+  return {
+    ...data,
+    subscriptions: (data.subscriptions as ListedAppleSubscription[]).map((s) => {
+      const picked = pickBasePrice(s.prices, [options.productBases[productBaseKey(options.bundleId, s.productId)], options.displayDefault, 'US']);
+      const basePrice = picked?.price ?? null;
+      const basePriceRegion = picked?.region ?? null;
+      return {
+        productId: s.productId,
+        archived: s.state !== 'APPROVED' && s.state !== 'READY_TO_SUBMIT',
+        listings: [{ title: s.name, languageCode: 'en-US' }],
+        basePlans: [
+          {
+            basePlanId: 'default',
+            state: s.state === 'APPROVED' ? 'active' : 'inactive',
+            autoRenewingBasePlanType: { billingPeriodDuration: s.period },
+            regionalConfigs:
+              basePrice && basePriceRegion
+                ? [{ regionCode: basePriceRegion, price: parseMoney(parseFloat(basePrice.customerPrice), basePrice.currency || 'USD') }]
+                : [],
+          },
+        ],
+        // Keep original Apple data with base price info (including id for routing)
+        _appleSubscription: { ...s, basePrice },
+      };
+    }),
+  };
+}

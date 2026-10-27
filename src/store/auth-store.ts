@@ -184,6 +184,8 @@ export const useAuthStore = create<AuthState>()(
           bundleId: null,
           keyId: null,
           issuerId: null,
+          // Remembered per-product base territories go with the apps they were for
+          appleProductBaseTerritories: {},
         }),
 
       // Legacy compatibility - maps to setGoogleAuthenticated

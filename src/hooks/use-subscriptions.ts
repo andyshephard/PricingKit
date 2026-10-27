@@ -1,13 +1,14 @@
+import { useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { RegionalBasePlanConfig } from '@/lib/google-play/types';
 import { parseMoney } from '@/lib/google-play/types';
-import type { RawAppleSubscription, SubscriptionsListResponse, SubscriptionResponse } from '@/types/api';
+import type { SubscriptionsListResponse, SubscriptionResponse } from '@/types/api';
 import type { AppleProductPrice } from '@/lib/apple-connect/types';
 import { useAuthStore } from '@/store/auth-store';
-import { pickBasePrice, productBaseKey } from '@/lib/base-territory';
+import { normalizeAppleSubscriptionList } from '@/lib/base-territory';
+import { useStreamingMutation } from './use-streaming-mutation';
 
 const EMPTY_BASES: Record<string, string> = {};
-import { useStreamingMutation } from './use-streaming-mutation';
 
 export function useSubscriptions() {
   const platform = useAuthStore((state) => state.platform);
@@ -15,8 +16,13 @@ export function useSubscriptions() {
   const bundleId = useAuthStore((state) => state.bundleId);
   const productBases = useAuthStore((state) => state.appleProductBaseTerritories) ?? EMPTY_BASES;
 
+  const select = useCallback(
+    (raw: SubscriptionsListResponse) =>
+      platform === 'apple' ? (normalizeAppleSubscriptionList(raw, { bundleId, productBases, displayDefault: appleBaseCountry }, parseMoney) as SubscriptionsListResponse) : raw,
+    [platform, bundleId, productBases, appleBaseCountry]
+  );
   return useQuery<SubscriptionsListResponse>({
-    queryKey: ['subscriptions', platform, platform === 'apple' ? [appleBaseCountry, bundleId, productBases] : null],
+    queryKey: ['subscriptions', platform],
     queryFn: async () => {
       const url = platform === 'apple' ? '/api/apple/subscriptions' : '/api/subscriptions';
       const response = await fetch(url);
@@ -29,36 +35,10 @@ export function useSubscriptions() {
       }
       const data = await response.json();
 
-      // Normalize Apple subscriptions to match Google subscription structure for table display
-      if (platform === 'apple' && data.subscriptions) {
-        data.subscriptions = data.subscriptions.map((s: RawAppleSubscription) => {
-          // Get the base price for selected country, fallback to US, then first available
-          // The product's own base territory first, then the display default, then US
-          const picked = pickBasePrice(s.prices, [productBases[productBaseKey(bundleId, s.productId)], appleBaseCountry, 'US']);
-          const basePrice = picked?.price ?? null;
-          const basePriceRegion = picked?.region ?? null;
-
-          return {
-            productId: s.productId,
-            archived: s.state !== 'APPROVED' && s.state !== 'READY_TO_SUBMIT',
-            listings: [{ title: s.name, languageCode: 'en-US' }],
-            basePlans: [{
-              basePlanId: 'default',
-              state: s.state === 'APPROVED' ? 'active' : 'inactive',
-              autoRenewingBasePlanType: { billingPeriodDuration: s.period },
-              regionalConfigs: basePrice && basePriceRegion ? [{
-                regionCode: basePriceRegion,
-                price: parseMoney(parseFloat(basePrice.customerPrice), basePrice.currency || 'USD'),
-              }] : [],
-            }],
-            // Keep original Apple data with base price info (including id for routing)
-            _appleSubscription: { ...s, basePrice },
-          };
-        });
-      }
-
       return data;
     },
+    // Apple: normalised on read, so a base territory change re-selects and never refetches
+    select,
     enabled: !!platform,
   });
 }

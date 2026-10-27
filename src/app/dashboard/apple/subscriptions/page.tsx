@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Header } from '@/components/layout';
@@ -8,11 +8,11 @@ import { SubscriptionsTable } from '@/components/subscriptions/subscriptions-tab
 import { Button } from '@/components/ui/button';
 import { useSelectionStore } from '@/store/selection-store';
 import { useAuthStore } from '@/store/auth-store';
-import { pickBasePrice, productBaseKey } from '@/lib/base-territory';
+import { normalizeAppleSubscriptionList } from '@/lib/base-territory';
+import { parseMoney } from '@/lib/google-play/types';
+import type { SubscriptionsListResponse } from '@/types/api';
 
 const EMPTY_BASES: Record<string, string> = {};
-import { parseMoney } from '@/lib/google-play/types';
-import type { RawAppleSubscription, SubscriptionsListResponse } from '@/types/api';
 
 export default function AppleSubscriptionsPage() {
   const [searchQuery, setSearchQuery] = useState('');
@@ -20,8 +20,12 @@ export default function AppleSubscriptionsPage() {
   const bundleId = useAuthStore((state) => state.bundleId);
   const productBases = useAuthStore((state) => state.appleProductBaseTerritories) ?? EMPTY_BASES;
 
+  const select = useCallback(
+    (raw: SubscriptionsListResponse) => normalizeAppleSubscriptionList(raw, { bundleId, productBases, displayDefault: appleBaseCountry }, parseMoney) as SubscriptionsListResponse,
+    [bundleId, productBases, appleBaseCountry]
+  );
   const { data, isLoading, refetch, isRefetching, error } = useQuery<SubscriptionsListResponse>({
-    queryKey: ['subscriptions', 'apple', appleBaseCountry, bundleId, productBases],
+    queryKey: ['subscriptions', 'apple'],
     queryFn: async () => {
       const response = await fetch('/api/apple/subscriptions');
       if (!response.ok) {
@@ -33,34 +37,10 @@ export default function AppleSubscriptionsPage() {
       }
       const data = await response.json();
 
-      // Normalize Apple subscriptions for the table
-      if (data.subscriptions) {
-        data.subscriptions = data.subscriptions.map((s: RawAppleSubscription) => {
-          // The product's own base territory first, then the display default, then US
-          const picked = pickBasePrice(s.prices, [productBases[productBaseKey(bundleId, s.productId)], appleBaseCountry, 'US']);
-          const basePrice = picked?.price ?? null;
-          const basePriceRegion = picked?.region ?? null;
-
-          return {
-            productId: s.productId,
-            archived: s.state !== 'APPROVED' && s.state !== 'READY_TO_SUBMIT',
-            listings: [{ title: s.name, languageCode: 'en-US' }],
-            basePlans: [{
-              basePlanId: 'default',
-              state: s.state === 'APPROVED' ? 'active' : 'inactive',
-              autoRenewingBasePlanType: { billingPeriodDuration: s.period },
-              regionalConfigs: basePrice && basePriceRegion ? [{
-                regionCode: basePriceRegion,
-                price: parseMoney(parseFloat(basePrice.customerPrice), basePrice.currency || 'USD'),
-              }] : [],
-            }],
-            _appleSubscription: { ...s, basePrice },
-          };
-        });
-      }
-
       return data;
     },
+    // Normalised on read: a base territory change re-selects, it never refetches
+    select,
   });
 
   const { selectedSubscriptionIds, setSelectedSubscriptions } = useSelectionStore();
