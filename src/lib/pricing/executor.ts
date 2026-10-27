@@ -26,6 +26,7 @@ import { assertRunMatches, createRun, type ApplyRun, type OpError, type OpRecord
 
 export const STATE_CHANGED = 'STATE_CHANGED';
 const BUDGET_EXCEEDED = 'BUDGET_EXCEEDED';
+export const PERSIST_FAILED = 'PERSIST_FAILED';
 
 export interface ApplyOptions {
   adapter: PlatformAdapter;
@@ -119,17 +120,35 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
   run.passes += 1;
   run.status = 'running';
   delete run.stoppedReason;
+  delete run.stoppedDetail;
   delete run.finishedAt;
 
   const records = new Map(run.ops.map((r) => [r.opId, r]));
 
-  // Serialise onUpdate calls so a slow writer never sees runs out of order
-  let updateChain: Promise<void> = Promise.resolve();
-  const publish = () => {
+  let stopReason: string | undefined;
+  let stopDetail: string | undefined;
+  const stop = (reason: string, detail?: string) => {
+    if (stopReason) return;
+    stopReason = reason;
+    stopDetail = detail;
+  };
+
+  // onUpdate calls run one at a time, in order. If one fails, the saved log
+  // can no longer be trusted to show what was sent, so the run stops before
+  // any further write (in-flight writes finish and are recorded in the result).
+  let updateChain: Promise<unknown> = Promise.resolve();
+  const publish = async (): Promise<boolean> => {
     run.updatedAt = now();
     const snapshot = structuredClone(run);
-    updateChain = updateChain.then(() => options.onUpdate?.(snapshot)).catch(() => undefined);
-    return updateChain;
+    const result = updateChain.then(() => options.onUpdate?.(snapshot));
+    updateChain = result.catch(() => undefined);
+    try {
+      await result;
+      return true;
+    } catch (error) {
+      stop(PERSIST_FAILED, `Saving the run log failed: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
   };
   const update = (record: OpRecord, changes: Partial<OpRecord>) => {
     Object.assign(record, changes);
@@ -137,11 +156,7 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
     if (changes.status === 'ok' || changes.status === 'failed') delete record.skipReason;
   };
 
-  let stopReason: string | undefined;
   const budgetLow = () => budget !== undefined && budget.remaining <= reserve;
-  const stop = (reason: string) => {
-    stopReason ??= reason;
-  };
 
   // 1. Ops still to do, grouped by product
   const todo = changeSet.ops.filter((op) => {
@@ -228,9 +243,19 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
       stop(stopReason ?? BUDGET_EXCEEDED);
       return; // left pending (or failed from an earlier pass) for a resume
     }
-    for (const { op } of unit) {
+    // Record the attempt and persist it BEFORE sending, so a crash mid-request
+    // leaves a log that shows the op may have been sent (attempts > 0). On
+    // resume, an op found at its target is then counted as this run's change.
+    const previous = unit.map(({ op }) => {
       const record = records.get(op.id)!;
+      const before = { attempts: record.attempts, startedAt: record.startedAt };
       update(record, { attempts: record.attempts + 1, startedAt: now() });
+      return before;
+    });
+    if (!(await publish()) || stopReason) {
+      // Nothing was sent: undo the in-memory attempt so the log stays truthful
+      unit.forEach(({ op }, i) => Object.assign(records.get(op.id)!, previous[i]));
+      return;
     }
     if (unit.length > 1 || (adapter.applyMany && adapter.batchKey?.(unit[0].op) !== undefined)) {
       let outcomes: Array<{ response?: OpResponse; error?: unknown }>;
@@ -269,6 +294,7 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
 
   run.status = computeStatus(run);
   if (stopReason) run.stoppedReason = stopReason;
+  if (stopDetail) run.stoppedDetail = stopDetail;
   if (run.status === 'completed') run.finishedAt = now();
   await publish();
   return structuredClone(run);

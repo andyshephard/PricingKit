@@ -148,8 +148,12 @@ const undo = buildUndoChangeSet(plan, run);               // itself a plan to re
 - **Idempotent.** Before writing, the executor reads each product and compares every territory
   with its op: already at `after` is skipped, at `before` is applied, anything else fails with
   `STATE_CHANGED` and nothing is sent. Applying a plan twice changes nothing the second time.
-- **Resumable.** Pass a saved run back as `run` and only pending or failed ops are retried. An op
-  whose write failed but took effect anyway is detected and not sent again.
+- **Resumable.** Pass a saved run back as `run` and only pending or failed ops are retried. The
+  run is handed to `onUpdate` before every write (marking the op as attempted) and after it, so
+  a log saved before a crash still shows a write that was in flight. An attempted op found at
+  its target on resume counts as done by this run (and is undone with it) instead of being sent
+  again. If `onUpdate` throws, the run stops before any further write (`stoppedReason:
+  PERSIST_FAILED`).
 - **Budgeted.** Every request is charged to the `RequestBudget` (Apple's `X-Rate-Limit` feeds it
   too). The run stops before the budget runs dry and leaves the rest pending.
 - **Undoable.** The undo plan reverses every op the run applied, newest first, from the `before`

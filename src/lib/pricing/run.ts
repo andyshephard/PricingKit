@@ -75,6 +75,8 @@ export interface ApplyRun {
   passes: number;
   /** Why the last pass stopped early, e.g. BUDGET_EXCEEDED */
   stoppedReason?: string;
+  /** Human-readable detail for stoppedReason */
+  stoppedDetail?: string;
   ops: OpRecord[];
 }
 
@@ -144,6 +146,7 @@ const runSchema = z
     status: z.enum(['running', 'completed', 'incomplete']),
     passes: z.number().int().min(0),
     stoppedReason: z.string().optional(),
+    stoppedDetail: z.string().optional(),
     ops: z.array(opRecordSchema),
   })
   .strict();

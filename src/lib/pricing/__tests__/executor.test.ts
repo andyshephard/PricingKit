@@ -154,6 +154,57 @@ describe('applyChangeSet', () => {
       expect(buildUndoChangeSet(plan, resumed).ops.map((op) => op.target.territory)).toContain('GB');
     });
 
+    it('resumes correctly from the log saved while a write was in flight (crash mid-request)', async () => {
+      const store = new FakeStore('apple', [appleState()]);
+      const plan = applePlan();
+      const saved: ApplyRun[] = [];
+      let onDisk: ApplyRun | undefined;
+      const realApply = store.apply.bind(store);
+      store.apply = async (op, context) => {
+        const response = await realApply(op, context);
+        if (op.target.territory === 'GB') {
+          // The store took the write; the process dies before hearing back.
+          onDisk = structuredClone(saved.at(-1)!);
+          throw new Error('process killed');
+        }
+        return response;
+      };
+      await applyChangeSet(plan, { adapter: store, concurrency: 1, onUpdate: (r) => void saved.push(r) });
+
+      // What was on disk at the crash: GB marked as attempted, not finished
+      const gbOnDisk = onDisk!.ops.find((r) => r.opId === 'op-0002')!;
+      expect(gbOnDisk).toMatchObject({ status: 'pending', attempts: 1 });
+
+      store.apply = realApply;
+      const writes = store.writes.length;
+      const resumed = await applyChangeSet(plan, { adapter: store, run: parseRun(serializeRun(onDisk!)) });
+      expect(resumed.ops.find((r) => r.opId === 'op-0002')).toMatchObject({ status: 'ok', response: { confirmedOnResume: true } });
+      expect(store.writes.slice(writes)).not.toContain('setPrice:GB');
+      expect(buildUndoChangeSet(plan, resumed).ops.map((op) => op.target.territory)).toContain('GB');
+    });
+
+    it('stops before any further write when the run log cannot be saved', async () => {
+      const store = new FakeStore('apple', [appleState()]);
+      let calls = 0;
+      const run = await applyChangeSet(applePlan(), {
+        adapter: store,
+        concurrency: 1,
+        onUpdate: () => {
+          calls++;
+          // classification + first pre-write + first post-write succeed; the next pre-write save fails
+          if (calls === 4) throw new Error('disk full');
+        },
+      });
+      expect(store.writes).toEqual(['schedulePrice:DE']);
+      expect(run.stoppedReason).toBe('PERSIST_FAILED');
+      expect(run.stoppedDetail).toMatch(/disk full/);
+      expect(run.ops.map((r) => [r.status, r.attempts])).toEqual([
+        ['ok', 1],
+        ['pending', 0],
+        ['pending', 0],
+      ]);
+    });
+
     it('refuses to resume a run with a different plan', async () => {
       const store = new FakeStore('apple', [appleState()]);
       const run = await applyChangeSet(applePlan(), { adapter: store });
