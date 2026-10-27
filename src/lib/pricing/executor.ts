@@ -10,23 +10,46 @@
 //                            plan's reviewer saw
 // Ops recorded as ok or skipped in a run passed back in are not touched
 // again, so a partial run can be resumed.
+//
+// Offer ops (offer-ops.ts) follow the same rules against the product's
+// offers, read once per product. A plan with offer ops is applied only with
+// `confirm` set to the plan's hash (what the reviewer saw), and an offer is
+// deleted only with `force.deleteOffers`, because App Store Connect doesn't
+// report redemptions.
 
 import {
+  changeSetHash,
   checkChangeSetRules,
   ChangeSetValidationError,
   describeOp,
   opSlot,
   type BasePriceOp,
+  type ChangeOp,
   type ChangeSet,
 } from './changeset';
 import { mapWithConcurrency } from './concurrency';
 import { describePrice, productKey, samePrice, type PriceValue, type ProductPriceState } from './model';
-import type { ApplyContext, BudgetView, OpResponse, PlatformAdapter } from './adapter';
+import type { ApplyContext, BudgetView, OfferApplyContext, OpResponse, PlatformAdapter } from './adapter';
+import { classifyOfferOp, isOfferOp, offerKindLabel, type OfferOp } from './offer-ops';
+import type { StoreOffer } from './offers';
 import { assertRunMatches, createRun, type ApplyRun, type OpError, type OpRecord } from './run';
 
 export const STATE_CHANGED = 'STATE_CHANGED';
 const BUDGET_EXCEEDED = 'BUDGET_EXCEEDED';
 export const PERSIST_FAILED = 'PERSIST_FAILED';
+/** A deleteOffer op was not sent because force.deleteOffers wasn't set */
+export const REDEMPTIONS_UNCHECKED = 'REDEMPTIONS_UNCHECKED';
+
+/** Thrown before anything is read or sent when a plan with offer ops is applied without the right confirm hash */
+export class ConfirmationRequiredError extends Error {
+  constructor(readonly expectedHash: string) {
+    super(
+      `This plan changes offers. Review it, then apply with confirm set to the plan's hash (${expectedHash}); ` +
+        'a different or missing hash means the plan is not the one that was reviewed.'
+    );
+    this.name = 'ConfirmationRequiredError';
+  }
+}
 
 export interface ApplyOptions {
   adapter: PlatformAdapter;
@@ -45,9 +68,28 @@ export interface ApplyOptions {
   verify?: boolean;
   /** Called with a snapshot of the run after every change; persist it to survive a crash */
   onUpdate?: (run: ApplyRun) => void | Promise<void>;
+  /**
+   * Required when the plan has offer ops: changeSetHash() of the plan the
+   * reviewer approved. Any other value refuses the whole apply before
+   * anything is read or sent.
+   */
+  confirm?: string;
+  /** Explicit overrides of safety checks */
+  force?: {
+    /**
+     * Delete offers even though the store can't say whether anyone redeemed
+     * them (App Store Connect's API reports no redemptions). Without it a
+     * deleteOffer op fails with REDEMPTIONS_UNCHECKED and nothing is sent.
+     */
+    deleteOffers?: boolean;
+  };
   /** Clock override, for tests */
   now?: () => string;
 }
+
+type ReadyItem =
+  | { offer: false; op: BasePriceOp; context: ApplyContext }
+  | { offer: true; op: OfferOp; context: OfferApplyContext };
 
 function toOpError(error: unknown): OpError {
   if (error && typeof error === 'object') {
@@ -117,6 +159,15 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
   if (wrongPlatform) {
     throw new ChangeSetValidationError([`op ${wrongPlatform.id} is for ${wrongPlatform.platform}, adapter is ${adapter.platform}`]);
   }
+  const hasOfferOps = changeSet.ops.some(isOfferOp);
+  if (hasOfferOps) {
+    const hash = changeSetHash(changeSet);
+    if (options.confirm !== hash) throw new ConfirmationRequiredError(hash);
+    if (!adapter.fetchOffers || !adapter.applyOffer) {
+      throw new ChangeSetValidationError([`the ${adapter.platform} adapter can't apply offer ops`]);
+    }
+  }
+  const today = () => now().slice(0, 10);
 
   let run: ApplyRun;
   if (options.run) {
@@ -171,63 +222,125 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
     const status = records.get(op.id)!.status;
     return status === 'pending' || status === 'failed';
   });
-  const byProduct = new Map<string, BasePriceOp[]>();
+  const byProduct = new Map<string, ChangeOp[]>();
   for (const op of todo) {
     const key = productKey(op.target.product);
     byProduct.set(key, [...(byProduct.get(key) ?? []), op]);
   }
 
   // 2. Read each product once and classify its ops
-  const ready: Array<{ op: BasePriceOp; context: ApplyContext }> = [];
+  const ready: ReadyItem[] = [];
   const states = new Map<string, ProductPriceState>();
+  const offerReads = new Map<string, StoreOffer[]>();
+  const failRead = (ops: ChangeOp[], error: unknown, what: string) => {
+    const opError = toOpError(error);
+    for (const op of ops) {
+      update(records.get(op.id)!, { status: 'failed', finishedAt: now(), error: { ...opError, message: `Could not read current ${what}: ${opError.message}` } });
+    }
+    if (isBudgetError(opError)) stop(BUDGET_EXCEEDED);
+  };
   for (const [key, productOps] of byProduct) {
     if (stopReason || budgetLow()) {
       stop(stopReason ?? BUDGET_EXCEEDED);
       break;
     }
-    let state: ProductPriceState;
-    try {
-      state = await adapter.fetchState(productOps[0].target.product);
-      states.set(key, state);
-    } catch (error) {
-      const opError = toOpError(error);
-      for (const op of productOps) {
-        update(records.get(op.id)!, { status: 'failed', finishedAt: now(), error: { ...opError, message: `Could not read current prices: ${opError.message}` } });
+    const priceOps = productOps.filter((op): op is BasePriceOp => !isOfferOp(op));
+    const offerOps = productOps.filter(isOfferOp);
+
+    if (priceOps.length > 0) {
+      let state: ProductPriceState | undefined;
+      try {
+        state = await adapter.fetchState(priceOps[0].target.product);
+        states.set(key, state);
+      } catch (error) {
+        failRead(priceOps, error, 'prices');
       }
-      if (isBudgetError(opError)) stop(BUDGET_EXCEEDED);
-      await publish();
-      continue;
+      if (state) {
+        for (const op of priceOps) {
+          const record = records.get(op.id)!;
+          const result = classifyOp(op, state);
+          if (result.kind === 'atTarget' && record.attempts > 0) {
+            // An earlier pass sent this op and it failed or timed out, yet the store
+            // now holds the target: that attempt took effect (e.g. an Apple create
+            // that answered 5xx). Count it as this run's change so undo reverses it.
+            update(record, { status: 'ok', observed: result.observed, finishedAt: now(), response: { confirmedOnResume: true } });
+          } else if (result.kind === 'atTarget') {
+            update(record, { status: 'skipped', skipReason: 'ALREADY_AT_TARGET', observed: result.observed, finishedAt: now() });
+          } else if (result.kind === 'drifted') {
+            update(record, { status: 'failed', observed: result.observed, finishedAt: now(), error: { message: result.message, code: STATE_CHANGED, retryable: false } });
+          } else {
+            update(record, { observed: result.observed });
+            ready.push({ offer: false, op, context: { territoryState: state.territories[op.target.territory] } });
+          }
+        }
+      }
     }
-    for (const op of productOps) {
-      const record = records.get(op.id)!;
-      const result = classifyOp(op, state);
-      if (result.kind === 'atTarget' && record.attempts > 0) {
-        // An earlier pass sent this op and it failed or timed out, yet the store
-        // now holds the target: that attempt took effect (e.g. an Apple create
-        // that answered 5xx). Count it as this run's change so undo reverses it.
-        update(record, { status: 'ok', observed: result.observed, finishedAt: now(), response: { confirmedOnResume: true } });
-      } else if (result.kind === 'atTarget') {
-        update(record, { status: 'skipped', skipReason: 'ALREADY_AT_TARGET', observed: result.observed, finishedAt: now() });
-      } else if (result.kind === 'drifted') {
-        update(record, { status: 'failed', observed: result.observed, finishedAt: now(), error: { message: result.message, code: STATE_CHANGED, retryable: false } });
-      } else {
-        update(record, { observed: result.observed });
-        ready.push({ op, context: { territoryState: state.territories[op.target.territory] } });
+
+    if (offerOps.length > 0 && !stopReason && !budgetLow()) {
+      let offers: StoreOffer[] | undefined;
+      try {
+        offers = await adapter.fetchOffers!(offerOps[0].target.product);
+        offerReads.set(key, offers);
+      } catch (error) {
+        failRead(offerOps, error, 'offers');
       }
+      if (offers) {
+        for (const op of offerOps) {
+          const record = records.get(op.id)!;
+          const result = classifyOfferOp(op, offers, today());
+          if (result.kind === 'atTarget') {
+            // As for prices: an op found at its target after an attempt was sent took effect
+            // (e.g. a create that answered 5xx); it is found by its key, never sent again
+            update(record, {
+              status: record.attempts > 0 ? 'ok' : 'skipped',
+              ...(record.attempts > 0 ? { response: { confirmedOnResume: true } } : { skipReason: 'ALREADY_AT_TARGET' }),
+              observedOffer: result.observed,
+              finishedAt: now(),
+            });
+          } else if (result.kind === 'drifted') {
+            update(record, { status: 'failed', observedOffer: result.observed, finishedAt: now(), error: { message: result.message, code: STATE_CHANGED, retryable: false } });
+          } else if (op.kind === 'deleteOffer' && !options.force?.deleteOffers) {
+            update(record, {
+              status: 'failed',
+              observedOffer: result.observed,
+              finishedAt: now(),
+              error: {
+                message: `Not deleted: the store doesn't report whether anyone redeemed the ${offerKindLabel(op.target.offer.kind)} "${op.target.offer.key}". Apply with force.deleteOffers to delete it anyway.`,
+                code: REDEMPTIONS_UNCHECKED,
+                retryable: false,
+              },
+            });
+          } else {
+            update(record, { observedOffer: result.observed });
+            ready.push({
+              offer: true,
+              op,
+              context: {
+                observed: result.observed,
+                ...(result.offer ? { offer: result.offer } : {}),
+                ...(result.pending ? { pending: result.pending } : {}),
+                ...(result.storeRefs ? { storeRefs: result.storeRefs } : {}),
+              },
+            });
+          }
+        }
+      }
+    } else if (offerOps.length > 0) {
+      stop(stopReason ?? BUDGET_EXCEEDED);
     }
     await publish();
   }
 
-  // 3. Apply, in batches the adapter can write together
-  const units: Array<Array<{ op: BasePriceOp; context: ApplyContext }>> = [];
-  const batches = new Map<string, Array<{ op: BasePriceOp; context: ApplyContext }>>();
+  // 3. Apply, in batches the adapter can write together (offer ops one at a time)
+  const units: ReadyItem[][] = [];
+  const batches = new Map<string, ReadyItem[]>();
   for (const item of ready) {
-    const key = adapter.applyMany ? adapter.batchKey?.(item.op) : undefined;
+    const key = !item.offer && adapter.applyMany ? adapter.batchKey?.(item.op) : undefined;
     if (key === undefined) {
       units.push([item]);
     } else {
       if (!batches.has(key)) {
-        const batch: Array<{ op: BasePriceOp; context: ApplyContext }> = [];
+        const batch: ReadyItem[] = [];
         batches.set(key, batch);
         units.push(batch);
       }
@@ -235,7 +348,7 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
     }
   }
 
-  const finish = (op: BasePriceOp, outcome: { response?: OpResponse; error?: unknown }) => {
+  const finish = (op: ChangeOp, outcome: { response?: OpResponse; error?: unknown }) => {
     const record = records.get(op.id)!;
     if (outcome.error !== undefined) {
       const opError = toOpError(outcome.error);
@@ -256,10 +369,12 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
   // the same remaining budget. Conservative: a unit's reservation is held
   // until it finishes even as its requests are spent.
   let reserved = 0;
-  const requestsFor = (unit: Array<{ op: BasePriceOp; context: ApplyContext }>) =>
-    adapter.requestsNeeded
-      ? adapter.requestsNeeded(unit.map((u) => u.op), unit.map((u) => u.context))
-      : unit.length;
+  const requestsFor = (unit: ReadyItem[]): number => {
+    const first = unit[0];
+    if (first.offer) return adapter.offerRequestsNeeded ? adapter.offerRequestsNeeded(first.op, first.context) : 1;
+    const priceUnit = unit as Array<Extract<ReadyItem, { offer: false }>>;
+    return adapter.requestsNeeded ? adapter.requestsNeeded(priceUnit.map((u) => u.op), priceUnit.map((u) => u.context)) : unit.length;
+  };
 
   await mapWithConcurrency(units, concurrency, async (unit) => {
     // Never start an op the budget can't finish: a two-request op (create
@@ -277,7 +392,7 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
     }
   });
 
-  async function runUnit(unit: Array<{ op: BasePriceOp; context: ApplyContext }>): Promise<void> {
+  async function runUnit(unit: ReadyItem[]): Promise<void> {
     // Record the attempt and persist it BEFORE sending, so a crash mid-request
     // leaves a log that shows the op may have been sent (attempts > 0). On
     // resume, an op found at its target is then counted as this run's change.
@@ -294,20 +409,27 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
       unit.forEach(({ op }, i) => Object.assign(records.get(op.id)!, previous[i]));
       return;
     }
-    if (unit.length > 1 || (adapter.applyMany && adapter.batchKey?.(unit[0].op) !== undefined)) {
+    const first = unit[0];
+    if (first.offer) {
+      try {
+        finish(first.op, { response: await adapter.applyOffer!(first.op, first.context) });
+      } catch (error) {
+        finish(first.op, { error });
+      }
+    } else if (unit.length > 1 || (adapter.applyMany && adapter.batchKey?.(first.op) !== undefined)) {
+      const priceUnit = unit as Array<Extract<ReadyItem, { offer: false }>>;
       let outcomes: Array<{ response?: OpResponse; error?: unknown }>;
       try {
-        outcomes = await adapter.applyMany!(unit.map((u) => u.op), unit.map((u) => u.context));
+        outcomes = await adapter.applyMany!(priceUnit.map((u) => u.op), priceUnit.map((u) => u.context));
       } catch (error) {
         outcomes = unit.map(() => ({ error }));
       }
       unit.forEach((u, i) => finish(u.op, outcomes[i] ?? { error: new Error('Adapter returned no outcome for this op') }));
     } else {
-      const { op, context } = unit[0];
       try {
-        finish(op, { response: await adapter.apply(op, context) });
+        finish(first.op, { response: await adapter.apply(first.op, first.context) });
       } catch (error) {
-        finish(op, { error });
+        finish(first.op, { error });
       }
     }
     await publish();
@@ -317,11 +439,16 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
   if (verify && !stopReason) {
     for (const [key, productOps] of byProduct) {
       const applied = productOps.filter((op) => records.get(op.id)!.status === 'ok');
-      if (applied.length === 0 || !states.has(key)) continue;
+      const priceOps = applied.filter((op): op is BasePriceOp => !isOfferOp(op));
+      const offerOps = applied.filter(isOfferOp);
       try {
-        const after = await adapter.fetchState(applied[0].target.product);
-        for (const op of applied) {
-          update(records.get(op.id)!, { verified: classifyOp(op, after).kind === 'atTarget' });
+        if (priceOps.length > 0 && states.has(key)) {
+          const after = await adapter.fetchState(priceOps[0].target.product);
+          for (const op of priceOps) update(records.get(op.id)!, { verified: classifyOp(op, after).kind === 'atTarget' });
+        }
+        if (offerOps.length > 0 && offerReads.has(key)) {
+          const after = await adapter.fetchOffers!(offerOps[0].target.product);
+          for (const op of offerOps) update(records.get(op.id)!, { verified: classifyOfferOp(op, after, today()).kind === 'atTarget' });
         }
       } catch {
         // Verification is best effort; the ops themselves succeeded

@@ -1,9 +1,9 @@
 // AppleAdapter: App Store Connect behind the core's PlatformAdapter interface.
 //
 // Phase 1 covers subscription base prices (current and scheduled). Phase 2a
-// adds read-only subscription offers, offer price previews and drift checks.
-// In-app purchase prices and offer writes come later; the adapter refuses
-// them clearly.
+// adds subscription offer reads, previews and drift checks; Phase 2b plans
+// and applies offer ops (create, re-price, end, delete). In-app purchase
+// prices come later; the adapter refuses them clearly.
 
 import {
   decimalEquals,
@@ -37,11 +37,39 @@ import {
   type OfferDriftReport,
   type OfferDuration,
   type OfferMode,
+  type OfferTerritoryPrice,
   type PercentOfCurrentRule,
   type PriceLadder,
   type StoreOffer,
+  offerKindLabel,
+  planOfferChanges,
+  planOfferLifecycle,
+  sameOfferPrice,
+  type AppRef,
+  type OfferApplyContext,
+  type OfferLifecycleInput,
+  type OfferOp,
+  type OfferPlan,
+  type OfferPlanInput,
+  type OfferSpec,
 } from '@/lib/pricing';
-import { getSubscriptionOffer, listSubscriptionOffers } from '@/lib/apple-connect/offers';
+import { getSubscriptionOffer, listSubscriptionOffers, listSubscriptionOffersOfKind } from '@/lib/apple-connect/offers';
+import {
+  createIntroductoryOffer,
+  createOfferCode,
+  createPromotionalOffer,
+  createWinBackOffer,
+  deleteIntroductoryOffer,
+  deletePromotionalOffer,
+  deleteWinBackOffer,
+  isoToAppleOfferDuration,
+  replacePromotionalOfferPrices,
+  setIntroductoryOfferEndDate,
+  setOfferCodeActive,
+  updateWinBackOffer,
+  type OfferPriceInput,
+} from '@/lib/apple-connect/offer-writes';
+import { AppleApiError } from '@/lib/apple-connect/client';
 import { getSubscriptionById } from '@/lib/apple-connect/subscriptions';
 import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
 import { deleteSubscriptionPrice, updateSubscriptionPrice } from '@/lib/apple-connect/subscriptions';
@@ -459,4 +487,352 @@ export class AppleAdapter implements PlatformAdapter {
   private ladderTerritories(base: ProductPriceState, territories: 'all' | string[] | undefined): string[] {
     return territories === undefined || territories === 'all' ? Object.keys(base.territories) : territories;
   }
+
+  // -------------------------------------------------------------------------
+  // Offer plans (reads only)
+
+  /**
+   * Plan offers from specs: reads each product's billing period, current
+   * prices, price points and existing offers once, then plans every offer
+   * (create, re-price, leave alone or refuse) into one ChangeSet. Several
+   * products, each with its own offer key, go in one plan. Reads only.
+   */
+  async planOffers(input: {
+    app: AppRef;
+    offers: OfferSpec[];
+    deviationThreshold?: Decimal;
+    today?: string;
+    id?: string;
+    createdAt?: string;
+    description?: string;
+  }): Promise<OfferPlan> {
+    this.assertApp(input.app);
+    const products = new Map<string, { billingPeriod?: BillingPeriod; base?: ProductPriceState; ladders?: Record<string, PriceLadder>; offers: Map<string, StoreOffer[]> }>();
+    const inputs: OfferPlanInput[] = [];
+    for (const spec of input.offers) {
+      const product = spec.productRef;
+      const id = subscriptionId(product);
+      let cache = products.get(id);
+      if (!cache) {
+        cache = { offers: new Map() };
+        products.set(id, cache);
+      }
+      cache.billingPeriod ??= await this.fetchBillingPeriod(product);
+      cache.base ??= await this.fetchState(product);
+      const needsLadders = spec.pricing.type === 'percentOfCurrent' || spec.pricing.type === 'fixed';
+      if (needsLadders && !cache.ladders) cache.ladders = await this.fetchPriceLadders(product, Object.keys(cache.base.territories));
+      if (!cache.offers.has(spec.kind)) {
+        cache.offers.set(spec.kind, await listSubscriptionOffersOfKind(this.credentials, id, spec.kind as AppleOfferKind, this.ctx));
+      }
+      inputs.push({
+        spec,
+        billingPeriod: cache.billingPeriod,
+        base: cache.base,
+        ladders: cache.ladders ?? {},
+        existing: cache.offers.get(spec.kind)!,
+        ...(input.deviationThreshold ? { deviationThreshold: input.deviationThreshold } : {}),
+      });
+    }
+    return planOfferChanges({
+      app: input.app,
+      inputs,
+      today: input.today ?? (this.now?.() ?? new Date()).toISOString().slice(0, 10),
+      ...(input.id ? { id: input.id } : {}),
+      ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+      ...(input.description ? { description: input.description } : {}),
+    });
+  }
+
+  /** Plan ending, re-activating or deleting one existing offer. Reads only. */
+  async planOfferLifecycle(input: Omit<OfferLifecycleInput, 'existing'>): Promise<OfferPlan> {
+    this.assertApp(input.app);
+    const existing = await listSubscriptionOffersOfKind(this.credentials, subscriptionId(input.product), input.kind, this.ctx);
+    return planOfferLifecycle({ ...input, existing });
+  }
+
+  private assertApp(app: AppRef): void {
+    if (!('bundleId' in app) || (this.credentials.bundleId && app.bundleId !== this.credentials.bundleId)) {
+      throw new ApiError(`The plan is for ${'bundleId' in app ? app.bundleId : app.packageName}, but the session is for ${this.credentials.bundleId}`, {
+        status: 409,
+        code: 'APP_MISMATCH',
+        platform: 'apple',
+        retryable: false,
+      });
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Offer writes (called by the executor after it has checked the offer's state)
+
+  /** An intro offer op sends one request per pending territory; every other offer op one */
+  offerRequestsNeeded(op: OfferOp, context: OfferApplyContext): number {
+    if (op.target.offer.kind === 'apple.intro') return Math.max(1, context.pending?.length ?? Object.keys((op.after ?? op.before)!.prices).length);
+    return 1;
+  }
+
+  async applyOffer(op: OfferOp, context: OfferApplyContext): Promise<OpResponse> {
+    const id = subscriptionId(op.target.product);
+    try {
+      switch (op.target.offer.kind) {
+        case 'apple.promo':
+          return await this.applyPromo(id, op, context);
+        case 'apple.intro':
+          return await this.applyIntro(id, op, context);
+        case 'apple.offerCode':
+          return await this.applyOfferCode(id, op, context);
+        case 'apple.winBack':
+          return await this.applyWinBack(id, op, context);
+      }
+    } catch (error) {
+      throw explainOfferRefusal(error, op);
+    }
+  }
+
+  private storeId(op: OfferOp, context: OfferApplyContext): string {
+    const id = context.offer?.storeId;
+    if (!id) throw unsupported(`The ${offerKindLabel(op.target.offer.kind)} "${op.target.offer.key}" has no store ID to act on`);
+    return id;
+  }
+
+  private async applyPromo(subscription: string, op: OfferOp, context: OfferApplyContext): Promise<OpResponse> {
+    switch (op.kind) {
+      case 'createOffer': {
+        const after = op.after!;
+        const created = await createPromotionalOffer(
+          this.credentials,
+          {
+            subscriptionId: subscription,
+            name: after.name ?? after.key,
+            offerCode: after.key,
+            duration: isoToAppleOfferDuration(after.duration),
+            offerMode: after.mode,
+            numberOfPeriods: after.periods,
+            prices: offerPrices(after.prices),
+          },
+          this.ctx
+        );
+        return { createdOfferId: created.id, territories: Object.keys(after.prices).length };
+      }
+      case 'updateOfferPrices': {
+        const offerId = this.storeId(op, context);
+        const refs = context.offer?.priceRefs ?? {};
+        const observed = context.observed?.prices ?? {};
+        const keep: string[] = [];
+        const add: Record<string, OfferTerritoryPrice> = {};
+        for (const [territory, price] of Object.entries(op.after!.prices)) {
+          if (refs[territory] && sameOfferPrice(observed[territory], price)) keep.push(refs[territory]);
+          else add[territory] = price;
+        }
+        await replacePromotionalOfferPrices(this.credentials, offerId, keep, offerPrices(add), this.ctx);
+        return { offerId, kept: keep.length, replaced: Object.keys(add).length };
+      }
+      case 'deleteOffer': {
+        const offerId = this.storeId(op, context);
+        await deletePromotionalOffer(this.credentials, offerId, this.ctx);
+        return { deletedOfferId: offerId };
+      }
+      default:
+        throw unsupported('Apple promotional offers have no active switch or end date');
+    }
+  }
+
+  private async applyIntro(subscription: string, op: OfferOp, context: OfferApplyContext): Promise<OpResponse> {
+    const state = (op.after ?? op.before)!;
+    const pending = context.pending ?? [];
+    const done: string[] = [];
+    const ids: Record<string, string> = {};
+    const step = async (territory: string, run: () => Promise<string | void>) => {
+      try {
+        const result = await run();
+        if (result) ids[territory] = result;
+        done.push(territory);
+      } catch (error) {
+        if (done.length === 0) throw error;
+        // Some territories were written: say so, so the run log is truthful. A resume skips them.
+        const apiError = toApiError(error, 'apple');
+        const detail = error instanceof AppleApiError ? error.detail : apiError.message;
+        throw new ApiError(`${territory} failed after ${done.length} of ${pending.length} territories were written (${done.join(', ')}): ${detail}. Resume the run to continue with the rest.`, {
+          status: apiError.status,
+          ...(apiError.code !== undefined ? { code: apiError.code } : {}),
+          platform: 'apple',
+          retryable: false,
+          details: { written: [...done] },
+          cause: error,
+        });
+      }
+    };
+    for (const territory of pending) {
+      const ref = context.storeRefs?.[territory];
+      switch (op.kind) {
+        case 'createOffer': {
+          const price = state.prices[territory];
+          await step(territory, async () =>
+            (
+              await createIntroductoryOffer(
+                this.credentials,
+                {
+                  subscriptionId: subscription,
+                  territory,
+                  ...(price.free ? {} : { pricePointId: price.pricePointId }),
+                  duration: isoToAppleOfferDuration(state.duration),
+                  offerMode: state.mode,
+                  numberOfPeriods: state.periods,
+                  ...(state.schedule?.start ? { startDate: state.schedule.start } : {}),
+                  ...(state.schedule?.end ? { endDate: state.schedule.end } : {}),
+                },
+                this.ctx
+              )
+            ).id
+          );
+          break;
+        }
+        case 'deactivateOffer':
+        case 'activateOffer':
+          if (!ref) throw unsupported(`${territory}: no introductory offer resource to update`);
+          await step(territory, () => setIntroductoryOfferEndDate(this.credentials, ref, op.after!.schedule?.end ?? null, this.ctx));
+          break;
+        case 'deleteOffer':
+          if (!ref) throw unsupported(`${territory}: no introductory offer resource to delete`);
+          await step(territory, async () => {
+            try {
+              await deleteIntroductoryOffer(this.credentials, ref, this.ctx);
+            } catch (error) {
+              if (getErrorStatus(error) !== 404) throw error; // already gone: done
+            }
+          });
+          break;
+        default:
+          throw unsupported("Apple can't change an introductory offer's price; end or delete it and create a new one");
+      }
+    }
+    return { territories: done.length, ...(Object.keys(ids).length ? { createdIds: ids } : {}) };
+  }
+
+  private async applyOfferCode(subscription: string, op: OfferOp, context: OfferApplyContext): Promise<OpResponse> {
+    switch (op.kind) {
+      case 'createOffer': {
+        const after = op.after!;
+        if (after.eligibility?.type !== 'apple.offerCode') throw unsupported('An offer code needs its eligibility');
+        const created = await createOfferCode(
+          this.credentials,
+          {
+            subscriptionId: subscription,
+            name: after.key,
+            customerEligibilities: after.eligibility.customerEligibilities,
+            offerEligibility: after.eligibility.offerEligibility,
+            duration: isoToAppleOfferDuration(after.duration),
+            offerMode: after.mode,
+            numberOfPeriods: after.periods,
+            ...(after.autoRenewEnabled !== undefined ? { autoRenewEnabled: after.autoRenewEnabled } : {}),
+            prices: offerPrices(after.prices),
+          },
+          this.ctx
+        );
+        return { createdOfferId: created.id, territories: Object.keys(after.prices).length };
+      }
+      case 'deactivateOffer':
+      case 'activateOffer': {
+        const offerId = this.storeId(op, context);
+        await setOfferCodeActive(this.credentials, offerId, op.kind === 'activateOffer', this.ctx);
+        return { offerId, active: op.kind === 'activateOffer' };
+      }
+      default:
+        throw unsupported(
+          op.kind === 'deleteOffer'
+            ? "App Store Connect's API can't delete an offer code; deactivate it instead"
+            : "Apple can't change an offer code's prices; create a new offer code and deactivate this one"
+        );
+    }
+  }
+
+  private async applyWinBack(subscription: string, op: OfferOp, context: OfferApplyContext): Promise<OpResponse> {
+    switch (op.kind) {
+      case 'createOffer': {
+        const after = op.after!;
+        if (after.eligibility?.type !== 'apple.winBack' || !after.schedule?.start) throw unsupported('A win-back offer needs its eligibility and a start date');
+        const created = await createWinBackOffer(
+          this.credentials,
+          {
+            subscriptionId: subscription,
+            referenceName: after.name ?? after.key,
+            offerId: after.key,
+            duration: isoToAppleOfferDuration(after.duration),
+            offerMode: after.mode,
+            periodCount: after.periods,
+            paidSubscriptionDurationInMonths: after.eligibility.paidSubscriptionDurationInMonths,
+            timeSinceLastSubscribedInMonths: after.eligibility.timeSinceLastSubscribedInMonths,
+            ...(after.eligibility.waitBetweenOffersInMonths !== undefined ? { waitBetweenOffersInMonths: after.eligibility.waitBetweenOffersInMonths } : {}),
+            startDate: after.schedule.start,
+            ...(after.schedule.end ? { endDate: after.schedule.end } : {}),
+            priority: after.priority ?? 'NORMAL',
+            ...(after.promotionIntent ? { promotionIntent: after.promotionIntent } : {}),
+            prices: offerPrices(after.prices),
+          },
+          this.ctx
+        );
+        return { createdOfferId: created.id, territories: Object.keys(after.prices).length };
+      }
+      case 'deactivateOffer':
+      case 'activateOffer': {
+        const offerId = this.storeId(op, context);
+        await updateWinBackOffer(this.credentials, offerId, { endDate: op.after!.schedule?.end ?? null }, this.ctx);
+        return { offerId, endDate: op.after!.schedule?.end ?? null };
+      }
+      case 'deleteOffer': {
+        const offerId = this.storeId(op, context);
+        await deleteWinBackOffer(this.credentials, offerId, this.ctx);
+        return { deletedOfferId: offerId };
+      }
+      default:
+        throw unsupported("Apple's win-back offer update has no prices; create a new win-back offer and end or delete this one");
+    }
+  }
+}
+
+function offerPrices(prices: Record<string, OfferTerritoryPrice>): OfferPriceInput[] {
+  return Object.keys(prices)
+    .sort()
+    .map((territory) => ({ territory, ...(prices[territory].free ? {} : { pricePointId: prices[territory].pricePointId }) }));
+}
+
+const VERBS: Record<OfferOp['kind'], string> = {
+  createOffer: 'create',
+  updateOfferPrices: 'change the prices of',
+  deactivateOffer: 'deactivate',
+  activateOffer: 'reactivate',
+  deleteOffer: 'delete',
+};
+
+/** What Apple's refusal most likely means for this kind of write */
+function refusalHint(op: OfferOp, status: number | undefined): string | undefined {
+  if (status !== 409 && status !== 422 && status !== 400) return undefined;
+  const kind = op.target.offer.kind;
+  if (kind === 'apple.promo' && op.kind === 'createOffer') {
+    return 'A subscription can have at most 10 promotional offers, and an offer code must be unique across its subscription group';
+  }
+  if (kind === 'apple.promo' && op.kind === 'updateOfferPrices') {
+    return "Only a promotional offer's prices can change; its duration, mode and number of periods can't be edited, and every price must be one of this subscription's price points";
+  }
+  if (kind === 'apple.intro' && op.kind === 'createOffer') return 'Apple allows one introductory offer per territory at a time; check for an overlapping offer';
+  if (kind === 'apple.offerCode' && op.kind === 'createOffer') return 'Check the offer code name is unique and the eligibility fits the offer mode';
+  if (kind === 'apple.winBack' && op.kind === 'createOffer') {
+    return 'Check the offer ID is unique, the start date is not in the past, and the eligibility months are within Apple\'s limits';
+  }
+  return undefined;
+}
+
+/**
+ * Turn an App Store Connect refusal into an error that says which offer write
+ * was refused and why, keeping the status and code (a spent budget stays
+ * BUDGET_EXCEEDED so the run stops).
+ */
+export function explainOfferRefusal(error: unknown, op: OfferOp): unknown {
+  if (isBudgetExceeded(error) || !(error instanceof ApiError)) return error;
+  if (error.code === 'UNSUPPORTED_OPERATION') return error;
+  const detail = error instanceof AppleApiError ? error.detail || error.title : error.message;
+  const hint = refusalHint(op, error.status);
+  return new ApiError(
+    `Apple refused to ${VERBS[op.kind]} the ${offerKindLabel(op.target.offer.kind)} "${op.target.offer.key}": ${detail}${hint ? `. ${hint}.` : ''}`,
+    { status: error.status, ...(error.code !== undefined ? { code: error.code } : {}), platform: 'apple', retryable: error.retryable, details: error.details, cause: error }
+  );
 }

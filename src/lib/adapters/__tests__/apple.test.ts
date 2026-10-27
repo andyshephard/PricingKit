@@ -16,6 +16,7 @@ vi.mock('@/lib/apple-connect/client', async (importOriginal) => {
 import { AppleAdapter } from '../apple';
 import { FakeAppleServer, SUB_ID } from './fake-apple';
 import {
+  basePriceOps,
   applyChangeSet,
   buildChangeSet,
   buildUndoChangeSet,
@@ -142,7 +143,7 @@ describe('AppleAdapter with the executor', () => {
       GB: { currency: 'GBP', amount: '26.99' },
       DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' },
     });
-    expect(changeSet.ops.map((op) => `${op.kind} ${op.target.territory}`)).toEqual(['schedulePrice DE', 'setPrice GB', 'setPrice US']);
+    expect(basePriceOps(changeSet).map((op) => `${op.kind} ${op.target.territory}`)).toEqual(['schedulePrice DE', 'setPrice GB', 'setPrice US']);
 
     const run = await applyChangeSet(changeSet, { adapter });
     expect(run.status).toBe('completed');

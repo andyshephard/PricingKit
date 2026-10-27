@@ -1,14 +1,13 @@
 // Subscription offers: the desired-state spec (OfferSpec) and the read model
 // adapters fill in (StoreOffer). Framework-free, like the rest of the core.
 //
-// Phase 2a is read-only: offers can be read, derived and checked for drift,
-// but no plan op creates or changes one yet (the ChangeSet offer op kinds stay
-// reserved, see RESERVED_OP_KINDS in changeset.ts).
+// Offers are planned and applied through offer ops (offer-ops.ts,
+// offer-plan.ts); this file holds the spec and the read model only.
 
 import { z } from 'zod';
 import { compareDecimal, isDecimalString, normalizeDecimal, type Decimal } from './decimal';
 import type { ProductRef } from './model';
-import { productRefSchema } from './changeset';
+import { productRefSchema } from './refs';
 import type { SnapMode } from './snap';
 
 export const OFFER_SPEC_SCHEMA_VERSION = 1 as const;
@@ -151,9 +150,30 @@ const ELIGIBILITY_FOR_KIND: Record<OfferKind, OfferEligibility['type'][]> = {
 // ---------------------------------------------------------------------------
 // The spec
 
+export const APPLE_WIN_BACK_PRIORITIES = ['HIGH', 'NORMAL'] as const;
+export const APPLE_WIN_BACK_PROMOTION_INTENTS = ['NOT_PROMOTED', 'USE_AUTO_GENERATED_ASSETS'] as const;
+export type AppleWinBackPriority = (typeof APPLE_WIN_BACK_PRIORITIES)[number];
+export type AppleWinBackPromotionIntent = (typeof APPLE_WIN_BACK_PROMOTION_INTENTS)[number];
+
+/** Apple-only settings that some offer kinds need when they are created */
+export interface AppleOfferSettings {
+  /** Win-back: HIGH or NORMAL (default NORMAL) */
+  priority?: AppleWinBackPriority;
+  /** Win-back: whether the App Store may promote the offer */
+  promotionIntent?: AppleWinBackPromotionIntent;
+  /** Offer codes: whether the subscription renews after the offer */
+  autoRenewEnabled?: boolean;
+}
+
 export interface OfferSpec {
-  /** Stable key: Apple promo offerCode, win-back offerId, offer code name; Play offerId */
+  /**
+   * Stable key: Apple promo offerCode, win-back offerId, offer code name; Play
+   * offerId. Apple introductory offers have no key of their own; they are
+   * identified by their terms and start date.
+   */
   id: string;
+  /** Reference name shown in App Store Connect (promo name, win-back referenceName). Defaults to id. */
+  name?: string;
   productRef: ProductRef;
   kind: OfferKind;
   mode: OfferMode;
@@ -169,6 +189,7 @@ export interface OfferSpec {
   territories: 'all' | string[];
   /** Re-derive the offer when base prices change (sync engine, Phase 4) */
   syncWithBase: boolean;
+  apple?: AppleOfferSettings;
 }
 
 const decimalSchema = z
@@ -206,7 +227,7 @@ const pricingSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('play.absoluteDiscount'), amounts: z.record(territorySchema, decimalSchema) }).strict(),
 ]);
 
-const eligibilitySchema = z.discriminatedUnion('type', [
+export const eligibilitySchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('apple.intro') }).strict(),
   z.object({ type: z.literal('apple.developerDetermined') }).strict(),
   z
@@ -229,7 +250,8 @@ const eligibilitySchema = z.discriminatedUnion('type', [
 
 export const offerSpecSchema = z
   .object({
-    id: z.string().min(1),
+    id: z.string().min(1).max(200),
+    name: z.string().min(1).max(200).optional(),
     productRef: productRefSchema,
     kind: z.enum(OFFER_KINDS),
     mode: z.enum(OFFER_MODES),
@@ -241,6 +263,14 @@ export const offerSpecSchema = z
     schedule: z.object({ start: dateSchema.optional(), end: dateSchema.optional() }).strict().optional(),
     territories: z.union([z.literal('all'), z.array(territorySchema).min(1)]),
     syncWithBase: z.boolean(),
+    apple: z
+      .object({
+        priority: z.enum(APPLE_WIN_BACK_PRIORITIES).optional(),
+        promotionIntent: z.enum(APPLE_WIN_BACK_PROMOTION_INTENTS).optional(),
+        autoRenewEnabled: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -275,6 +305,9 @@ function crossCheck(spec: OfferSpec): string[] {
     if (minimum > maximum) problems.push('win-back timeSinceLastSubscribedInMonths: minimum is above maximum');
   }
   if (spec.tags?.length && apple) problems.push('tags are Play-only (offerTags)');
+  if (spec.apple && !apple) problems.push('apple settings need an Apple offer kind');
+  if ((spec.apple?.priority || spec.apple?.promotionIntent) && spec.kind !== 'apple.winBack') problems.push('priority and promotionIntent are win-back settings');
+  if (spec.apple?.autoRenewEnabled !== undefined && spec.kind !== 'apple.offerCode') problems.push('autoRenewEnabled is an offer code setting');
   if (spec.schedule?.start && spec.schedule.end && spec.schedule.start > spec.schedule.end) problems.push('schedule.start is after schedule.end');
   if (spec.pricing.type === 'fixed' && spec.territories !== 'all') {
     const missing = spec.territories.filter((t) => !(t in (spec.pricing as { prices: Record<string, Decimal> }).prices));
@@ -346,4 +379,6 @@ export interface StoreOffer {
   problems?: string[];
   /** Per-territory store resource IDs where the store has one per territory (Apple intro offers) */
   storeRefs?: Record<string, string>;
+  /** Per-territory store IDs of the offer's price entries (Apple promo, offer code and win-back prices) */
+  priceRefs?: Record<string, string>;
 }

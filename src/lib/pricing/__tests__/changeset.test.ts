@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  basePriceOps,
   buildChangeSet,
   changeSetHash,
   ChangeSetValidationError,
@@ -33,14 +34,14 @@ function applePlan(): ChangeSet {
 describe('diffPrices', () => {
   it('produces ops only for territories that change, and says why the rest were skipped', () => {
     const plan = applePlan();
-    expect(plan.ops.map((op) => [op.id, op.kind, op.target.territory])).toEqual([
+    expect(basePriceOps(plan).map((op) => [op.id, op.kind, op.target.territory])).toEqual([
       ['op-0001', 'schedulePrice', 'DE'],
       ['op-0002', 'setPrice', 'GB'],
     ]);
     expect(plan.skipped).toEqual([
       { product: appleState().product, territory: 'US', reason: 'ALREADY_AT_TARGET' },
     ]);
-    const gb = plan.ops[1];
+    const gb = basePriceOps(plan)[1];
     expect(gb.before).toEqual({ currency: 'GBP', amount: '24.99', pricePointId: 'pp-gb-2499' });
     expect(gb.after).toEqual({ currency: 'GBP', amount: '26.99', pricePointId: 'pp-gb-2699' });
     expect(gb.options).toEqual({ preserveCurrentPrice: true });
@@ -144,7 +145,7 @@ describe('ChangeSet files', () => {
   it('normalises amounts on parse and rejects floats', () => {
     const plan = JSON.parse(serializeChangeSet(applePlan()));
     plan.ops[1].after.amount = '26.990';
-    expect(parseChangeSet(plan).ops[1].after?.amount).toBe('26.99');
+    expect(basePriceOps(parseChangeSet(plan))[1].after?.amount).toBe('26.99');
     plan.ops[1].after.amount = 26.99;
     expect(() => parseChangeSet(plan)).toThrow(ChangeSetValidationError);
   });
@@ -166,10 +167,16 @@ describe('ChangeSet files', () => {
     expect(() => parseChangeSet(wrongApp)).toThrow(/apple op in a change set for a google app/);
   });
 
-  it('reserves offer kinds without accepting them yet', () => {
+  it('reserves availability and cohort kinds without accepting them yet', () => {
+    const plan = JSON.parse(serializeChangeSet(applePlan()));
+    plan.ops[0].kind = 'setAvailability';
+    expect(() => parseChangeSet(plan)).toThrow(/reserved for a later phase/);
+  });
+
+  it('validates an offer kind against the offer op shape', () => {
     const plan = JSON.parse(serializeChangeSet(applePlan()));
     plan.ops[0].kind = 'createOffer';
-    expect(() => parseChangeSet(plan)).toThrow(/reserved for a later phase/);
+    expect(() => parseChangeSet(plan)).toThrow(/ops\.0\.target\.offer/);
   });
 
   it('rejects unknown fields and malformed JSON', () => {
@@ -182,7 +189,7 @@ describe('ChangeSet files', () => {
 
 describe('invertOp', () => {
   const plan = applePlan();
-  const [scheduleDE, setGB] = plan.ops;
+  const [scheduleDE, setGB] = basePriceOps(plan);
 
   it('swaps before and after for a price change', () => {
     const result = invertOp(setGB);

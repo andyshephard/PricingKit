@@ -6,6 +6,7 @@ vi.mock('@/lib/google-play/client', () => ({ googlePlayFetch: vi.fn() }));
 import { googlePlayFetch } from '@/lib/google-play/client';
 import { PlayAdapter } from '../play';
 import {
+  basePriceOps,
   applyChangeSet,
   buildChangeSet,
   buildUndoChangeSet,
@@ -172,7 +173,7 @@ describe('PlayAdapter', () => {
     expect(calls.filter((c) => c.method === 'PATCH').length).toBe(patchesAfterFirst);
 
     const undo = buildUndoChangeSet(changeSet, run);
-    expect(undo.ops.map((op) => `${op.kind} ${op.target.territory}`)).toEqual(['setPrice JP', 'removePrice FR']);
+    expect(basePriceOps(undo).map((op) => `${op.kind} ${op.target.territory}`)).toEqual(['setPrice JP', 'removePrice FR']);
     const undone = await applyChangeSet(undo, { adapter: adapter() });
     expect(undone.status).toBe('completed');
     expect(subscription.basePlans).toEqual(before.basePlans);

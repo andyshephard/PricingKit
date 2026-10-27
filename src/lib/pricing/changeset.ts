@@ -6,7 +6,9 @@
 // safe to repeat: an op whose target already holds `after` is skipped.
 
 import { z } from 'zod';
-import { isDecimalString, normalizeDecimal } from './decimal';
+import { normalizeDecimal } from './decimal';
+import { canonicalJson, fnv1a64, priceValueSchema, productRefSchema, appRefSchema, territorySchema } from './refs';
+import { checkOfferOpRules, describeOfferOp, isOfferOp, isOfferOpKind, offerOpSchema, offerTargetKey, type OfferOp, type OfferOpKind } from './offer-ops';
 import {
   describePrice,
   productKey,
@@ -25,21 +27,16 @@ export const BASE_PRICE_OP_KINDS = ['setPrice', 'schedulePrice', 'deleteSchedule
 export type BasePriceOpKind = (typeof BASE_PRICE_OP_KINDS)[number];
 
 /**
- * Reserved for later phases (offers in 2 and 3, availability and cohort
- * migration after that). The format names them so files stay forward
- * compatible, but parseChangeSet refuses them until an executor supports them.
+ * Reserved for later phases (availability, cohort migration). The format
+ * names them so files stay forward compatible, but parseChangeSet refuses
+ * them until an executor supports them.
  */
-export const RESERVED_OP_KINDS = [
-  'createOffer',
-  'updateOfferPrices',
-  'deactivateOffer',
-  'deleteOffer',
-  'setAvailability',
-  'migrateCohort',
-] as const;
+export const RESERVED_OP_KINDS = ['setAvailability', 'migrateCohort'] as const;
 export type ReservedOpKind = (typeof RESERVED_OP_KINDS)[number];
 
-export type ChangeOpKind = BasePriceOpKind | ReservedOpKind;
+export { OFFER_OP_KINDS, type OfferOp, type OfferOpKind } from './offer-ops';
+
+export type ChangeOpKind = BasePriceOpKind | OfferOpKind | ReservedOpKind;
 
 /**
  * setPrice        - change a territory's current price (Apple: immediate price; Google: regional price)
@@ -67,25 +64,37 @@ export interface BasePriceOp {
   note?: string;
 }
 
-/** Shape reserved for offer ops (Phases 2-3). Not accepted by parseChangeSet yet. */
+/** Shape reserved for later op kinds. Not accepted by parseChangeSet. */
 export interface ReservedOp {
   id: string;
   kind: ReservedOpKind;
   platform: Platform;
-  target: { product: ProductRef; offerId?: string; territory?: string };
+  target: { product: ProductRef; territory?: string };
   before: unknown;
   after: unknown;
   idempotencyKey: string;
   note?: string;
 }
 
-export type ChangeOp = BasePriceOp | ReservedOp;
+/** An op a ChangeSet can hold: a base-price op or an offer op */
+export type ChangeOp = BasePriceOp | OfferOp;
+
+/** An op before it is numbered (Omit that keeps each member of a union) */
+export type WithoutId<T> = T extends unknown ? Omit<T, 'id'> : never;
+
+/** The base-price ops of a change set (offer ops left out) */
+export function basePriceOps(changeSet: Pick<ChangeSet, 'ops'>): BasePriceOp[] {
+  return changeSet.ops.filter((op): op is BasePriceOp => !isOfferOp(op));
+}
 
 /** A territory the planner looked at but produced no op for, and why */
 export interface PlanSkip {
   product: ProductRef;
   territory: string;
+  /** Set for skips while planning an offer */
+  offerKey?: string;
   reason:
+    | 'OFFER_CONFLICT'
     | 'ALREADY_AT_TARGET'
     | 'NOT_CONFIGURED'
     | 'CURRENCY_MISMATCH'
@@ -105,7 +114,8 @@ export interface ChangeSet {
   app: AppRef;
   /** Set on a ChangeSet generated to undo a run */
   undoOf?: { changeSetId: string; runId: string };
-  ops: BasePriceOp[];
+  /** Base-price ops and offer ops. The executor applies them in order of product, reading each product once. */
+  ops: ChangeOp[];
   /** Planner notes only; the executor ignores them */
   skipped?: PlanSkip[];
   /** Ops an undo could not express, with the reason (e.g. Apple can't remove a current price) */
@@ -132,43 +142,9 @@ export function computeIdempotencyKey(op: Pick<BasePriceOp, 'kind' | 'target' | 
   return [op.kind, productKey(op.target.product), op.target.territory, valueKey(subject)].join('|');
 }
 
-export function describeOp(op: BasePriceOp): string {
+export function describeOp(op: ChangeOp): string {
+  if (isOfferOp(op)) return describeOfferOp(op);
   return `${op.kind} ${productKey(op.target.product)} ${op.target.territory}: ${describePrice(op.before)} -> ${describePrice(op.after)}`;
-}
-
-// ---------------------------------------------------------------------------
-// Canonical JSON and hashing
-
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-      const v = (value as Record<string, unknown>)[key];
-      if (v !== undefined) out[key] = canonicalize(v);
-    }
-    return out;
-  }
-  return value;
-}
-
-/** JSON with sorted keys and no undefined fields */
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(canonicalize(value));
-}
-
-const FNV_OFFSET = BigInt('0xcbf29ce484222325');
-const FNV_PRIME = BigInt('0x100000001b3');
-const MASK_64 = BigInt('0xffffffffffffffff');
-
-/** FNV-1a 64-bit of a UTF-8 string, as 16 hex digits. Not a security hash. */
-export function fnv1a64(text: string): string {
-  let hash = FNV_OFFSET;
-  for (const byte of new TextEncoder().encode(text)) {
-    hash ^= BigInt(byte);
-    hash = (hash * FNV_PRIME) & MASK_64;
-  }
-  return hash.toString(16).padStart(16, '0');
 }
 
 /**
@@ -179,39 +155,12 @@ export function changeSetHash(changeSet: Pick<ChangeSet, 'app' | 'ops'>): string
   return fnv1a64(canonicalJson({ app: changeSet.app, ops: changeSet.ops }));
 }
 
+export { canonicalJson, fnv1a64, priceValueSchema, productRefSchema, appRefSchema } from './refs';
+
 // ---------------------------------------------------------------------------
 // Validation
 
-const decimalSchema = z
-  .string()
-  .refine((v) => isDecimalString(v), { message: 'must be a plain decimal string such as "4.99"' })
-  .transform((v) => normalizeDecimal(v));
-
-const territorySchema = z.string().regex(/^[A-Z]{2}$/, 'territory must be ISO 3166-1 alpha-2, e.g. "GB"');
-const currencySchema = z.string().regex(/^[A-Z]{3}$/, 'currency must be ISO 4217, e.g. "EUR"');
-
-export const priceValueSchema = z
-  .object({
-    currency: currencySchema,
-    amount: decimalSchema,
-    pricePointId: z.string().min(1).optional(),
-    proceeds: decimalSchema.optional(),
-    startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'startDate must be a date, YYYY-MM-DD').optional(),
-  })
-  .strict();
-
-export const productRefSchema = z.union([
-  z.object({ platform: z.literal('apple'), type: z.enum(['subscription', 'inapp']), id: z.string().min(1), productId: z.string().min(1).optional() }).strict(),
-  z.object({ platform: z.literal('google'), type: z.literal('subscription'), productId: z.string().min(1), basePlanId: z.string().min(1) }).strict(),
-  z.object({ platform: z.literal('google'), type: z.literal('inapp'), productId: z.string().min(1), purchaseOptionId: z.string().min(1).optional() }).strict(),
-]);
-
-export const appRefSchema = z.union([
-  z.object({ packageName: z.string().min(1) }).strict(),
-  z.object({ bundleId: z.string().min(1) }).strict(),
-]);
-
-const opSchema = z
+const basePriceOpSchema = z
   .object({
     id: z.string().min(1),
     kind: z.enum([...BASE_PRICE_OP_KINDS, ...RESERVED_OP_KINDS]),
@@ -225,11 +174,23 @@ const opSchema = z
   })
   .strict();
 
+// Offer ops are told apart by their kind; anything else is validated as a base-price op
+// (a reserved kind passes the schema and is refused by checkChangeSetRules with a clear message)
+const opSchema = z.unknown().transform((value, ctx) => {
+  const kind = value && typeof value === 'object' ? (value as { kind?: unknown }).kind : undefined;
+  const schema = typeof kind === 'string' && isOfferOpKind(kind) ? offerOpSchema : basePriceOpSchema;
+  const result = schema.safeParse(value);
+  if (result.success) return result.data as ChangeOp;
+  for (const issue of result.error.issues) ctx.addIssue({ code: 'custom', message: issue.message, path: issue.path as Array<string | number> });
+  return z.NEVER;
+});
+
 const skipSchema = z
   .object({
     product: productRefSchema,
     territory: z.string(),
-    reason: z.enum(['ALREADY_AT_TARGET', 'NOT_CONFIGURED', 'CURRENCY_MISMATCH', 'UNRESOLVED_PRICE_POINT', 'NO_TARGET', 'INVALID_TARGET', 'AMBIGUOUS_STATE']),
+    offerKey: z.string().optional(),
+    reason: z.enum(['OFFER_CONFLICT', 'ALREADY_AT_TARGET', 'NOT_CONFIGURED', 'CURRENCY_MISMATCH', 'UNRESOLVED_PRICE_POINT', 'NO_TARGET', 'INVALID_TARGET', 'AMBIGUOUS_STATE']),
     detail: z.string().optional(),
   })
   .strict();
@@ -264,11 +225,18 @@ export function checkChangeSetRules(changeSet: ChangeSet): string[] {
   const slots = new Set<string>();
   const appPlatform: Platform = 'bundleId' in changeSet.app ? 'apple' : 'google';
 
-  for (const op of changeSet.ops as ChangeOp[]) {
+  for (const op of changeSet.ops as Array<ChangeOp | ReservedOp>) {
     const where = `op ${op.id}`;
     if (ids.has(op.id)) problems.push(`${where}: duplicate op id`);
     ids.add(op.id);
 
+    if (isOfferOp(op)) {
+      problems.push(...checkOfferOpRules(op, appPlatform));
+      const slotKey = `offer|${offerTargetKey(op)}`;
+      if (slots.has(slotKey)) problems.push(`${where}: another op already changes ${op.target.offer.kind} "${op.target.offer.key}"`);
+      slots.add(slotKey);
+      continue;
+    }
     if ((RESERVED_OP_KINDS as readonly string[]).includes(op.kind)) {
       problems.push(`${where}: "${op.kind}" is reserved for a later phase and can't be applied yet`);
       continue;

@@ -3,6 +3,8 @@
 
 import type { BasePriceOp } from './changeset';
 import type { InverseResult } from './inverse';
+import type { OfferOp, OfferState } from './offer-ops';
+import type { StoreOffer } from './offers';
 import type { Platform, ProductPriceState, ProductRef, TerritoryPriceState } from './model';
 import type { SnapMode } from './snap';
 
@@ -72,6 +74,27 @@ export interface PlatformAdapter {
   requestsNeeded?(ops: BasePriceOp[], contexts: ApplyContext[]): number;
   /** The op that undoes `op`, from its before snapshot */
   inverse(op: BasePriceOp): InverseResult;
+
+  // Offers (optional: an adapter without them refuses offer ops)
+
+  /** Every offer of a product, as the store reports it now */
+  fetchOffers?(product: ProductRef): Promise<StoreOffer[]>;
+  /** Apply one offer op. The executor has already checked the offer is at op.before (or, for intro offers, which territories are pending). */
+  applyOffer?(op: OfferOp, context: OfferApplyContext): Promise<OpResponse>;
+  /** Most requests applying this offer op can send (default 1) */
+  offerRequestsNeeded?(op: OfferOp, context: OfferApplyContext): number;
+}
+
+/** What the executor tells an adapter when it applies an offer op */
+export interface OfferApplyContext {
+  /** The offer as read right before applying (null when it doesn't exist) */
+  observed: OfferState | null;
+  /** The store's own record of the offer (IDs of the offer and its prices); absent for intro offers and creates */
+  offer?: StoreOffer;
+  /** Intro offers: the territories still to write */
+  pending?: string[];
+  /** Intro offers: store resource ID per territory */
+  storeRefs?: Record<string, string>;
 }
 
 /** Read-only view of a request budget, so the executor can stop before a run runs dry */

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyChangeSet,
+  basePriceOps,
   buildChangeSet,
   buildUndoChangeSet,
   changeSetHash,
@@ -151,7 +152,7 @@ describe('applyChangeSet', () => {
       expect(resumed.ops[1]).toMatchObject({ status: 'ok', response: { confirmedOnResume: true }, attempts: 1 });
       expect(store.writes.filter((w) => w === 'setPrice:GB')).toHaveLength(1);
       // ...and undo reverses it, because this run made the change
-      expect(buildUndoChangeSet(plan, resumed).ops.map((op) => op.target.territory)).toContain('GB');
+      expect(basePriceOps(buildUndoChangeSet(plan, resumed)).map((op) => op.target.territory)).toContain('GB');
     });
 
     it('resumes correctly from the log saved while a write was in flight (crash mid-request)', async () => {
@@ -180,7 +181,7 @@ describe('applyChangeSet', () => {
       const resumed = await applyChangeSet(plan, { adapter: store, run: parseRun(serializeRun(onDisk!)) });
       expect(resumed.ops.find((r) => r.opId === 'op-0002')).toMatchObject({ status: 'ok', response: { confirmedOnResume: true } });
       expect(store.writes.slice(writes)).not.toContain('setPrice:GB');
-      expect(buildUndoChangeSet(plan, resumed).ops.map((op) => op.target.territory)).toContain('GB');
+      expect(basePriceOps(buildUndoChangeSet(plan, resumed)).map((op) => op.target.territory)).toContain('GB');
     });
 
     it('stops before any further write when the run log cannot be saved', async () => {
@@ -235,7 +236,7 @@ describe('applyChangeSet', () => {
 
       const undo = parseChangeSet(serializeChangeSet(buildUndoChangeSet(plan, run, { createdAt: '2030-01-02T00:00:00.000Z' })));
       expect(undo.undoOf).toEqual({ changeSetId: plan.id, runId: run.id });
-      expect(undo.ops.map((op) => [op.kind, op.target.territory])).toEqual([
+      expect(basePriceOps(undo).map((op) => [op.kind, op.target.territory])).toEqual([
         ['setPrice', 'US'],
         ['setPrice', 'GB'],
         ['schedulePrice', 'DE'],
@@ -273,7 +274,7 @@ describe('applyChangeSet', () => {
       store.state(APPLE_SUB).territories.GB.current = { currency: 'GBP', amount: '19.99', pricePointId: 'pp-gb-1999' };
       const run = await applyChangeSet(plan, { adapter: store });
       expect(run.ops.map((r) => r.status)).toEqual(['ok', 'skipped', 'failed']);
-      expect(buildUndoChangeSet(plan, run).ops.map((op) => op.target.territory)).toEqual(['DE']);
+      expect(basePriceOps(buildUndoChangeSet(plan, run)).map((op) => op.target.territory)).toEqual(['DE']);
     });
 
     it('lists what it cannot reverse', async () => {

@@ -190,10 +190,13 @@ async function withPrices(
   await mapWithConcurrency(offers, OFFER_PRICE_READ_CONCURRENCY, async (offer) => {
     const page = await listOfferPrices(credentials, pathFor(offer), priceType, ctx);
     const refs = lookups(page.included);
-    placePrices(
-      offer,
-      page.data.map((p) => readPrice(p.id, p.relationships, refs, offer.mode))
-    );
+    const reads = page.data.map((p) => readPrice(p.id, p.relationships, refs, offer.mode));
+    placePrices(offer, reads);
+    // Keep each placed price's own ID: a price replace (promotional offers) sends unchanged territories by ID
+    page.data.forEach((p, i) => {
+      const read = reads[i];
+      if ('territory' in read && offer.prices[read.territory]) (offer.priceRefs ??= {})[read.territory] = p.id;
+    });
   });
   return offers;
 }
@@ -410,7 +413,7 @@ export async function listSubscriptionWinBackOffers(
   }
 }
 
-const LISTERS: Record<AppleOfferKind, typeof listSubscriptionPromotionalOffers> = {
+export const LISTERS: Record<AppleOfferKind, typeof listSubscriptionPromotionalOffers> = {
   'apple.intro': listSubscriptionIntroductoryOffers,
   'apple.promo': listSubscriptionPromotionalOffers,
   'apple.offerCode': listSubscriptionOfferCodes,
@@ -439,6 +442,16 @@ export async function getSubscriptionOffer(
     });
   }
   return found[0] ?? null;
+}
+
+/** Every offer of one kind of a subscription, each with its prices */
+export async function listSubscriptionOffersOfKind(
+  credentials: AppleConnectCredentials,
+  subscriptionId: string,
+  kind: AppleOfferKind,
+  ctx: RequestContext = {}
+): Promise<StoreOffer[]> {
+  return LISTERS[kind](credentials, subscriptionId, ctx);
 }
 
 /** Every offer of a subscription, all four kinds, each with its prices */

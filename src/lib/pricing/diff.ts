@@ -9,7 +9,9 @@ import {
   ChangeSetValidationError,
   computeIdempotencyKey,
   type BasePriceOp,
+  type ChangeOp,
   type ChangeSet,
+  type WithoutId,
   type PlanSkip,
 } from './changeset';
 import { isDecimalString, isNegativeDecimal, normalizeDecimal } from './decimal';
@@ -138,8 +140,8 @@ export interface BuildChangeSetInput {
 }
 
 /** Number ops "op-0001", "op-0002", ... in order. */
-export function numberOps(ops: Omit<BasePriceOp, 'id'>[]): BasePriceOp[] {
-  return ops.map((op, index) => ({ id: `op-${String(index + 1).padStart(4, '0')}`, ...op }));
+export function numberOps<T extends ChangeOp = BasePriceOp>(ops: Array<WithoutId<T>>): T[] {
+  return ops.map((op, index) => ({ id: `op-${String(index + 1).padStart(4, '0')}`, ...op }) as unknown as T);
 }
 
 /** Diff every product and wrap the ops in a validated ChangeSet. */

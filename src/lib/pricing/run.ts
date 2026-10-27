@@ -12,10 +12,13 @@ import {
   checkChangeSetRules,
   ChangeSetValidationError,
   type BasePriceOp,
+  type ChangeOp,
   type ChangeSet,
+  type WithoutId,
 } from './changeset';
 import { numberOps } from './diff';
 import { invertOp } from './inverse';
+import { invertOfferOp, isOfferOp, offerStateSchema, type OfferOp, type OfferState } from './offer-ops';
 import { appRefSchema, priceValueSchema } from './changeset';
 import type { AppRef, PriceValue } from './model';
 
@@ -53,6 +56,8 @@ export interface OpRecord {
   response?: Record<string, unknown>;
   /** The price found in the territory right before the op was applied or skipped */
   observed?: PriceValue | null;
+  /** Offer ops: the offer found right before the op was applied or skipped */
+  observedOffer?: OfferState | null;
   /** Set when the run re-read the store after applying (verify option) */
   verified?: boolean;
   /** The op was applied but something needs attention (from the adapter's response) */
@@ -130,6 +135,7 @@ const opRecordSchema = z
       .optional(),
     response: z.record(z.string(), z.unknown()).optional(),
     observed: priceValueSchema.nullable().optional(),
+    observedOffer: offerStateSchema.nullable().optional(),
     verified: z.boolean().optional(),
     warning: z.string().optional(),
   })
@@ -192,8 +198,12 @@ export function assertRunMatches(changeSet: ChangeSet, run: ApplyRun): void {
 /**
  * Build a ChangeSet that undoes every change `run` made, from the ops'
  * `before` snapshots. Only ops the run applied (status ok) are reversed,
- * newest first; skipped ops changed nothing. The result is an ordinary plan:
- * review it, then apply it like any other (it is idempotent too).
+ * newest first; skipped ops changed nothing. Offer ops that failed after a
+ * request was sent are reversed too, because they may have taken effect (a
+ * create that answered 5xx, or an intro offer created in some territories):
+ * the undo op is judged against the store like any other, so a part that
+ * never happened is simply skipped. The result is an ordinary plan: review
+ * it, then apply it like any other (it is idempotent too).
  */
 export function buildUndoChangeSet(
   changeSet: ChangeSet,
@@ -202,18 +212,32 @@ export function buildUndoChangeSet(
 ): ChangeSet {
   assertRunMatches(changeSet, run);
   const byId = new Map(changeSet.ops.map((op) => [op.id, op]));
-  const inverses: Omit<BasePriceOp, 'id'>[] = [];
+  const inverses: Array<WithoutId<ChangeOp>> = [];
   const notReversible: Array<{ opId: string; reason: string }> = [];
+  const caveats: Array<{ index: number; message: string }> = [];
 
   for (const record of [...run.ops].reverse()) {
-    if (record.status !== 'ok') continue;
     const op = byId.get(record.opId)!;
-    const inverse = invertOp(op);
+    const mayHaveApplied = record.status === 'ok' || (isOfferOp(op) && record.status === 'failed' && record.attempts > 0);
+    if (!mayHaveApplied) continue;
+    if (isOfferOp(op)) {
+      const inverse = invertOfferOp(op as OfferOp);
+      if (inverse.notReversible) notReversible.push({ opId: op.id, reason: inverse.notReversible });
+      if (inverse.op) {
+        if (inverse.caveat) {
+          caveats.push({ index: inverses.length, message: inverse.caveat });
+          notReversible.push({ opId: op.id, reason: `Partly: ${inverse.caveat}` });
+        }
+        inverses.push(inverse.op);
+      }
+      continue;
+    }
+    const inverse = invertOp(op as BasePriceOp);
     if ('notReversible' in inverse) notReversible.push({ opId: op.id, reason: inverse.notReversible });
     else inverses.push(inverse.op);
   }
 
-  const ops = numberOps(inverses);
+  const ops = numberOps<ChangeOp>(inverses);
   const createdAt = options.createdAt ?? new Date().toISOString();
   const undo: ChangeSet = {
     schemaVersion: CHANGESET_SCHEMA_VERSION,
@@ -225,6 +249,7 @@ export function buildUndoChangeSet(
     undoOf: { changeSetId: changeSet.id, runId: run.id },
     ops,
     ...(notReversible.length > 0 ? { notReversible } : {}),
+    ...(caveats.length > 0 ? { warnings: caveats.map((c) => ({ opId: ops[c.index].id, message: c.message })) } : {}),
   };
   const problems = checkChangeSetRules(undo);
   if (problems.length > 0) throw new ChangeSetValidationError(problems);

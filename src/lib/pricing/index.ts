@@ -19,3 +19,5 @@ export * from './run';
 export * from './executor';
 export * from './offers';
 export * from './offer-derivation';
+export * from './offer-ops';
+export * from './offer-plan';

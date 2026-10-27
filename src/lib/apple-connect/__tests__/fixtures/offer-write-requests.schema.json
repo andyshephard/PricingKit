@@ -1,0 +1,1131 @@
+{
+ "methods": {
+  "/v1/subscriptionIntroductoryOffers": [
+   "POST"
+  ],
+  "/v1/subscriptionIntroductoryOffers/{id}": [
+   "DELETE",
+   "PATCH"
+  ],
+  "/v1/subscriptionOfferCodes": [
+   "POST"
+  ],
+  "/v1/subscriptionOfferCodes/{id}": [
+   "GET",
+   "PATCH"
+  ],
+  "/v1/subscriptionPromotionalOffers": [
+   "POST"
+  ],
+  "/v1/subscriptionPromotionalOffers/{id}": [
+   "DELETE",
+   "GET",
+   "PATCH"
+  ],
+  "/v1/winBackOffers": [
+   "POST"
+  ],
+  "/v1/winBackOffers/{id}": [
+   "DELETE",
+   "GET",
+   "PATCH"
+  ]
+ },
+ "schemas": {
+  "SubscriptionIntroductoryOfferCreateRequest": {
+   "properties": {
+    "data": {
+     "properties": {
+      "attributes": {
+       "properties": {
+        "duration": {
+         "enum": [
+          "THREE_DAYS",
+          "ONE_WEEK",
+          "TWO_WEEKS",
+          "ONE_MONTH",
+          "TWO_MONTHS",
+          "THREE_MONTHS",
+          "SIX_MONTHS",
+          "ONE_YEAR"
+         ],
+         "type": "string"
+        },
+        "endDate": {
+         "format": "date",
+         "nullable": true,
+         "type": "string"
+        },
+        "numberOfPeriods": {
+         "type": "integer"
+        },
+        "offerMode": {
+         "enum": [
+          "PAY_AS_YOU_GO",
+          "PAY_UP_FRONT",
+          "FREE_TRIAL"
+         ],
+         "type": "string"
+        },
+        "startDate": {
+         "format": "date",
+         "nullable": true,
+         "type": "string"
+        },
+        "targetSubscriptionPlanType": {
+         "enum": [
+          "MONTHLY",
+          "UPFRONT"
+         ],
+         "nullable": true,
+         "type": "string"
+        }
+       },
+       "required": [
+        "duration",
+        "numberOfPeriods",
+        "offerMode"
+       ],
+       "type": "object"
+      },
+      "relationships": {
+       "properties": {
+        "subscription": {
+         "properties": {
+          "data": {
+           "properties": {
+            "id": {
+             "type": "string"
+            },
+            "type": {
+             "enum": [
+              "subscriptions"
+             ],
+             "type": "string"
+            }
+           },
+           "required": [
+            "id",
+            "type"
+           ],
+           "type": "object"
+          }
+         },
+         "required": [
+          "data"
+         ],
+         "type": "object"
+        },
+        "subscriptionPricePoint": {
+         "properties": {
+          "data": {
+           "properties": {
+            "id": {
+             "type": "string"
+            },
+            "type": {
+             "enum": [
+              "subscriptionPricePoints"
+             ],
+             "type": "string"
+            }
+           },
+           "required": [
+            "id",
+            "type"
+           ],
+           "type": "object"
+          }
+         },
+         "type": "object"
+        },
+        "territory": {
+         "properties": {
+          "data": {
+           "properties": {
+            "id": {
+             "type": "string"
+            },
+            "type": {
+             "enum": [
+              "territories"
+             ],
+             "type": "string"
+            }
+           },
+           "required": [
+            "id",
+            "type"
+           ],
+           "type": "object"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "required": [
+        "subscription"
+       ],
+       "type": "object"
+      },
+      "type": {
+       "enum": [
+        "subscriptionIntroductoryOffers"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "relationships",
+      "attributes",
+      "type"
+     ],
+     "type": "object"
+    },
+    "included": {
+     "items": {
+      "properties": {
+       "id": {
+        "type": "string"
+       },
+       "type": {
+        "enum": [
+         "subscriptionPricePoints"
+        ],
+        "type": "string"
+       }
+      },
+      "required": [
+       "type"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "data"
+   ],
+   "type": "object"
+  },
+  "SubscriptionIntroductoryOfferUpdateRequest": {
+   "properties": {
+    "data": {
+     "properties": {
+      "attributes": {
+       "properties": {
+        "endDate": {
+         "format": "date",
+         "nullable": true,
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "id": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "subscriptionIntroductoryOffers"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "id",
+      "type"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "data"
+   ],
+   "type": "object"
+  },
+  "SubscriptionOfferCodeCreateRequest": {
+   "properties": {
+    "data": {
+     "properties": {
+      "attributes": {
+       "properties": {
+        "autoRenewEnabled": {
+         "nullable": true,
+         "type": "boolean"
+        },
+        "customerEligibilities": {
+         "items": {
+          "enum": [
+           "NEW",
+           "EXISTING",
+           "EXPIRED"
+          ],
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "duration": {
+         "enum": [
+          "THREE_DAYS",
+          "ONE_WEEK",
+          "TWO_WEEKS",
+          "ONE_MONTH",
+          "TWO_MONTHS",
+          "THREE_MONTHS",
+          "SIX_MONTHS",
+          "ONE_YEAR"
+         ],
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "numberOfPeriods": {
+         "type": "integer"
+        },
+        "offerEligibility": {
+         "enum": [
+          "STACK_WITH_INTRO_OFFERS",
+          "REPLACE_INTRO_OFFERS"
+         ],
+         "type": "string"
+        },
+        "offerMode": {
+         "enum": [
+          "PAY_AS_YOU_GO",
+          "PAY_UP_FRONT",
+          "FREE_TRIAL"
+         ],
+         "type": "string"
+        },
+        "targetSubscriptionPlanType": {
+         "enum": [
+          "MONTHLY",
+          "UPFRONT"
+         ],
+         "nullable": true,
+         "type": "string"
+        }
+       },
+       "required": [
+        "duration",
+        "offerEligibility",
+        "name",
+        "numberOfPeriods",
+        "offerMode",
+        "customerEligibilities"
+       ],
+       "type": "object"
+      },
+      "relationships": {
+       "properties": {
+        "prices": {
+         "properties": {
+          "data": {
+           "items": {
+            "properties": {
+             "id": {
+              "type": "string"
+             },
+             "type": {
+              "enum": [
+               "subscriptionOfferCodePrices"
+              ],
+              "type": "string"
+             }
+            },
+            "required": [
+             "id",
+             "type"
+            ],
+            "type": "object"
+           },
+           "type": "array"
+          }
+         },
+         "required": [
+          "data"
+         ],
+         "type": "object"
+        },
+        "subscription": {
+         "properties": {
+          "data": {
+           "properties": {
+            "id": {
+             "type": "string"
+            },
+            "type": {
+             "enum": [
+              "subscriptions"
+             ],
+             "type": "string"
+            }
+           },
+           "required": [
+            "id",
+            "type"
+           ],
+           "type": "object"
+          }
+         },
+         "required": [
+          "data"
+         ],
+         "type": "object"
+        }
+       },
+       "required": [
+        "subscription",
+        "prices"
+       ],
+       "type": "object"
+      },
+      "type": {
+       "enum": [
+        "subscriptionOfferCodes"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "relationships",
+      "attributes",
+      "type"
+     ],
+     "type": "object"
+    },
+    "included": {
+     "items": {
+      "properties": {
+       "id": {
+        "type": "string"
+       },
+       "relationships": {
+        "properties": {
+         "subscriptionPricePoint": {
+          "properties": {
+           "data": {
+            "properties": {
+             "id": {
+              "type": "string"
+             },
+             "type": {
+              "enum": [
+               "subscriptionPricePoints"
+              ],
+              "type": "string"
+             }
+            },
+            "required": [
+             "id",
+             "type"
+            ],
+            "type": "object"
+           }
+          },
+          "type": "object"
+         },
+         "territory": {
+          "properties": {
+           "data": {
+            "properties": {
+             "id": {
+              "type": "string"
+             },
+             "type": {
+              "enum": [
+               "territories"
+              ],
+              "type": "string"
+             }
+            },
+            "required": [
+             "id",
+             "type"
+            ],
+            "type": "object"
+           }
+          },
+          "type": "object"
+         }
+        },
+        "type": "object"
+       },
+       "type": {
+        "enum": [
+         "subscriptionOfferCodePrices"
+        ],
+        "type": "string"
+       }
+      },
+      "required": [
+       "type"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "data"
+   ],
+   "type": "object"
+  },
+  "SubscriptionOfferCodeUpdateRequest": {
+   "properties": {
+    "data": {
+     "properties": {
+      "attributes": {
+       "properties": {
+        "active": {
+         "nullable": true,
+         "type": "boolean"
+        }
+       },
+       "type": "object"
+      },
+      "id": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "subscriptionOfferCodes"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "id",
+      "type"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "data"
+   ],
+   "type": "object"
+  },
+  "SubscriptionPromotionalOfferCreateRequest": {
+   "properties": {
+    "data": {
+     "properties": {
+      "attributes": {
+       "properties": {
+        "duration": {
+         "enum": [
+          "THREE_DAYS",
+          "ONE_WEEK",
+          "TWO_WEEKS",
+          "ONE_MONTH",
+          "TWO_MONTHS",
+          "THREE_MONTHS",
+          "SIX_MONTHS",
+          "ONE_YEAR"
+         ],
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "numberOfPeriods": {
+         "type": "integer"
+        },
+        "offerCode": {
+         "type": "string"
+        },
+        "offerMode": {
+         "enum": [
+          "PAY_AS_YOU_GO",
+          "PAY_UP_FRONT",
+          "FREE_TRIAL"
+         ],
+         "type": "string"
+        },
+        "targetSubscriptionPlanType": {
+         "enum": [
+          "MONTHLY",
+          "UPFRONT"
+         ],
+         "nullable": true,
+         "type": "string"
+        }
+       },
+       "required": [
+        "duration",
+        "offerCode",
+        "name",
+        "numberOfPeriods",
+        "offerMode"
+       ],
+       "type": "object"
+      },
+      "relationships": {
+       "properties": {
+        "prices": {
+         "properties": {
+          "data": {
+           "items": {
+            "properties": {
+             "id": {
+              "type": "string"
+             },
+             "type": {
+              "enum": [
+               "subscriptionPromotionalOfferPrices"
+              ],
+              "type": "string"
+             }
+            },
+            "required": [
+             "id",
+             "type"
+            ],
+            "type": "object"
+           },
+           "type": "array"
+          }
+         },
+         "required": [
+          "data"
+         ],
+         "type": "object"
+        },
+        "subscription": {
+         "properties": {
+          "data": {
+           "properties": {
+            "id": {
+             "type": "string"
+            },
+            "type": {
+             "enum": [
+              "subscriptions"
+             ],
+             "type": "string"
+            }
+           },
+           "required": [
+            "id",
+            "type"
+           ],
+           "type": "object"
+          }
+         },
+         "required": [
+          "data"
+         ],
+         "type": "object"
+        }
+       },
+       "required": [
+        "subscription",
+        "prices"
+       ],
+       "type": "object"
+      },
+      "type": {
+       "enum": [
+        "subscriptionPromotionalOffers"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "relationships",
+      "attributes",
+      "type"
+     ],
+     "type": "object"
+    },
+    "included": {
+     "items": {
+      "properties": {
+       "id": {
+        "type": "string"
+       },
+       "relationships": {
+        "properties": {
+         "subscriptionPricePoint": {
+          "properties": {
+           "data": {
+            "properties": {
+             "id": {
+              "type": "string"
+             },
+             "type": {
+              "enum": [
+               "subscriptionPricePoints"
+              ],
+              "type": "string"
+             }
+            },
+            "required": [
+             "id",
+             "type"
+            ],
+            "type": "object"
+           }
+          },
+          "type": "object"
+         },
+         "territory": {
+          "properties": {
+           "data": {
+            "properties": {
+             "id": {
+              "type": "string"
+             },
+             "type": {
+              "enum": [
+               "territories"
+              ],
+              "type": "string"
+             }
+            },
+            "required": [
+             "id",
+             "type"
+            ],
+            "type": "object"
+           }
+          },
+          "type": "object"
+         }
+        },
+        "type": "object"
+       },
+       "type": {
+        "enum": [
+         "subscriptionPromotionalOfferPrices"
+        ],
+        "type": "string"
+       }
+      },
+      "required": [
+       "type"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "data"
+   ],
+   "type": "object"
+  },
+  "SubscriptionPromotionalOfferUpdateRequest": {
+   "properties": {
+    "data": {
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "relationships": {
+       "properties": {
+        "prices": {
+         "properties": {
+          "data": {
+           "items": {
+            "properties": {
+             "id": {
+              "type": "string"
+             },
+             "type": {
+              "enum": [
+               "subscriptionPromotionalOfferPrices"
+              ],
+              "type": "string"
+             }
+            },
+            "required": [
+             "id",
+             "type"
+            ],
+            "type": "object"
+           },
+           "type": "array"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "type": "object"
+      },
+      "type": {
+       "enum": [
+        "subscriptionPromotionalOffers"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "id",
+      "type"
+     ],
+     "type": "object"
+    },
+    "included": {
+     "items": {
+      "properties": {
+       "id": {
+        "type": "string"
+       },
+       "relationships": {
+        "properties": {
+         "subscriptionPricePoint": {
+          "properties": {
+           "data": {
+            "properties": {
+             "id": {
+              "type": "string"
+             },
+             "type": {
+              "enum": [
+               "subscriptionPricePoints"
+              ],
+              "type": "string"
+             }
+            },
+            "required": [
+             "id",
+             "type"
+            ],
+            "type": "object"
+           }
+          },
+          "type": "object"
+         },
+         "territory": {
+          "properties": {
+           "data": {
+            "properties": {
+             "id": {
+              "type": "string"
+             },
+             "type": {
+              "enum": [
+               "territories"
+              ],
+              "type": "string"
+             }
+            },
+            "required": [
+             "id",
+             "type"
+            ],
+            "type": "object"
+           }
+          },
+          "type": "object"
+         }
+        },
+        "type": "object"
+       },
+       "type": {
+        "enum": [
+         "subscriptionPromotionalOfferPrices"
+        ],
+        "type": "string"
+       }
+      },
+      "required": [
+       "type"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "data"
+   ],
+   "type": "object"
+  },
+  "WinBackOfferCreateRequest": {
+   "properties": {
+    "data": {
+     "properties": {
+      "attributes": {
+       "properties": {
+        "customerEligibilityPaidSubscriptionDurationInMonths": {
+         "type": "integer"
+        },
+        "customerEligibilityTimeSinceLastSubscribedInMonths": {
+         "properties": {
+          "maximum": {
+           "type": "integer"
+          },
+          "minimum": {
+           "type": "integer"
+          }
+         },
+         "type": "object"
+        },
+        "customerEligibilityWaitBetweenOffersInMonths": {
+         "nullable": true,
+         "type": "integer"
+        },
+        "duration": {
+         "enum": [
+          "THREE_DAYS",
+          "ONE_WEEK",
+          "TWO_WEEKS",
+          "ONE_MONTH",
+          "TWO_MONTHS",
+          "THREE_MONTHS",
+          "SIX_MONTHS",
+          "ONE_YEAR"
+         ],
+         "type": "string"
+        },
+        "endDate": {
+         "format": "date",
+         "nullable": true,
+         "type": "string"
+        },
+        "offerId": {
+         "type": "string"
+        },
+        "offerMode": {
+         "enum": [
+          "PAY_AS_YOU_GO",
+          "PAY_UP_FRONT",
+          "FREE_TRIAL"
+         ],
+         "type": "string"
+        },
+        "periodCount": {
+         "type": "integer"
+        },
+        "priority": {
+         "enum": [
+          "HIGH",
+          "NORMAL"
+         ],
+         "type": "string"
+        },
+        "promotionIntent": {
+         "enum": [
+          "NOT_PROMOTED",
+          "USE_AUTO_GENERATED_ASSETS"
+         ],
+         "nullable": true,
+         "type": "string"
+        },
+        "referenceName": {
+         "type": "string"
+        },
+        "startDate": {
+         "format": "date",
+         "type": "string"
+        },
+        "targetSubscriptionPlanType": {
+         "enum": [
+          "MONTHLY",
+          "UPFRONT"
+         ],
+         "nullable": true,
+         "type": "string"
+        }
+       },
+       "required": [
+        "duration",
+        "customerEligibilityTimeSinceLastSubscribedInMonths",
+        "periodCount",
+        "offerId",
+        "offerMode",
+        "priority",
+        "customerEligibilityPaidSubscriptionDurationInMonths",
+        "startDate",
+        "referenceName"
+       ],
+       "type": "object"
+      },
+      "relationships": {
+       "properties": {
+        "prices": {
+         "properties": {
+          "data": {
+           "items": {
+            "properties": {
+             "id": {
+              "type": "string"
+             },
+             "type": {
+              "enum": [
+               "winBackOfferPrices"
+              ],
+              "type": "string"
+             }
+            },
+            "required": [
+             "id",
+             "type"
+            ],
+            "type": "object"
+           },
+           "type": "array"
+          }
+         },
+         "required": [
+          "data"
+         ],
+         "type": "object"
+        },
+        "subscription": {
+         "properties": {
+          "data": {
+           "properties": {
+            "id": {
+             "type": "string"
+            },
+            "type": {
+             "enum": [
+              "subscriptions"
+             ],
+             "type": "string"
+            }
+           },
+           "required": [
+            "id",
+            "type"
+           ],
+           "type": "object"
+          }
+         },
+         "required": [
+          "data"
+         ],
+         "type": "object"
+        }
+       },
+       "required": [
+        "subscription",
+        "prices"
+       ],
+       "type": "object"
+      },
+      "type": {
+       "enum": [
+        "winBackOffers"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "relationships",
+      "attributes",
+      "type"
+     ],
+     "type": "object"
+    },
+    "included": {
+     "items": {
+      "properties": {
+       "id": {
+        "type": "string"
+       },
+       "type": {
+        "enum": [
+         "winBackOfferPrices"
+        ],
+        "type": "string"
+       }
+      },
+      "required": [
+       "type"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "data"
+   ],
+   "type": "object"
+  },
+  "WinBackOfferUpdateRequest": {
+   "properties": {
+    "data": {
+     "properties": {
+      "attributes": {
+       "properties": {
+        "customerEligibilityPaidSubscriptionDurationInMonths": {
+         "nullable": true,
+         "type": "integer"
+        },
+        "customerEligibilityTimeSinceLastSubscribedInMonths": {
+         "nullable": true,
+         "properties": {
+          "maximum": {
+           "type": "integer"
+          },
+          "minimum": {
+           "type": "integer"
+          }
+         },
+         "type": "object"
+        },
+        "customerEligibilityWaitBetweenOffersInMonths": {
+         "nullable": true,
+         "type": "integer"
+        },
+        "endDate": {
+         "format": "date",
+         "nullable": true,
+         "type": "string"
+        },
+        "priority": {
+         "enum": [
+          "HIGH",
+          "NORMAL"
+         ],
+         "nullable": true,
+         "type": "string"
+        },
+        "promotionIntent": {
+         "enum": [
+          "NOT_PROMOTED",
+          "USE_AUTO_GENERATED_ASSETS"
+         ],
+         "nullable": true,
+         "type": "string"
+        },
+        "startDate": {
+         "format": "date",
+         "nullable": true,
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "id": {
+       "type": "string"
+      },
+      "type": {
+       "enum": [
+        "winBackOffers"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "id",
+      "type"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "data"
+   ],
+   "type": "object"
+  }
+ },
+ "source": "Derived from the App Store Connect API OpenAPI specification, version 4.5.1 (field names, required fields, types and enums only)."
+}
