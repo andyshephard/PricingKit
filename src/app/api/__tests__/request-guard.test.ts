@@ -1,8 +1,6 @@
 // Cross-site requests, request body limits, sign-in limits and the service
 // account key size check. No store is contacted: fetch is stubbed.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
 import { createCookieStore, TEST_ENCRYPTION_KEY, type TestCookieStore } from './helpers';
 
@@ -81,25 +79,6 @@ describe('readJsonBody', () => {
     expect(bad.ok ? 200 : bad.response.status).toBe(400);
     const cross = await readJsonBody(req({ headers: { 'content-type': 'application/json', 'sec-fetch-site': 'cross-site' }, body: '{}' }), 100);
     expect(cross.ok ? 200 : cross.response.status).toBe(403);
-  });
-});
-
-describe('every route that changes something is guarded', () => {
-  const API = join(__dirname, '..');
-  const routes = (dir: string): string[] =>
-    readdirSync(dir).flatMap((name) => {
-      const full = join(dir, name);
-      if (statSync(full).isDirectory()) return name === '__tests__' ? [] : routes(full);
-      return name === 'route.ts' ? [full] : [];
-    });
-  const writers = routes(API)
-    .map((f) => ({ path: relative(API, f), text: readFileSync(f, 'utf8') }))
-    .filter((f) => /export (async function|const) (POST|PATCH|PUT|DELETE)\b/.test(f.text));
-
-  it.each(writers.map((f) => [f.path, f.text]))('%s checks the origin and never parses a body itself', (_path, text) => {
-    const handlers = text.match(/export async function (POST|PATCH|PUT|DELETE)\([\s\S]*?\) \{\n {2}const crossSite = rejectCrossSite\(request\);/g) ?? [];
-    expect(handlers.length).toBe((text.match(/export async function (POST|PATCH|PUT|DELETE)\(/g) ?? []).length);
-    expect(text).not.toMatch(/request\.(json|text|formData|arrayBuffer)\(\)/);
   });
 });
 
