@@ -10,6 +10,7 @@ vi.mock('@/middleware/auth', () => ({ getAppleAuthFromCookies: () => getAppleAut
 
 const planOffers = vi.fn();
 const fetchOffer = vi.fn();
+const verifyProduct = vi.fn();
 const constructed: unknown[] = [];
 vi.mock('@/lib/adapters/apple', () => ({
   AppleAdapter: class {
@@ -17,6 +18,7 @@ vi.mock('@/lib/adapters/apple', () => ({
       constructed.push(options);
     }
     planOffers = (...args: unknown[]) => planOffers(...args);
+    verifyProduct = (...args: unknown[]) => verifyProduct(...args);
     fetchOffer = (...args: unknown[]) => fetchOffer(...args);
   },
 }));
@@ -34,6 +36,8 @@ beforeEach(() => {
   planOffers.mockReset();
   planOffers.mockResolvedValue({ changeSet: { ops: [] }, hash: '0123456789abcdef', entries: [{ action: 'create' }] });
   fetchOffer.mockReset();
+  verifyProduct.mockReset();
+  verifyProduct.mockResolvedValue(undefined);
   constructed.length = 0;
 });
 
@@ -67,6 +71,16 @@ describe('POST offers/plan', () => {
     expect((await call({ ...create, mode: 'FREE_TRIAL' })).status).toBe(400);
     expect((await call({ ...create, extra: 1 })).status).toBe(400);
     expect((await call(create, 'com.example.sub')).status).toBe(400);
+    expect(planOffers).not.toHaveBeenCalled();
+  });
+
+  it('refuses a subscription from another app on the same key before planning', async () => {
+    const { ApiError } = await import('@/lib/utils/api-error');
+    verifyProduct.mockRejectedValue(new ApiError('not this app', { status: 409, code: 'APP_MISMATCH', platform: 'apple', retryable: false }));
+    const response = await call(create);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: 'APP_MISMATCH' });
+    expect(verifyProduct).toHaveBeenCalledWith({ platform: 'apple', type: 'subscription', id: '123' });
     expect(planOffers).not.toHaveBeenCalled();
   });
 });

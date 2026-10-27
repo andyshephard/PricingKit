@@ -185,19 +185,19 @@ describe('AppleAdapter with the executor', () => {
   });
 
   it('charges every request to the run budget and stops when it is spent', async () => {
-    const budget = new RequestBudget({ limit: 3 });
+    const budget = new RequestBudget({ limit: 6 });
     const adapter = new AppleAdapter({ credentials, budget });
     const changeSet = await plan({ US: { currency: 'USD', amount: '24.99' }, GB: { currency: 'GBP', amount: '26.99' }, DE: { currency: 'EUR', amount: '19.99' } });
     server.calls = [];
     const run = await applyChangeSet(changeSet, { adapter, budget, concurrency: 1 });
     expect(server.calls.every((c) => c.options.budget === budget)).toBe(true);
-    expect(budget.used).toBe(3); // 1 state read + 2 creates
+    expect(budget.used).toBe(6); // 3 app checks (app, its groups, the subscription's group) + 1 state read + 2 creates
     expect(run.stoppedReason).toBe('BUDGET_EXCEEDED');
     expect(run.ops.map((r) => r.status)).toEqual(['ok', 'ok', 'pending']);
   });
 
   it('does not start a create-then-delete replacement with only one request left', async () => {
-    const budget = new RequestBudget({ limit: 2 }); // state read + 1
+    const budget = new RequestBudget({ limit: 5 }); // 3 app checks + state read + 1
     const adapter = new AppleAdapter({ credentials, budget });
     const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' } });
     server.calls = [];
@@ -208,7 +208,7 @@ describe('AppleAdapter with the executor', () => {
   });
 
   it('stops the run, rather than reporting success, when the budget runs out between create and delete', async () => {
-    const budget = new RequestBudget({ limit: 2 }); // state read + create; the delete is refused
+    const budget = new RequestBudget({ limit: 5 }); // 3 app checks + state read + create; the delete is refused
     const adapter = new AppleAdapter({ credentials, budget });
     const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' } });
     server.calls = [];

@@ -75,6 +75,13 @@ export interface PlatformAdapter {
   /** The op that undoes `op`, from its before snapshot */
   inverse(op: BasePriceOp): InverseResult;
 
+  /**
+   * Optional: throw unless the product belongs to the app the adapter is
+   * for (e.g. App Store Connect keys reach every app of a team). The executor
+   * calls it once per product before reading or writing anything for it.
+   */
+  verifyProduct?(product: ProductRef): Promise<void>;
+
   // Offers (optional: an adapter without them refuses offer ops)
 
   /** Every offer of a product, as the store reports it now */

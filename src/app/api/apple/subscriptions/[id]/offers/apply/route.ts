@@ -25,8 +25,13 @@ const bodySchema = z
   })
   .strict();
 
-/** What the web app may apply. Ending and deleting offers stay library/CLI-only for now. */
+/**
+ * What the web app may apply: promotional offer creates and price updates,
+ * the two things its UI plans. Everything else (intro offers, offer codes,
+ * win-back offers, ending and deleting) is library/CLI-only.
+ */
 const ALLOWED_KINDS = new Set(['createOffer', 'updateOfferPrices']);
+const ALLOWED_OFFER_KINDS = new Set(['apple.promo']);
 
 // POST /api/apple/subscriptions/[id]/offers/apply
 // Applies an offer plan made by .../offers/plan. Every op must be an offer op
@@ -53,8 +58,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'This plan is for a different app than the one you are signed in to' }, { status: 409 });
     }
     for (const op of changeSet.ops) {
-      if (!isOfferOp(op) || !ALLOWED_KINDS.has(op.kind)) {
-        return NextResponse.json({ error: `op ${op.id}: only offer creates and price updates can be applied here` }, { status: 400 });
+      if (!isOfferOp(op) || !ALLOWED_KINDS.has(op.kind) || !ALLOWED_OFFER_KINDS.has(op.target.offer.kind)) {
+        return NextResponse.json({ error: `op ${op.id}: only promotional offer creates and price updates can be applied here` }, { status: 400 });
       }
       if (op.target.product.platform !== 'apple' || op.target.product.id !== id) {
         return NextResponse.json({ error: `op ${op.id} is for another subscription` }, { status: 400 });
@@ -63,6 +68,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const budget = new RequestBudget();
     const adapter = new AppleAdapter({ credentials: auth.credentials, budget });
+    // API keys reach every app of a team: the subscription must be in the session's app
+    // (APP_MISMATCH otherwise). The executor checks again before reading or writing.
+    if (changeSet.ops.length > 0) await adapter.verifyProduct(changeSet.ops[0].target.product);
     const result = await applyChangeSet(changeSet, { adapter, budget, confirm: parsed.data.confirm, verify: true, ...(run ? { run } : {}) });
     return NextResponse.json({ run: result, summary: summarizeRun(result) });
   } catch (error) {

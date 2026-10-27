@@ -55,6 +55,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const body = parsed.data;
     const product: ProductRef = { platform: 'apple', type: 'subscription', id };
     const adapter = new AppleAdapter({ credentials: auth.credentials, budget: new RequestBudget() });
+    // API keys reach every app of a team: the subscription must be in the session's app (APP_MISMATCH otherwise)
+    await adapter.verifyProduct(product);
     const pricing = { type: 'percentOfCurrent' as const, percent: body.percent, basis: body.basis, snap: body.snap };
 
     let spec: OfferSpec;

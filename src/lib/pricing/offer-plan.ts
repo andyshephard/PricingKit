@@ -557,6 +557,7 @@ export function planOfferLifecycle(input: OfferLifecycleInput): OfferPlan {
   if (kind === 'apple.intro') {
     const byTerritory = introEntriesByTerritory(input.existing);
     const prices: Record<string, OfferTerritoryPrice> = {};
+    const storeRefs: Record<string, string> = {};
     const ends = new Set<string>();
     let sample: StoreOffer | undefined;
     for (const [territory, entries] of byTerritory) {
@@ -564,13 +565,18 @@ export function planOfferLifecycle(input: OfferLifecycleInput): OfferPlan {
       if (!mine) continue;
       if (mine.problem || !mine.price) throw new OfferLifecycleError(`${territory}: ${mine.problem ?? 'unreadable price'}`);
       prices[territory] = mine.price;
+      if (mine.storeId) storeRefs[territory] = mine.storeId;
       ends.add(mine.end ?? '');
       sample ??= input.existing.find((o) => o.kind === 'apple.intro' && Object.keys(o.prices).includes(territory) && o.storeRefs?.[territory]);
     }
     if (!sample || Object.keys(prices).length === 0) throw new OfferLifecycleError(`No introductory offer "${key}"`);
     if (ends.size > 1) throw new OfferLifecycleError(`The introductory offer "${key}" has different end dates per territory; plan territories separately`);
     current = storeOfferToState({ ...sample, prices });
-    if (current) current.key = key;
+    if (current) {
+      current.key = key;
+      // Act on exactly the resources read now, never on whatever matches the terms later
+      if (Object.keys(storeRefs).length === Object.keys(prices).length) current.storeRefs = storeRefs;
+    }
   } else {
     const matches = input.existing.filter((o) => o.kind === kind && (o.key === key || o.storeId === key));
     if (matches.length !== 1) throw new OfferLifecycleError(matches.length ? `${matches.length} ${label}s match "${key}"` : `No ${label} "${key}"`);

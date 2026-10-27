@@ -17,6 +17,8 @@ import {
   regionCodeSchema,
 } from '@/lib/validation';
 import { RequestBudget } from '@/lib/utils/request-budget';
+import { assertSubscriptionInApp } from '@/lib/apple-connect/ownership';
+import { listSubscriptionPriceEntries } from '@/lib/apple-connect/price-points';
 
 // Check if the ID is a numeric Apple subscription ID (e.g., "1234567890")
 function isNumericSubscriptionId(id: string): boolean {
@@ -161,6 +163,9 @@ export async function PATCH(
       );
     }
 
+    // API keys reach every app of a team: refuse another app's subscription
+    await assertSubscriptionInApp(auth.credentials, subscription.id, ctx);
+
     const { prices, preserveCurrentPrice } = result.data;
 
     // Fetch current scheduled prices: Apple only allows one scheduled (future)
@@ -254,6 +259,7 @@ const deletePriceSchema = z.object({
 // DELETE /api/apple/subscriptions/[id] - Delete a subscription price
 export async function DELETE(
   request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const auth = await getAppleAuthFromCookies();
@@ -282,7 +288,35 @@ export async function DELETE(
       );
     }
 
-    await deleteSubscriptionPrice(auth.credentials, result.data.subscriptionPriceId);
+    // The price must belong to this subscription, and the subscription to the
+    // session's app: API keys reach every app of a team
+    const { id } = await params;
+    const ctx = { budget: new RequestBudget() };
+    let subscription;
+    if (isNumericSubscriptionId(id)) {
+      subscription = await getSubscriptionById(auth.credentials, id, ctx);
+    } else {
+      let productId: string;
+      try {
+        productId = validateAndDecodeAppleProductId(id);
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          return NextResponse.json({ error: error.message, details: error.details }, { status: 400 });
+        }
+        throw error;
+      }
+      subscription = await getSubscription(auth.credentials, productId, ctx);
+    }
+    if (!subscription) {
+      return NextResponse.json({ error: 'Subscription not found' }, { status: 404 });
+    }
+    await assertSubscriptionInApp(auth.credentials, subscription.id, ctx);
+    const entries = await listSubscriptionPriceEntries(auth.credentials, subscription.id, ctx);
+    if (!entries.some((e) => e.subscriptionPriceId === result.data.subscriptionPriceId)) {
+      return NextResponse.json({ error: 'That price is not one of this subscription\'s prices' }, { status: 404 });
+    }
+
+    await deleteSubscriptionPrice(auth.credentials, result.data.subscriptionPriceId, ctx);
 
     return NextResponse.json({ success: true });
   } catch (error) {

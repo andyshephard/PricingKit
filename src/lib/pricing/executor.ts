@@ -40,12 +40,16 @@ export const PERSIST_FAILED = 'PERSIST_FAILED';
 /** A deleteOffer op was not sent because force.deleteOffers wasn't set */
 export const REDEMPTIONS_UNCHECKED = 'REDEMPTIONS_UNCHECKED';
 
-/** Thrown before anything is read or sent when a plan with offer ops is applied without the right confirm hash */
+/**
+ * Thrown before anything is read or sent when a plan with offer ops is
+ * applied without the right confirm hash. The message never includes the
+ * plan's hash: the hash is what a reviewer copies from the preview, so an
+ * error must not hand it out.
+ */
 export class ConfirmationRequiredError extends Error {
-  constructor(readonly expectedHash: string) {
+  constructor() {
     super(
-      `This plan changes offers. Review it, then apply with confirm set to the plan's hash (${expectedHash}); ` +
-        'a different or missing hash means the plan is not the one that was reviewed.'
+      "This plan changes offers and the confirmation doesn't match it. Review the plan (the preview, or `pricingkit diff`) and confirm with the hash shown there."
     );
     this.name = 'ConfirmationRequiredError';
   }
@@ -162,7 +166,7 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
   const hasOfferOps = changeSet.ops.some(isOfferOp);
   if (hasOfferOps) {
     const hash = changeSetHash(changeSet);
-    if (options.confirm !== hash) throw new ConfirmationRequiredError(hash);
+    if (options.confirm !== hash) throw new ConfirmationRequiredError();
     if (!adapter.fetchOffers || !adapter.applyOffer) {
       throw new ChangeSetValidationError([`the ${adapter.platform} adapter can't apply offer ops`]);
     }
@@ -247,6 +251,19 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
     const priceOps = productOps.filter((op): op is BasePriceOp => !isOfferOp(op));
     const offerOps = productOps.filter(isOfferOp);
 
+    // The product must belong to the plan's app before anything is read or written for it
+    if (adapter.verifyProduct) {
+      try {
+        await adapter.verifyProduct(productOps[0].target.product);
+      } catch (error) {
+        const opError = toOpError(error);
+        for (const op of productOps) update(records.get(op.id)!, { status: 'failed', finishedAt: now(), error: opError });
+        if (isBudgetError(opError)) stop(BUDGET_EXCEEDED);
+        await publish();
+        continue;
+      }
+    }
+
     if (priceOps.length > 0) {
       let state: ProductPriceState | undefined;
       try {
@@ -287,13 +304,13 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
       if (offers) {
         for (const op of offerOps) {
           const record = records.get(op.id)!;
-          const result = classifyOfferOp(op, offers, today());
+          const result = classifyOfferOp(op, offers, today(), offerHistory(record));
           if (result.kind === 'atTarget') {
             // As for prices: an op found at its target after an attempt was sent took effect
             // (e.g. a create that answered 5xx); it is found by its key, never sent again
             update(record, {
               status: record.attempts > 0 ? 'ok' : 'skipped',
-              ...(record.attempts > 0 ? { response: { confirmedOnResume: true } } : { skipReason: 'ALREADY_AT_TARGET' }),
+              ...(record.attempts > 0 ? { response: { ...(record.response ?? {}), confirmedOnResume: true } } : { skipReason: 'ALREADY_AT_TARGET' }),
               observedOffer: result.observed,
               finishedAt: now(),
             });
@@ -352,14 +369,17 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
     const record = records.get(op.id)!;
     if (outcome.error !== undefined) {
       const opError = toOpError(outcome.error);
-      update(record, { status: 'failed', finishedAt: now(), error: opError });
+      // An op that wrote part of its work before failing (e.g. an intro offer created in some
+      // territories) says what it wrote, so a resume and an undo know exactly
+      const partial = partialResponse(outcome.error);
+      update(record, { status: 'failed', finishedAt: now(), error: opError, ...(partial ? { response: mergeResponses(record.response, partial) } : {}) });
       if (isBudgetError(opError)) stop(BUDGET_EXCEEDED);
     } else {
       const warning = typeof outcome.response?.warning === 'string' ? outcome.response.warning : undefined;
       update(record, {
         status: 'ok',
         finishedAt: now(),
-        ...(outcome.response ? { response: outcome.response } : {}),
+        ...(outcome.response ? { response: mergeResponses(record.response, outcome.response) } : {}),
         ...(warning ? { warning } : {}),
       });
     }
@@ -448,7 +468,7 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
         }
         if (offerOps.length > 0 && offerReads.has(key)) {
           const after = await adapter.fetchOffers!(offerOps[0].target.product);
-          for (const op of offerOps) update(records.get(op.id)!, { verified: classifyOfferOp(op, after, today()).kind === 'atTarget' });
+          for (const op of offerOps) update(records.get(op.id)!, { verified: classifyOfferOp(op, after, today(), offerHistory(records.get(op.id)!)).kind === 'atTarget' });
         }
       } catch {
         // Verification is best effort; the ops themselves succeeded
@@ -462,6 +482,26 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
   if (run.status === 'completed') run.finishedAt = now();
   await publish();
   return structuredClone(run);
+}
+
+/** Intro resources an op's earlier attempts created, from its run record */
+function offerHistory(record: OpRecord): { createdIds?: Record<string, string> } {
+  const ids = record.response?.createdIds;
+  return ids && typeof ids === 'object' ? { createdIds: ids as Record<string, string> } : {};
+}
+
+/** An error that carries what was written before it happened (`partialResponse`) */
+function partialResponse(error: unknown): OpResponse | undefined {
+  const partial = error && typeof error === 'object' ? (error as { partialResponse?: unknown }).partialResponse : undefined;
+  return partial && typeof partial === 'object' ? (partial as OpResponse) : undefined;
+}
+
+/** A new response for a record, keeping resource IDs created by earlier attempts */
+function mergeResponses(previous: OpResponse | undefined, next: OpResponse): OpResponse {
+  const prevIds = previous?.createdIds;
+  const nextIds = next.createdIds;
+  if (!prevIds || typeof prevIds !== 'object') return next;
+  return { ...next, createdIds: { ...(prevIds as Record<string, string>), ...((nextIds as Record<string, string> | undefined) ?? {}) } };
 }
 
 /** One line per op, for logs and CLI output. */

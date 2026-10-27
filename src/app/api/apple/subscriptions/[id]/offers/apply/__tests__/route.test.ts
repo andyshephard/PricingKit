@@ -11,9 +11,11 @@ vi.mock('@/middleware/auth', () => ({ getAppleAuthFromCookies: () => getAppleAut
 
 const applyOffer = vi.fn();
 const fetchOffers = vi.fn();
+const verifyProduct = vi.fn();
 vi.mock('@/lib/adapters/apple', () => ({
   AppleAdapter: class {
     platform = 'apple';
+    verifyProduct = (...args: unknown[]) => verifyProduct(...args);
     fetchOffers = (...args: unknown[]) => fetchOffers(...args);
     applyOffer = (...args: unknown[]) => applyOffer(...args);
     fetchState = async () => {
@@ -29,7 +31,7 @@ vi.mock('@/lib/adapters/apple', () => ({
 
 import { POST } from '../route';
 
-function makePlan(id = '123', bundleId = 'com.example.test') {
+function makePlan(id = '123', bundleId = 'com.example.test', over: Partial<OfferPlanInput['spec']> = {}) {
   const product = { platform: 'apple' as const, type: 'subscription' as const, id };
   const input: OfferPlanInput = {
     spec: {
@@ -41,7 +43,8 @@ function makePlan(id = '123', bundleId = 'com.example.test') {
       pricing: { type: 'percentOfCurrent', percent: '50', basis: 'totalOverDuration', snap: 'nearest' },
       territories: 'all',
       syncWithBase: true,
-    },
+      ...over,
+    } as OfferPlanInput['spec'],
     billingPeriod: 'P1Y',
     base: { product, capturedAt: 'x', territories: { US: { territory: 'US', currency: 'USD', current: { currency: 'USD', amount: '59.99' } } } },
     ladders: { US: { currency: 'USD', points: [{ id: 'us-2999', customerPrice: '29.99' }] } },
@@ -60,6 +63,8 @@ beforeEach(() => {
   applyOffer.mockResolvedValue({ createdOfferId: 'promo-1' });
   fetchOffers.mockReset();
   fetchOffers.mockResolvedValue([]);
+  verifyProduct.mockReset();
+  verifyProduct.mockResolvedValue(undefined);
 });
 
 describe('POST offers/apply', () => {
@@ -85,6 +90,7 @@ describe('POST offers/apply', () => {
     const plan = makePlan();
     const response = await call({ changeSet: plan.changeSet, confirm: 'ffffffffffffffff' });
     expect(response.status).toBe(409);
+    expect(JSON.stringify(await response.json())).not.toContain(plan.hash);
     expect(applyOffer).not.toHaveBeenCalled();
     expect((await call({ changeSet: plan.changeSet })).status).toBe(400);
   });
@@ -98,6 +104,42 @@ describe('POST offers/apply', () => {
     const op = plan.changeSet.ops[0] as ChangeSet['ops'][number] & { kind: string };
     const deletePlan = { ...plan.changeSet, ops: [{ ...op, kind: 'deleteOffer' }] };
     expect((await call({ changeSet: deletePlan, confirm: plan.hash })).status).toBe(400);
+    expect(applyOffer).not.toHaveBeenCalled();
+  });
+
+  it('refuses crafted intro, offer code and win-back creates: the web app applies promotional offers only', async () => {
+    const crafted = [
+      makePlan('123', 'com.example.test', { kind: 'apple.intro', schedule: { start: '2030-02-01' } }),
+      makePlan('123', 'com.example.test', {
+        id: 'EXAMPLE-CODE',
+        kind: 'apple.offerCode',
+        eligibility: { type: 'apple.offerCode', customerEligibilities: ['NEW'], offerEligibility: 'STACK_WITH_INTRO_OFFERS' },
+      }),
+      makePlan('123', 'com.example.test', {
+        id: 'example_winback',
+        kind: 'apple.winBack',
+        schedule: { start: '2030-02-01' },
+        eligibility: { type: 'apple.winBack', paidSubscriptionDurationInMonths: 1, timeSinceLastSubscribedInMonths: { minimum: 1, maximum: 6 } },
+      }),
+    ];
+    for (const plan of crafted) {
+      expect(plan.changeSet.ops).toHaveLength(1);
+      const response = await call({ changeSet: plan.changeSet, confirm: plan.hash });
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toMatch(/only promotional offer creates and price updates/);
+    }
+    expect(verifyProduct).not.toHaveBeenCalled();
+    expect(applyOffer).not.toHaveBeenCalled();
+  });
+
+  it("refuses a subscription from another app on the same key (APP_MISMATCH) before reading offers", async () => {
+    const { ApiError } = await import('@/lib/utils/api-error');
+    verifyProduct.mockRejectedValue(new ApiError('Subscription 123 does not belong to com.example.test', { status: 409, code: 'APP_MISMATCH', platform: 'apple', retryable: false }));
+    const plan = makePlan();
+    const response = await call({ changeSet: plan.changeSet, confirm: plan.hash });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: 'APP_MISMATCH' });
+    expect(fetchOffers).not.toHaveBeenCalled();
     expect(applyOffer).not.toHaveBeenCalled();
   });
 });

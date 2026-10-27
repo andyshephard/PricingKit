@@ -152,6 +152,15 @@ export class FakeAppleServer {
       return {};
     }
 
+    // Ownership: one app (com.example.app) whose only group holds SUB_ID
+    if (method === 'GET' && endpoint === '/apps') {
+      return { data: [{ type: 'apps', id: 'app-1', attributes: { bundleId: 'com.example.app' } }].filter((a) => a.attributes.bundleId === query['filter[bundleId]']) };
+    }
+    if (method === 'GET' && endpoint === '/apps/app-1/subscriptionGroups') return { data: [{ type: 'subscriptionGroups', id: 'group-1' }], links: { self: 'x' } };
+    if (method === 'GET' && endpoint === `/subscriptions/${SUB_ID}`) {
+      return { data: { type: 'subscriptions', id: SUB_ID, relationships: { group: { data: { type: 'subscriptionGroups', id: 'group-1' } } } } };
+    }
+
     throw new Error(`FakeAppleServer: unexpected ${method} ${endpoint}`);
   };
 }

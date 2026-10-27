@@ -36,32 +36,30 @@ describe('getPriceTiersForCurrency', () => {
     expect(getPriceTiersForCurrency('XYZ')).toEqual([]);
   });
 
-  it('every currency returns sorted-ascending tiers with no duplicates', () => {
+  // Thousands of tiers: checked in plain loops with one assertion at the end (one expect per
+  // tier made this slow enough to time out under load), with a generous timeout as well
+  it('every currency returns sorted-ascending tiers with no duplicates', { timeout: 30_000 }, () => {
+    const problems: string[] = [];
     for (const currency of getAvailableCurrencies()) {
       const tiers = getPriceTiersForCurrency(currency);
 
       // Some currencies in the dataset have no tiers (e.g. BDT). Allow empty.
       if (tiers.length === 0) continue;
 
-      // Sorted ascending by price
-      for (let i = 1; i < tiers.length; i++) {
-        expect(tiers[i].price, `${currency} tier ${i}`).toBeGreaterThanOrEqual(
-          tiers[i - 1].price
-        );
+      for (let i = 0; i < tiers.length; i++) {
+        const t = tiers[i];
+        // Every entry has the required shape
+        if (typeof t.price !== 'number' || !Number.isFinite(t.price) || t.price <= 0) problems.push(`${currency} tier ${i}: bad price ${String(t.price)}`);
+        if (typeof t.tier !== 'string') problems.push(`${currency} tier ${i}: tier is not a string`);
+        // Sorted ascending by price
+        if (i > 0 && t.price < tiers[i - 1].price) problems.push(`${currency} tier ${i}: ${t.price} below ${tiers[i - 1].price}`);
       }
 
       // Tier IDs unique
       const ids = tiers.map((t) => t.tier);
-      expect(new Set(ids).size, currency).toBe(ids.length);
-
-      // Every entry has the required shape
-      for (const t of tiers) {
-        expect(typeof t.price, currency).toBe('number');
-        expect(Number.isFinite(t.price), currency).toBe(true);
-        expect(t.price, currency).toBeGreaterThan(0);
-        expect(typeof t.tier, currency).toBe('string');
-      }
+      if (new Set(ids).size !== ids.length) problems.push(`${currency}: duplicate tier IDs`);
     }
+    expect(problems).toEqual([]);
   });
 
   it('major currencies (USD, GBP, EUR, JPY) have tiers', () => {

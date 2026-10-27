@@ -50,6 +50,8 @@ interface Intro {
 interface Sub {
   id: string;
   period: string;
+  /** Subscription group; groups belong to apps (see `apps`) */
+  group: string;
   base: Record<string, string>; // alpha3 -> customer price
 }
 
@@ -70,10 +72,14 @@ export class FakeOfferStore {
   failures: Failure[] = [];
   private n = 0;
   promoCap = 10;
+  /** bundleId -> { app ID, its subscription group IDs }. Every subscription defaults to com.example.app's group. */
+  apps = new Map<string, { id: string; groups: string[] }>([['com.example.app', { id: 'app-1', groups: ['group-1'] }]]);
+  /** When set, an intro offer created without a start date reads back with this one (as Apple may fill it in) */
+  fillIntroStartDate?: string;
 
   /** A subscription whose ladder in every territory is `ladder` (customer prices) */
-  addSubscription(id: string, period: string, base: Record<string, string>, ladder: Record<string, string[]>): this {
-    this.subs.set(id, { id, period, base });
+  addSubscription(id: string, period: string, base: Record<string, string>, ladder: Record<string, string[]>, group = 'group-1'): this {
+    this.subs.set(id, { id, period, base, group });
     for (const [alpha3, prices] of Object.entries(ladder)) {
       for (const price of prices) {
         const pid = `pp-${id}-${alpha3}-${price}`;
@@ -164,10 +170,24 @@ export class FakeOfferStore {
 
   private route(method: string, endpoint: string, body: Record<string, unknown> | undefined, query: Record<string, string>): unknown {
     let m: RegExpMatchArray | null;
+    if (method === 'GET' && endpoint === '/apps') {
+      return { data: [...this.apps].filter(([bundleId]) => bundleId === query['filter[bundleId]']).map(([bundleId, app]) => ({ type: 'apps', id: app.id, attributes: { bundleId } })) };
+    }
+    if (method === 'GET' && (m = endpoint.match(/^\/apps\/([^/]+)\/subscriptionGroups$/))) {
+      const app = [...this.apps.values()].find((a) => a.id === m![1]);
+      return { data: (app?.groups ?? []).map((id) => ({ type: 'subscriptionGroups', id })), links: { self: `${API}/x` } };
+    }
     if (method === 'GET' && (m = endpoint.match(/^\/subscriptions\/(\d+)$/))) {
       const sub = this.subs.get(m[1]);
       if (!sub) throw new AppleApiError(404, 'NOT_FOUND', 'Not found', 'No subscription');
-      return { data: { type: 'subscriptions', id: sub.id, attributes: { productId: `com.example.app.${sub.id}`, subscriptionPeriod: sub.period } } };
+      return {
+        data: {
+          type: 'subscriptions',
+          id: sub.id,
+          attributes: { productId: `com.example.app.${sub.id}`, subscriptionPeriod: sub.period },
+          relationships: { group: { data: { type: 'subscriptionGroups', id: sub.group } } },
+        },
+      };
     }
     if (method === 'GET' && (m = endpoint.match(/^\/subscriptions\/(\d+)\/prices$/))) {
       const sub = this.subs.get(m[1])!;
@@ -234,7 +254,7 @@ export class FakeOfferStore {
     if (method === 'POST' && endpoint === '/subscriptionIntroductoryOffers') {
       const subId = data.relationships!.subscription.data.id;
       const alpha3 = data.relationships!.territory.data.id;
-      const start = (data.attributes!.startDate as string | undefined) ?? null;
+      const start = (data.attributes!.startDate as string | undefined) ?? this.fillIntroStartDate ?? null;
       const end = (data.attributes!.endDate as string | undefined) ?? null;
       const clash = this.intros.find(
         (i) => i.subscriptionId === subId && i.alpha3 === alpha3 && (i.attributes.startDate ?? '0000') < (end ?? '9999') && (start ?? '0000') < ((i.attributes.endDate as string | null) ?? '9999')

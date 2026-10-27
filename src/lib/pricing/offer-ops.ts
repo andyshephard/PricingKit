@@ -78,6 +78,12 @@ export interface OfferState {
   autoRenewEnabled?: boolean;
   /** alpha-2 keyed. Paid modes name a price point; a free trial is free: true */
   prices: Record<string, OfferTerritoryPrice>;
+  /**
+   * Intro offers only: the store resource of each territory. When set, ops
+   * act on exactly these resources (undo deletes only what its run created)
+   * instead of finding them by terms.
+   */
+  storeRefs?: Record<string, string>;
 }
 
 export interface OfferOp {
@@ -121,6 +127,7 @@ export const offerStateSchema = z
     promotionIntent: z.enum(APPLE_WIN_BACK_PROMOTION_INTENTS).optional(),
     autoRenewEnabled: z.boolean().optional(),
     prices: z.record(territorySchema, offerTerritoryPriceSchema),
+    storeRefs: z.record(territorySchema, z.string().min(1)).optional(),
   })
   .strict();
 
@@ -353,7 +360,12 @@ function classifyKeyed(op: OfferOp, offers: StoreOffer[]): OfferClassification {
   return { kind: 'drifted', observed: state, message: `The ${label} changed since the plan was made. ${NOTHING_SENT}` };
 }
 
-function classifyIntro(op: OfferOp, offers: StoreOffer[], today: string): OfferClassification {
+/** What a run already knows about an op: intro resources it created in earlier attempts */
+export interface OfferOpHistory {
+  createdIds?: Record<string, string>;
+}
+
+function classifyIntro(op: OfferOp, offers: StoreOffer[], today: string, history: OfferOpHistory = {}): OfferClassification {
   const byTerritory = introEntriesByTerritory(offers);
   const key = op.target.offer.key;
   const scope = op.kind === 'createOffer' ? op.after! : op.before!;
@@ -365,8 +377,12 @@ function classifyIntro(op: OfferOp, offers: StoreOffer[], today: string): OfferC
 
   for (const territory of Object.keys(scope.prices).sort()) {
     const entries = byTerritory.get(territory) ?? [];
-    const mine = entries.filter((e) => e.key === key);
-    const others = entries.filter((e) => e.key !== key);
+    // A known resource ID (from the plan, or created earlier in this run) identifies the offer exactly;
+    // otherwise it is found by its terms and start date
+    const knownId = scope.storeRefs?.[territory] ?? (op.kind === 'createOffer' ? history.createdIds?.[territory] : undefined);
+    const mine = knownId ? entries.filter((e) => e.storeId === knownId) : entries.filter((e) => e.key === key);
+    const others = entries.filter((e) => !mine.includes(e));
+    const overlapping = others.find((e) => windowsOverlap({ start: e.start, end: e.end }, window, today));
     if (mine.length > 1) {
       drift.push(`${territory}: ${mine.length} introductory offers with these terms`);
       continue;
@@ -384,8 +400,7 @@ function classifyIntro(op: OfferOp, offers: StoreOffer[], today: string): OfferC
       case 'createOffer': {
         const wanted = op.after!.prices[territory];
         if (!entry) {
-          const clash = others.find((e) => windowsOverlap({ start: e.start, end: e.end }, window, today));
-          if (clash) drift.push(`${territory}: overlaps another introductory offer (${clash.key}${clash.end ? ` until ${clash.end}` : ''})`);
+          if (overlapping) drift.push(`${territory}: overlaps another introductory offer (${overlapping.key}${overlapping.end ? ` until ${overlapping.end}` : ''})`);
           else pending.push(territory);
         } else if (sameOfferPrice(entry.price, wanted) && end === endOf(op.after)) {
           // done
@@ -395,13 +410,20 @@ function classifyIntro(op: OfferOp, offers: StoreOffer[], today: string): OfferC
         break;
       }
       case 'deleteOffer':
-        if (!entry) break; // done
+        if (!entry) {
+          // Gone is done only when nothing else could be this offer: without a resource ID, an
+          // overlapping offer may be it with a start date App Store Connect filled in on read
+          if (!knownId && overlapping) {
+            drift.push(`${territory}: no introductory offer with these terms, but ${overlapping.key} overlaps; it may be this one with a start date App Store Connect filled in`);
+          }
+          break;
+        }
         if (sameOfferPrice(entry.price, op.before!.prices[territory])) pending.push(territory);
         else drift.push(`${territory}: price changed since the plan was made`);
         break;
       default: {
         // deactivateOffer / activateOffer: move the end date from before's to after's
-        if (!entry) drift.push(`${territory}: the introductory offer no longer exists`);
+        if (!entry) drift.push(`${territory}: the introductory offer no longer exists${overlapping ? ` (${overlapping.key} overlaps)` : ''}`);
         else if (!sameOfferPrice(entry.price, op.before!.prices[territory])) drift.push(`${territory}: price changed since the plan was made`);
         else if (end === endOf(op.after)) {
           // done
@@ -422,8 +444,8 @@ function classifyIntro(op: OfferOp, offers: StoreOffer[], today: string): OfferC
 }
 
 /** Compare an offer op with the product's offers as read now. `today` is YYYY-MM-DD. */
-export function classifyOfferOp(op: OfferOp, offers: StoreOffer[], today: string): OfferClassification {
-  return op.target.offer.kind === 'apple.intro' ? classifyIntro(op, offers, today) : classifyKeyed(op, offers);
+export function classifyOfferOp(op: OfferOp, offers: StoreOffer[], today: string, history: OfferOpHistory = {}): OfferClassification {
+  return op.target.offer.kind === 'apple.intro' ? classifyIntro(op, offers, today, history) : classifyKeyed(op, offers);
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +470,10 @@ function checkState(where: string, state: OfferState, op: OfferOp, problems: str
     } else if (p.free || !p.pricePointId) {
       problems.push(`${where}: ${t} must name an Apple price point (pricePointId)`);
     }
+  }
+  if (state.storeRefs) {
+    if (state.kind !== 'apple.intro') problems.push(`${where}: storeRefs are for introductory offers only`);
+    for (const t of Object.keys(state.storeRefs)) if (!state.prices[t]) problems.push(`${where}: storeRefs names ${t}, which has no price`);
   }
   if (state.kind === 'apple.intro' && state.key !== introOfferKey({ ...state, start: state.schedule?.start })) {
     problems.push(`${where}: an introductory offer's key must be "${introOfferKey({ ...state, start: state.schedule?.start })}"`);
@@ -544,11 +570,33 @@ function makeInverse(op: OfferOp, kind: OfferOpKind, before: OfferState | null, 
   return { ...inverse, idempotencyKey: computeOfferIdempotencyKey(inverse) };
 }
 
-/** The op that restores what `op` changed, and what it can't restore */
-export function invertOfferOp(op: OfferOp): OfferInverse {
+/**
+ * The op that restores what `op` changed, and what it can't restore.
+ * `history.createdIds` (from the run log) limits undoing an intro create to
+ * the resources the run created; without it no intro territory is deleted.
+ */
+export function invertOfferOp(op: OfferOp, history: OfferOpHistory = {}): OfferInverse {
   const kind = op.target.offer.kind;
   switch (op.kind) {
     case 'createOffer':
+      if (kind === 'apple.intro') {
+        const ids = history.createdIds ?? {};
+        const created = Object.keys(op.after!.prices).filter((t) => ids[t]);
+        const unknown = Object.keys(op.after!.prices).filter((t) => !ids[t]);
+        const caveat = unknown.length
+          ? `No created resource was recorded for ${unknown.join(', ')}; undo leaves those territories alone. If an introductory offer was created there, delete it in App Store Connect.`
+          : undefined;
+        if (created.length === 0) return { notReversible: caveat ?? 'Nothing was created' };
+        const before: OfferState = {
+          ...op.after!,
+          prices: Object.fromEntries(created.map((t) => [t, op.after!.prices[t]])),
+          storeRefs: Object.fromEntries(created.map((t) => [t, ids[t]])),
+        };
+        return {
+          op: makeInverse(op, 'deleteOffer', before, null),
+          caveat: [`Deleting the introductory offer needs force: App Store Connect's API doesn't report redemptions.`, caveat].filter(Boolean).join(' '),
+        };
+      }
       if (kind === 'apple.offerCode') {
         return {
           op: makeInverse(op, 'deactivateOffer', op.after, { ...op.after!, active: false }),

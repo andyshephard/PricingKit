@@ -15,6 +15,7 @@ import {
   ValidationError,
 } from '@/lib/validation';
 import { RequestBudget } from '@/lib/utils/request-budget';
+import { assertSubscriptionInApp } from '@/lib/apple-connect/ownership';
 
 // Check if the ID is a numeric Apple subscription ID (e.g., "1234567890")
 function isNumericSubscriptionId(id: string): boolean {
@@ -65,6 +66,9 @@ export async function POST(
         { status: 404 }
       );
     }
+
+    // API keys reach every app of a team: refuse another app's subscription
+    await assertSubscriptionInApp(auth.credentials, subscription.id, ctx);
 
     // Fetch current prices to get scheduled prices
     const currentPricesResult = await getSubscriptionPrices(auth.credentials, subscription.id, ctx);

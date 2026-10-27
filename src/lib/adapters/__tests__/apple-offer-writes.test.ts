@@ -190,8 +190,9 @@ describe('applying offer plans', () => {
 
   it("won't start an op the request budget can't cover", async () => {
     const plan = await planBoth();
-    // Reads: offers of both products (4 lists each, no prices yet) = 8; then one POST each
-    const budget = new RequestBudget({ limit: 9 });
+    // Reads: app checks (app, its groups, each subscription's group) = 4, offers of both
+    // products (4 lists each, no prices yet) = 8; then one POST each
+    const budget = new RequestBudget({ limit: 13 });
     const run = await applyChangeSet(plan.changeSet, { adapter: adapter(budget), confirm: plan.hash, budget, concurrency: 1 });
     expect(run.status).toBe('incomplete');
     expect(run.stoppedReason).toBe('BUDGET_EXCEEDED');
@@ -322,7 +323,7 @@ describe('introductory offers', () => {
 
   it('budgets every territory of an intro create before starting it', async () => {
     const plan = await adapter().planOffers({ app, offers: [freeWeek] });
-    const budget = new RequestBudget({ limit: 4 + 3 }); // 4 offer list reads + 3 of the 4 creates
+    const budget = new RequestBudget({ limit: 3 + 4 + 3 }); // 3 app checks + 4 offer list reads + 3 of the 4 creates
     const run = await applyChangeSet(plan.changeSet, { adapter: adapter(budget), confirm: plan.hash, budget });
     expect(run.stoppedReason).toBe('BUDGET_EXCEEDED');
     expect(run.ops[0].status).toBe('pending');
@@ -412,5 +413,146 @@ describe('offer codes and win-back offers', () => {
       ],
     });
     expect(plan.entries[0].refusals[0]).toMatchObject({ code: 'MISSING_SETTINGS', message: expect.stringMatching(/start date/) });
+  });
+});
+
+describe('one API key, two apps', () => {
+  const STAGING_SUB = '9100000009';
+  const stagingCredentials = { ...credentials, bundleId: 'com.example.app.staging' };
+  const stagingApp = { bundleId: 'com.example.app.staging' };
+  const staging = () => new AppleAdapter({ credentials: stagingCredentials, budget: new RequestBudget(), now: () => NOW });
+
+  beforeEach(() => {
+    store.apps.set('com.example.app.staging', { id: 'app-2', groups: ['group-2'] });
+    store.addSubscription(STAGING_SUB, 'ONE_YEAR', { USA: '49.99' }, { USA: ['24.99', '49.99'] }, 'group-2');
+  });
+
+  it("planning refuses another app's subscription before reading its offers or prices", async () => {
+    await expect(staging().planOffers({ app: stagingApp, offers: [halfOffAnnual(annual, 'example_annual_50')] })).rejects.toMatchObject({ status: 409, code: 'APP_MISMATCH' });
+    expect(store.calls.map((c) => c.endpoint).filter((e) => e.includes('Offers') || e.endsWith('/prices') || e.endsWith('/pricePoints'))).toEqual([]);
+    // Its own subscription plans fine
+    const own = await staging().planOffers({ app: stagingApp, offers: [halfOffAnnual({ platform: 'apple', type: 'subscription', id: STAGING_SUB }, 'example_staging_50')] });
+    expect(own.entries[0].action).toBe('create');
+  });
+
+  it("the executor refuses a plan naming another app's subscription before reading or writing anything", async () => {
+    // A plan for the staging app that names a production subscription (e.g. a copied ID)
+    const plan = await adapter().planOffers({ app, offers: [halfOffAnnual(annual, 'example_annual_50')] });
+    const crafted = { ...plan.changeSet, app: stagingApp };
+    const { changeSetHash } = await import('@/lib/pricing');
+    store.calls = [];
+    const run = await applyChangeSet(crafted, { adapter: staging(), confirm: changeSetHash(crafted) });
+    expect(run.ops[0]).toMatchObject({ status: 'failed', error: { code: 'APP_MISMATCH', status: 409 } });
+    expect(store.writes()).toEqual([]);
+    expect(store.calls.some((c) => c.endpoint.includes('promotionalOffers'))).toBe(false);
+  });
+
+  it('matches the bundle ID exactly (a prefix match is not the app)', async () => {
+    store.apps.set('com.example.app.staging.extra', { id: 'app-3', groups: ['group-1'] });
+    await expect(staging().planOffers({ app: stagingApp, offers: [halfOffAnnual(annual, 'x')] })).rejects.toMatchObject({ code: 'APP_MISMATCH' });
+  });
+});
+
+describe('intro offers whose start date App Store Connect fills in on read', () => {
+  const trial: OfferSpec = {
+    id: 'trial',
+    productRef: annual,
+    kind: 'apple.intro',
+    mode: 'FREE_TRIAL',
+    duration: 'P1W',
+    pricing: { type: 'free' },
+    territories: ['US', 'GB'],
+    syncWithBase: false,
+  };
+  const hashOf = async (cs: Parameters<typeof applyChangeSet>[0]) => (await import('@/lib/pricing')).changeSetHash(cs);
+
+  it('records the created resources, never treats a re-dated offer as done, and undo deletes exactly what the run created', async () => {
+    store.fillIntroStartDate = '2030-03-01';
+    // An unrelated intro offer in another territory that the run must never touch
+    const unrelated = store.seedIntro(ANNUAL, 'DEU', { duration: 'ONE_MONTH', offerMode: 'FREE_TRIAL' }, null);
+    const plan = await adapter().planOffers({ app, offers: [trial] });
+    const run = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash, verify: true });
+    expect(run.ops[0].status).toBe('ok');
+    const createdIds = run.ops[0].response!.createdIds as Record<string, string>;
+    expect(Object.keys(createdIds).sort()).toEqual(['GB', 'US']);
+    expect(store.intros.filter((i) => i.attributes.startDate === '2030-03-01')).toHaveLength(2);
+    // The run's own read-back finds them by the recorded IDs; a fresh run, which has no IDs and
+    // reads a start date the plan didn't have, reports a conflict rather than "already done" or sending again
+    expect(run.ops[0].verified).toBe(true);
+    const again = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash });
+    expect(again.ops[0]).toMatchObject({ status: 'failed', error: { code: 'STATE_CHANGED' } });
+    expect(store.writes().filter((w) => w.startsWith('POST'))).toHaveLength(2);
+
+    // Deleting by terms alone finds nothing with these terms but an overlapping offer: drift, not done
+    const op = plan.changeSet.ops[0] as OfferOp;
+    const { computeOfferIdempotencyKey } = await import('@/lib/pricing');
+    const byTerms = { ...op, id: 'op-0001', kind: 'deleteOffer' as const, before: op.after, after: null };
+    const deleteByTerms = { ...plan.changeSet, id: 'del', ops: [{ ...byTerms, idempotencyKey: computeOfferIdempotencyKey(byTerms) }] };
+    const blind = await applyChangeSet(deleteByTerms, { adapter: adapter(), confirm: await hashOf(deleteByTerms), force: { deleteOffers: true } });
+    expect(blind.ops[0]).toMatchObject({ status: 'failed', error: { code: 'STATE_CHANGED', message: expect.stringMatching(/start date App Store Connect filled in/) } });
+    expect(store.writes().filter((w) => w.startsWith('DELETE'))).toEqual([]);
+
+    // Undo uses the recorded resource IDs
+    const undo = buildUndoChangeSet(plan.changeSet, run);
+    expect((undo.ops[0] as OfferOp).before!.storeRefs).toEqual(createdIds);
+    const undone = await applyChangeSet(undo, { adapter: adapter(), confirm: await hashOf(undo), force: { deleteOffers: true } });
+    expect(undone.status).toBe('completed');
+    expect(store.intros).toEqual([unrelated]);
+  });
+
+  it('undo of a partly failed intro create deletes only the territories that run created', async () => {
+    const plan = await adapter().planOffers({ app, offers: [{ ...trial, territories: ['DE', 'GB', 'JP', 'US'] }] });
+    let n = 0;
+    appleApiRequest.mockImplementation(async (c: unknown, endpoint: string, options: Record<string, unknown> = {}) => {
+      if (options.method === 'POST' && ++n === 3) {
+        const { AppleApiError } = await import('@/lib/apple-connect/client');
+        throw new AppleApiError(500, 'UNEXPECTED_ERROR', 'Error', 'down');
+      }
+      return store.handle(c, endpoint, options);
+    });
+    const run = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash });
+    expect(run.ops[0]).toMatchObject({ status: 'failed', attempts: 1, response: { createdIds: { DE: expect.any(String), GB: expect.any(String) } } });
+    appleApiRequest.mockImplementation(store.handle);
+    // Someone else creates an intro offer in US with the same terms before the undo
+    const foreign = store.seedIntro(ANNUAL, 'USA', { duration: 'ONE_WEEK', offerMode: 'FREE_TRIAL' }, null);
+
+    const undo = buildUndoChangeSet(plan.changeSet, run);
+    const del = undo.ops[0] as OfferOp;
+    expect(Object.keys(del.before!.prices)).toEqual(['DE', 'GB']);
+    expect(undo.notReversible?.[0].reason).toMatch(/No created resource was recorded for JP, US/);
+    const undone = await applyChangeSet(undo, { adapter: adapter(), confirm: await hashOf(undo), force: { deleteOffers: true } });
+    expect(undone.status).toBe('completed');
+    expect(store.intros).toEqual([foreign]);
+  });
+
+  it('a resume after a partial create uses the recorded IDs and creates only the rest', async () => {
+    store.fillIntroStartDate = '2030-03-01';
+    const plan = await adapter().planOffers({ app, offers: [trial] });
+    let n = 0;
+    appleApiRequest.mockImplementation(async (c: unknown, endpoint: string, options: Record<string, unknown> = {}) => {
+      if (options.method === 'POST' && ++n === 2) {
+        const { AppleApiError } = await import('@/lib/apple-connect/client');
+        throw new AppleApiError(500, 'UNEXPECTED_ERROR', 'Error', 'down');
+      }
+      return store.handle(c, endpoint, options);
+    });
+    const first = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash });
+    expect(first.ops[0].status).toBe('failed');
+    appleApiRequest.mockImplementation(store.handle);
+    const resumed = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash, run: first });
+    expect(resumed.status).toBe('completed');
+    expect(Object.keys(resumed.ops[0].response!.createdIds as object).sort()).toEqual(['GB', 'US']);
+    expect(store.intros).toHaveLength(2);
+  });
+});
+
+describe('undo after a refused create', () => {
+  it('leaves out creates the store refused with a 4xx', async () => {
+    const plan = await planBoth();
+    store.failures.push({ method: 'POST', path: /^\/subscriptionPromotionalOffers$/, status: 409 });
+    const run = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash, concurrency: 1 });
+    expect(run.ops.map((r) => r.status)).toEqual(['failed', 'ok']);
+    const undo = buildUndoChangeSet(plan.changeSet, run);
+    expect(undo.ops.map((op) => (op as OfferOp).target.offer.key)).toEqual(['example_annual_alt_50']);
   });
 });

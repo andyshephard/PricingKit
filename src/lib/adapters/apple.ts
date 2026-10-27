@@ -70,6 +70,7 @@ import {
   type OfferPriceInput,
 } from '@/lib/apple-connect/offer-writes';
 import { AppleApiError } from '@/lib/apple-connect/client';
+import { SubscriptionOwnership } from '@/lib/apple-connect/ownership';
 import { getSubscriptionById } from '@/lib/apple-connect/subscriptions';
 import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
 import { deleteSubscriptionPrice, updateSubscriptionPrice } from '@/lib/apple-connect/subscriptions';
@@ -112,11 +113,23 @@ export class AppleAdapter implements PlatformAdapter {
   private readonly credentials: AppleConnectCredentials;
   private readonly budget?: RequestBudget;
   private readonly now?: () => Date;
+  private readonly ownership: SubscriptionOwnership;
 
   constructor(options: AppleAdapterOptions) {
     this.credentials = options.credentials;
     this.budget = options.budget;
     this.now = options.now;
+    this.ownership = new SubscriptionOwnership(this.credentials, this.credentials.bundleId, { budget: this.budget });
+  }
+
+  /**
+   * Throws APP_MISMATCH unless the subscription belongs to the adapter's app
+   * (credentials.bundleId). API keys reach every app of a team, so a
+   * subscription ID from another app would otherwise be written to.
+   * Checked once per subscription per adapter.
+   */
+  async verifyProduct(product: ProductRef): Promise<void> {
+    await this.ownership.assert(subscriptionId(product));
   }
 
   private get ctx() {
@@ -514,6 +527,7 @@ export class AppleAdapter implements PlatformAdapter {
       const id = subscriptionId(product);
       let cache = products.get(id);
       if (!cache) {
+        await this.verifyProduct(product);
         cache = { offers: new Map() };
         products.set(id, cache);
       }
@@ -546,6 +560,7 @@ export class AppleAdapter implements PlatformAdapter {
   /** Plan ending, re-activating or deleting one existing offer. Reads only. */
   async planOfferLifecycle(input: Omit<OfferLifecycleInput, 'existing'>): Promise<OfferPlan> {
     this.assertApp(input.app);
+    await this.verifyProduct(input.product);
     const existing = await listSubscriptionOffersOfKind(this.credentials, subscriptionId(input.product), input.kind, this.ctx);
     return planOfferLifecycle({ ...input, existing });
   }
@@ -651,7 +666,7 @@ export class AppleAdapter implements PlatformAdapter {
         // Some territories were written: say so, so the run log is truthful. A resume skips them.
         const apiError = toApiError(error, 'apple');
         const detail = error instanceof AppleApiError ? error.detail : apiError.message;
-        throw new ApiError(`${territory} failed after ${done.length} of ${pending.length} territories were written (${done.join(', ')}): ${detail}. Resume the run to continue with the rest.`, {
+        const partial = new ApiError(`${territory} failed after ${done.length} of ${pending.length} territories were written (${done.join(', ')}): ${detail}. Resume the run to continue with the rest.`, {
           status: apiError.status,
           ...(apiError.code !== undefined ? { code: apiError.code } : {}),
           platform: 'apple',
@@ -659,6 +674,9 @@ export class AppleAdapter implements PlatformAdapter {
           details: { written: [...done] },
           cause: error,
         });
+        // The executor records this in the run log: a resume and an undo then know exactly which resources exist
+        Object.assign(partial, { partialResponse: { territories: done.length, ...(Object.keys(ids).length ? { createdIds: { ...ids } } : {}) } });
+        throw partial;
       }
     };
     for (const territory of pending) {
@@ -831,8 +849,12 @@ export function explainOfferRefusal(error: unknown, op: OfferOp): unknown {
   if (error.code === 'UNSUPPORTED_OPERATION') return error;
   const detail = error instanceof AppleApiError ? error.detail || error.title : error.message;
   const hint = refusalHint(op, error.status);
-  return new ApiError(
+  const explained = new ApiError(
     `Apple refused to ${VERBS[op.kind]} the ${offerKindLabel(op.target.offer.kind)} "${op.target.offer.key}": ${detail}${hint ? `. ${hint}.` : ''}`,
     { status: error.status, ...(error.code !== undefined ? { code: error.code } : {}), platform: 'apple', retryable: error.retryable, details: error.details, cause: error }
   );
+  // Keep what was written before the refusal (intro offers created in some territories)
+  const partial = (error as { partialResponse?: unknown }).partialResponse;
+  if (partial) Object.assign(explained, { partialResponse: partial });
+  return explained;
 }

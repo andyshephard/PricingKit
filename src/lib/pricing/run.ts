@@ -201,8 +201,10 @@ export function assertRunMatches(changeSet: ChangeSet, run: ApplyRun): void {
  * `before` snapshots. Only ops the run applied (status ok) are reversed,
  * newest first; skipped ops changed nothing. Offer ops that failed after a
  * request was sent are reversed too, because they may have taken effect (a
- * create that answered 5xx, or an intro offer created in some territories):
- * the undo op is judged against the store like any other, so a part that
+ * create that answered 5xx, or an intro offer created in some territories),
+ * except ones the store refused with a 4xx and nothing recorded as written.
+ * Intro creates are undone only for the resources the run recorded creating.
+ * The undo op is judged against the store like any other, so a part that
  * never happened is simply skipped. The result is an ordinary plan: review
  * it, then apply it like any other (it is idempotent too).
  */
@@ -219,10 +221,14 @@ export function buildUndoChangeSet(
 
   for (const record of [...run.ops].reverse()) {
     const op = byId.get(record.opId)!;
-    const mayHaveApplied = record.status === 'ok' || (isOfferOp(op) && record.status === 'failed' && record.attempts > 0);
+    const createdIds = record.response?.createdIds as Record<string, string> | undefined;
+    // A failed offer op may still have taken effect (a create that answered 5xx or timed out),
+    // unless the store refused it (4xx) without writing anything
+    const refused = record.error?.status !== undefined && record.error.status >= 400 && record.error.status < 500 && !createdIds;
+    const mayHaveApplied = record.status === 'ok' || (isOfferOp(op) && record.status === 'failed' && record.attempts > 0 && !refused);
     if (!mayHaveApplied) continue;
     if (isOfferOp(op)) {
-      const inverse = invertOfferOp(op as OfferOp);
+      const inverse = invertOfferOp(op as OfferOp, createdIds ? { createdIds } : {});
       if (inverse.notReversible) notReversible.push({ opId: op.id, reason: inverse.notReversible });
       if (inverse.op) {
         if (inverse.caveat) {
