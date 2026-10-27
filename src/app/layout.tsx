@@ -1,16 +1,22 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { IBM_Plex_Mono, Manrope } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
+import { THEME_SCRIPT } from "@/components/theme/theme-script";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+// next/font downloads the fonts at build time and serves them from this
+// origin: no request to Google Fonts at runtime.
+const manrope = Manrope({
+  variable: "--font-manrope",
   subsets: ["latin"],
+  display: "swap",
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const plexMono = IBM_Plex_Mono({
+  variable: "--font-plex-mono",
   subsets: ["latin"],
+  weight: ["400", "500"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
@@ -45,9 +51,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Sets the light/dark class before first paint; see theme-script.ts. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
+      </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${manrope.variable} ${plexMono.variable} antialiased`}
       >
         <Providers>{children}</Providers>
       </body>

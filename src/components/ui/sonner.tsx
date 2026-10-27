@@ -7,11 +7,12 @@ import {
   OctagonXIcon,
   TriangleAlertIcon,
 } from "lucide-react"
-import { useTheme } from "next-themes"
+import { useResolvedTheme } from "@/components/theme/theme"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 
 const Toaster = ({ ...props }: ToasterProps) => {
-  const { theme = "system" } = useTheme()
+  // next-themes is a dependency but not mounted; the Atlas theme hook is the source of truth.
+  const theme = useResolvedTheme() ?? "system"
 
   return (
     <Sonner

@@ -6,8 +6,26 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-manrope), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  --color-soft: var(--soft);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-chip: var(--chip);
+  --color-chip-foreground: var(--chip-foreground);
+  --color-header: var(--header);
+  --color-change: var(--change);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-warn: var(--warn);
+  --color-warn-border: var(--warn-border);
+  --color-warn-foreground: var(--warn-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-code: var(--code);
+  --color-code-foreground: var(--code-foreground);
+  --color-link: var(--link);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -46,80 +64,183 @@
   --radius-4xl: calc(var(--radius) + 16px);
 }
 
+/*
+ * Atlas design tokens. shadcn/ui components read the standard names
+ * (background, card, primary, muted, accent, border, input, ring, sidebar…);
+ * the extra names (soft, line, chip, change, info, warn, success, code, link)
+ * are for Atlas-specific surfaces. Every text/background pair used together
+ * meets WCAG AA (4.5:1); src/app/__tests__/theme-contrast.test.ts checks them.
+ * Light muted text is #646b78, a touch darker than the mock-up's #6b7280,
+ * which fell below 4.5:1 on the chip and muted surfaces.
+ */
 :root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.15 0.02 260);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.15 0.02 260);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.15 0.02 260);
-  --primary: oklch(0.55 0.18 260);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.96 0.01 260);
-  --secondary-foreground: oklch(0.25 0.03 260);
-  --muted: oklch(0.965 0.005 260);
-  --muted-foreground: oklch(0.5 0.02 260);
-  --accent: oklch(0.96 0.02 260);
-  --accent-foreground: oklch(0.25 0.03 260);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.005 260);
-  --input: oklch(0.92 0.005 260);
-  --ring: oklch(0.55 0.18 260);
-  --chart-1: oklch(0.55 0.18 260);
-  --chart-2: oklch(0.65 0.15 165);
-  --chart-3: oklch(0.6 0.2 305);
-  --chart-4: oklch(0.75 0.15 80);
-  --chart-5: oklch(0.65 0.2 25);
-  --sidebar: oklch(0.98 0.005 260);
-  --sidebar-foreground: oklch(0.15 0.02 260);
-  --sidebar-primary: oklch(0.55 0.18 260);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.94 0.02 260);
-  --sidebar-accent-foreground: oklch(0.25 0.03 260);
-  --sidebar-border: oklch(0.92 0.005 260);
-  --sidebar-ring: oklch(0.55 0.18 260);
+  --radius: 0.75rem;
+  --background: #f6f7f9;
+  --foreground: #14171f;
+  --card: #ffffff;
+  --card-foreground: #14171f;
+  --popover: #ffffff;
+  --popover-foreground: #14171f;
+  --primary: #1f4fd8;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f3f6;
+  --secondary-foreground: #14171f;
+  --muted: #f1f3f6;
+  --muted-foreground: #646b78;
+  --accent: #e8eefc;
+  --accent-foreground: #1f4fd8;
+  --destructive: #c0262d;
+  --destructive-foreground: #ffffff;
+  --border: #e3e6ec;
+  --input: #d6dae3;
+  --ring: #1f4fd8;
+  --chart-1: #1f4fd8;
+  --chart-2: #0f766e;
+  --chart-3: #7c3aed;
+  --chart-4: #b45309;
+  --chart-5: #be123c;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #4a5160;
+  --sidebar-primary: #1f4fd8;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #e8eefc;
+  --sidebar-accent-foreground: #1f4fd8;
+  --sidebar-border: #e3e6ec;
+  --sidebar-ring: #1f4fd8;
+
+  --soft: #4a5160;
+  --line: #eef0f4;
+  --line-strong: #d6dae3;
+  --chip: #f1f3f6;
+  --chip-foreground: #4a5160;
+  --header: #ffffff;
+  --change: #b45309;
+  --info: #eef3ff;
+  --info-foreground: #1e3a8a;
+  --warn: #fff7ed;
+  --warn-border: #fed7aa;
+  --warn-foreground: #7c2d12;
+  --success: #e7f6ee;
+  --success-foreground: #146c3f;
+  --code: #0f172a;
+  --code-foreground: #e2e8f0;
+  --link: #1f4fd8;
+  --shadow-panel: 0 12px 40px rgba(20, 23, 31, 0.06);
 }
 
 .dark {
-  --background: oklch(0.14 0.01 260);
-  --foreground: oklch(0.95 0.01 260);
-  --card: oklch(0.19 0.015 260);
-  --card-foreground: oklch(0.95 0.01 260);
-  --popover: oklch(0.19 0.015 260);
-  --popover-foreground: oklch(0.95 0.01 260);
-  --primary: oklch(0.65 0.18 260);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.24 0.02 260);
-  --secondary-foreground: oklch(0.95 0.01 260);
-  --muted: oklch(0.24 0.02 260);
-  --muted-foreground: oklch(0.65 0.02 260);
-  --accent: oklch(0.24 0.02 260);
-  --accent-foreground: oklch(0.95 0.01 260);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.65 0.18 260);
-  --chart-1: oklch(0.6 0.2 260);
-  --chart-2: oklch(0.7 0.15 165);
-  --chart-3: oklch(0.65 0.2 305);
-  --chart-4: oklch(0.75 0.15 80);
-  --chart-5: oklch(0.7 0.2 25);
-  --sidebar: oklch(0.17 0.015 260);
-  --sidebar-foreground: oklch(0.95 0.01 260);
-  --sidebar-primary: oklch(0.65 0.18 260);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.24 0.02 260);
-  --sidebar-accent-foreground: oklch(0.95 0.01 260);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.65 0.18 260);
+  --background: #0e1116;
+  --foreground: #e6e9ef;
+  --card: #151a22;
+  --card-foreground: #e6e9ef;
+  --popover: #151a22;
+  --popover-foreground: #e6e9ef;
+  --primary: #7c9cff;
+  --primary-foreground: #0b1020;
+  --secondary: #1c222c;
+  --secondary-foreground: #e6e9ef;
+  --muted: #1c222c;
+  --muted-foreground: #8d97a8;
+  --accent: #1a2340;
+  --accent-foreground: #b8c8ff;
+  --destructive: #ff8a80;
+  --destructive-foreground: #1a0b0b;
+  --border: #232a35;
+  --input: #2b3340;
+  --ring: #7c9cff;
+  --chart-1: #7c9cff;
+  --chart-2: #5eead4;
+  --chart-3: #c4b5fd;
+  --chart-4: #f0a35e;
+  --chart-5: #fda4af;
+  --sidebar: #12161d;
+  --sidebar-foreground: #a3acbb;
+  --sidebar-primary: #7c9cff;
+  --sidebar-primary-foreground: #0b1020;
+  --sidebar-accent: #1a2340;
+  --sidebar-accent-foreground: #b8c8ff;
+  --sidebar-border: #232a35;
+  --sidebar-ring: #7c9cff;
+
+  --soft: #a3acbb;
+  --line: #1f2630;
+  --line-strong: #2b3340;
+  --chip: #1c222c;
+  --chip-foreground: #a3acbb;
+  --header: #12161d;
+  --change: #f0a35e;
+  --info: #141c33;
+  --info-foreground: #c7d3ff;
+  --warn: #251b10;
+  --warn-border: #5a3d1c;
+  --warn-foreground: #f6c993;
+  --success: #10261b;
+  --success-foreground: #8fe0b0;
+  --code: #090c11;
+  --code-foreground: #e2e8f0;
+  --link: #8ea8ff;
+  --shadow-panel: 0 16px 48px rgba(0, 0, 0, 0.35);
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground font-sans;
+    font-feature-settings: "cv11", "ss01";
+  }
+  /* Visible keyboard focus for plain links and controls that bring no ring of their own. */
+  :where(a, button, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  /* Long-form text on docs-like pages (setup guides; the docs in part 2). */
+  .prose-atlas {
+    @apply text-[16px] leading-[1.7] text-soft;
+  }
+  .prose-atlas :where(h2) {
+    @apply mt-11 mb-3 text-2xl font-bold tracking-tight text-foreground;
+  }
+  .prose-atlas :where(h3) {
+    @apply mt-8 mb-2 text-lg font-bold text-foreground;
+  }
+  .prose-atlas :where(p, ul, ol) {
+    @apply my-3;
+  }
+  .prose-atlas :where(ul) {
+    @apply list-disc pl-6;
+  }
+  .prose-atlas :where(ol) {
+    @apply list-decimal pl-6;
+  }
+  .prose-atlas :where(a) {
+    @apply font-semibold text-link underline-offset-4 hover:underline;
+  }
+  .prose-atlas :where(code):not(:where(pre code)) {
+    @apply rounded-md bg-chip px-1.5 py-0.5 font-mono text-[0.9em] text-foreground;
+  }
+  .prose-atlas :where(pre) {
+    @apply overflow-x-auto rounded-xl border border-line bg-code p-5 font-mono text-[13px] leading-[1.7] text-code-foreground;
+  }
+  .prose-atlas :where(strong) {
+    @apply font-bold text-foreground;
   }
 }
