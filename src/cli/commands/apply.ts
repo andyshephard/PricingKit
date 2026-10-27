@@ -26,6 +26,7 @@ import {
 import { stringFlag } from '../args';
 import { adapterForApp, appleAdapter, assertExpectedApp, playAdapter, readInputFile, writeOutputFileAtomic, type CommandContext, type CommandResult } from '../context';
 import { CliError, EXIT_ERROR, EXIT_OK, UsageError } from '../errors';
+import { redactJsonValue } from '../redact';
 import { countBy, describeCounts } from '../format';
 import { header, readWorkspacePlan } from './workspace';
 
@@ -139,7 +140,8 @@ export async function applyCommand(ctx: CommandContext): Promise<CommandResult> 
     ...(ctx.flags['force-delete'] === true ? { force: { deleteOffers: true } } : {}),
     // Saved before and after every write: a crash leaves a log that can be resumed
     onUpdate: async (snapshot) => {
-      saved = await writeOutputFileAtomic(ctx, runOut, serializeRun(snapshot));
+      // Store error messages end up in the log: scrubbed like everything printed, string by string
+      saved = await writeOutputFileAtomic(ctx, runOut, serializeRun(redactJsonValue(snapshot, ctx.redactor)));
     },
     now: () => ctx.now().toISOString(),
   });
@@ -259,7 +261,7 @@ async function applyWorkspaceCommand(ctx: CommandContext, indexPath: string): Pr
       ...(earlier ? { run: earlier } : {}),
       ...(ctx.flags['force-delete'] === true ? { force: { deleteOffers: true } } : {}),
       onUpdate: async (snapshot) => {
-        saved = await writeOutputFileAtomic(ctx, runPath, serializeRun(snapshot));
+        saved = await writeOutputFileAtomic(ctx, runPath, serializeRun(redactJsonValue(snapshot, ctx.redactor)));
       },
       now: () => ctx.now().toISOString(),
     });

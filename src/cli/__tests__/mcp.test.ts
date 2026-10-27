@@ -2,7 +2,8 @@
 // the stdio transport. Agents can plan; humans apply: no tool writes to a
 // store. The App Store client is mocked: nothing leaves the process.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { linkSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
+import { linkSync, mkdirSync, readdirSync, readFileSync, symlinkSync, truncateSync, writeFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 
@@ -14,7 +15,7 @@ vi.mock('@/lib/apple-connect/client', async (importOriginal) => {
 
 import { FakeOfferStore } from '@/lib/adapters/__tests__/fake-apple-offer-store';
 import { changeSetHash, parseChangeSet } from '@/lib/pricing';
-import { MAX_LINE_BYTES, McpServer, serveMcp, shellQuote, TOOLS } from '../mcp';
+import { internalErrorMessage, MAX_LINE_BYTES, MAX_TOOL_FILE_BYTES, McpServer, serveMcp, shellQuote, TOOLS } from '../mcp';
 import { run as runCliCaptured, fakeAppleEnv, tempDir } from './fixtures';
 
 const BUNDLE = 'com.example.app';
@@ -351,3 +352,49 @@ describe('the write boundary', () => {
     expect(mcp).not.toMatch(/commands\/apply'|applyCommand\b|applyChangeSet/);
   });
 });
+
+describe('MCP file safety', () => {
+  it.skipIf(process.platform === 'win32')('refuses a FIFO instead of blocking on it, in the server and in the CLI', async () => {
+    execFileSync('mkfifo', [join(tmp.dir, 'fifo.json')]);
+    const r = await tool('diff', { plan: 'fifo.json' });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/plan: fifo\.json is not a regular file/);
+    const cli = await runCliCaptured(['diff', 'fifo.json'], { cwd: tmp.dir });
+    expect(cli.code).toBe(1);
+    expect(cli.stderr).toMatch(/not a regular file/);
+  });
+
+  it('refuses a file larger than the cap before reading it', async () => {
+    writeFileSync(join(tmp.dir, 'huge.json'), '');
+    truncateSync(join(tmp.dir, 'huge.json'), MAX_TOOL_FILE_BYTES + 1);
+    const r = await tool('diff', { plan: 'huge.json' });
+    expect(r.content[0].text).toMatch(/larger than 16 MB/);
+  });
+
+  it('never writes into dot-folders or dot-files', async () => {
+    mkdirSync(join(tmp.dir, '.github'));
+    for (const out of ['.github/plan.json', '.plan.json']) {
+      const r = await tool('plan', { spec: 'base.json', out });
+      expect(r.isError, out).toBe(true);
+      expect(r.content[0].text).toMatch(/starting with "\."/);
+    }
+    mkdirSync(join(tmp.dir, 'plans'));
+    symlinkSync(join(tmp.dir, '.github'), join(tmp.dir, 'plans', 'ci'));
+    expect((await tool('plan', { spec: 'base.json', out: 'plans/ci/plan.json' })).content[0].text).toMatch(/starting with "\."/);
+    expect(readdirSync(join(tmp.dir, '.github'))).toEqual([]);
+    expect(appleApiRequest).not.toHaveBeenCalled();
+  });
+
+  it('quotes a leading "=" (zsh expands =cmd to a path)', () => {
+    expect(shellQuote('=ls')).toBe("'=ls'");
+    expect(shellQuote('a=b')).toBe('a=b');
+  });
+
+  it('scrubs credentials from internal error messages', () => {
+    const message = internalErrorMessage(new Error(`failed with ${env.ASC_PRIVATE_KEY} and key ${env.ASC_KEY_ID}`), env);
+    expect(message).not.toContain(env.ASC_KEY_ID);
+    expect(message).not.toContain(env.ASC_PRIVATE_KEY.split('\n')[1]);
+    expect(message.length).toBeLessThanOrEqual(303);
+  });
+});
+

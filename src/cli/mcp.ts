@@ -20,12 +20,13 @@
 // - Hand-rolled JSON-RPC 2.0 over newline-delimited stdio (MCP's stdio
 //   transport): no SDK dependency. Calls run one at a time.
 
-import { lstat, readFile, realpath } from 'node:fs/promises';
+import { lstat, readFile, realpath, stat as statFile } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { assertRunMatches, isOfferOp, parseChangeSet, parseRun, parseStateSnapshot } from '@/lib/pricing';
 import packageJson from '../../package.json';
 import { runCli, type CliIO } from './main';
+import { Redactor } from './redact';
 
 const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
@@ -145,6 +146,9 @@ async function realpathOrUndefined(path: string): Promise<string | undefined> {
   }
 }
 
+/** Largest file a tool reads: a plan, run log, spec or rules file */
+export const MAX_TOOL_FILE_BYTES = 16 * 1024 * 1024;
+
 /** Throws ToolInputError unless `value` is a safe path inside cwd for this use */
 async function checkPath(arg: PathArg, value: string, cwd: string): Promise<void> {
   const fail = (why: string) => new ToolInputError(`${arg.key} must be a file inside the working directory (${why})`);
@@ -161,12 +165,21 @@ async function checkPath(arg: PathArg, value: string, cwd: string): Promise<void
     if (real !== undefined && !inside(root, real)) throw fail('it resolves outside, through a link');
     const parent = await realpathOrUndefined(dirname(target));
     if (parent !== undefined && parent !== root && !inside(root, parent)) throw fail('its folder resolves outside');
+    if (real !== undefined) {
+      // A FIFO or device would block the server; a huge file would exhaust its memory
+      const info = await statFile(real).catch(() => undefined);
+      if (!info?.isFile()) throw new ToolInputError(`${arg.key}: ${value} is not a regular file`);
+      if (info.size > MAX_TOOL_FILE_BYTES) throw new ToolInputError(`${arg.key}: ${value} is larger than ${MAX_TOOL_FILE_BYTES / 1024 / 1024} MB`);
+    }
     return;
   }
+  // Written files never go into dot-folders (.github/, .vscode/, ...) or dot-files, where
+  // tools pick up configuration and workflows
+  if (segments.some((s) => s.startsWith('.'))) throw fail('no folders or files starting with "."');
   const parent = await realpathOrUndefined(dirname(target));
   if (parent === undefined) throw fail('its folder does not exist');
   if (parent !== root && !inside(root, parent)) throw fail('its folder resolves outside, through a link');
-  if (parent.split(sep).includes('.git')) throw fail('nothing under .git/');
+  if (parent !== root && relative(root, parent).split(sep).some((s) => s.startsWith('.'))) throw fail('no folders starting with "."');
   let stat;
   try {
     stat = await lstat(target);
@@ -203,9 +216,9 @@ async function checkArgs(tool: Tool, args: Args, cwd: string): Promise<void> {
   }
 }
 
-/** POSIX shell quoting: safe words as they are, anything else in single quotes */
+/** POSIX shell quoting: safe words as they are, anything else in single quotes (also a leading "=", which zsh expands to a command's path) */
 export function shellQuote(word: string): string {
-  return /^[A-Za-z0-9._/:=@%+-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
+  return /^[A-Za-z0-9._/:@%+-][A-Za-z0-9._/:=@%+-]*$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
 }
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
@@ -265,6 +278,24 @@ async function commandForPlan(args: Args, cwd: string): Promise<ToolResult> {
     content: [{ type: 'text', text: `${command} --confirm <hash from pricingkit diff>\n\n${notes.join('\n')}` }],
     structuredContent: { command, argv, needsConfirm: true, requiredFlags, ops: changeSet.ops.length, notes },
   };
+}
+
+/**
+ * The message of an unexpected error, safe to send: scrubbed of the
+ * credentials in the server's environment and of key/token shapes, and short.
+ */
+export function internalErrorMessage(error: unknown, env: Record<string, string | undefined>): string {
+  const redactor = new Redactor();
+  for (const name of ['ASC_KEY_ID', 'ASC_ISSUER_ID', 'ASC_PRIVATE_KEY', 'ASC_PRIVATE_KEY_HEX', 'GOOGLE_SERVICE_ACCOUNT_JSON']) redactor.add(env[name]);
+  try {
+    const json = env.GOOGLE_SERVICE_ACCOUNT_JSON ? (JSON.parse(env.GOOGLE_SERVICE_ACCOUNT_JSON) as Record<string, unknown>) : {};
+    for (const key of ['private_key', 'private_key_id', 'client_email']) if (typeof json[key] === 'string') redactor.add(json[key] as string);
+  } catch {
+    // not JSON: the whole value is already registered
+  }
+  const message = error instanceof Error ? error.message : 'Internal error';
+  const clean = redactor.redact(message);
+  return clean.length > 300 ? `${clean.slice(0, 300)}...` : clean;
 }
 
 export class McpServer {
@@ -355,7 +386,7 @@ export class McpServer {
           return reply({ result: await run });
         } catch (error) {
           if (error instanceof ToolInputError) return reply({ result: { content: [{ type: 'text', text: error.message }], isError: true } });
-          return reply({ error: { code: -32603, message: error instanceof Error ? error.message : 'Internal error' } });
+          return reply({ error: { code: -32603, message: internalErrorMessage(error, this.options.env) } });
         }
       }
       default:
@@ -399,7 +430,7 @@ export async function serveMcp(options: McpServerOptions & { input: NodeJS.Reada
       const response = await server.handle(message);
       if (response) send(response);
     } catch (error) {
-      send({ jsonrpc: '2.0', id: null, error: { code: -32603, message: error instanceof Error ? error.message : 'Internal error' } });
+      send({ jsonrpc: '2.0', id: null, error: { code: -32603, message: internalErrorMessage(error, options.env) } });
     }
   };
 

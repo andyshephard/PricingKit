@@ -254,3 +254,22 @@ describe('pricingkit apply at a terminal', () => {
     expect(ci.stderr).not.toMatch(/Type the app/);
   });
 });
+
+describe('run logs', () => {
+  it('are scrubbed like printed output, and stay valid JSON', async () => {
+    const { hash } = await planFile();
+    const keyLine = env.ASC_PRIVATE_KEY.split('\n')[1];
+    appleApiRequest.mockImplementation(async (...args: unknown[]) => {
+      const options = args[2] as { method?: string } | undefined;
+      if (options?.method === 'POST') throw Object.assign(new Error(`upstream echoed ${env.ASC_KEY_ID} and -----BEGIN PRIVATE KEY-----\n${keyLine}`), { status: 400 });
+      return store.handle(...(args as Parameters<typeof store.handle>));
+    });
+    const r = await run(['apply', 'plan.json', '--confirm', hash], { env, cwd: tmp.dir });
+    expect(r.code).toBe(1);
+    const text = readFileSync(join(tmp.dir, 'plan.run.json'), 'utf8');
+    expect(text).not.toContain(env.ASC_KEY_ID);
+    expect(text).not.toContain(keyLine);
+    const log = parseRun(text);
+    expect(log.ops.some((o) => o.error?.message.includes('[redacted]'))).toBe(true);
+  });
+});
