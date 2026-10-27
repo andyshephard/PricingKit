@@ -209,7 +209,14 @@ const run = await applyChangeSet(plan.changeSet, { adapter: apple, budget, confi
   redeemed stay redeemed.
 
 On an Apple subscription page, the Offers card can create a promotional offer from a rule and
-re-price a drifted one, with the same preview, a confirm step and a downloadable run log.
+re-price a drifted one, with the same preview, a confirm step and a run log to download. That is
+all the web flow does: promotional offer creates and re-prices only, the run log isn't saved, and
+there is no resume or undo from the web. Use the CLI (`pricingkit plan`, `apply --resume`, undo
+plans) for resumable or undoable runs and for every other offer kind.
+
+Before reading or writing a subscription, PricingKit checks it belongs to the plan's app (its
+group must be one of the app's subscription groups). App Store Connect API keys work across a
+team's apps, so a subscription ID copied from another app is refused with `APP_MISMATCH`.
 
 ## Command line: `pricingkit`
 

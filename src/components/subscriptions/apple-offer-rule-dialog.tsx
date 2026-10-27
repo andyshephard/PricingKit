@@ -165,6 +165,11 @@ export function AppleOfferRuleDialog({
               ? `Re-price the promotional offer "${target.offer.name ?? target.offer.key}" to a percent of each territory's current price. Its terms stay as they are.`
               : "A promotional offer priced at a percent of each territory's own current price, snapped to that territory's price points."}
           </DialogDescription>
+          <p className="text-xs text-muted-foreground">
+            The web app only creates and re-prices promotional offers. The run log can be downloaded when the run ends, but it isn&apos;t saved, and a run
+            can&apos;t be resumed or undone here. For resumable or undoable runs, use the <span className="font-mono">pricingkit</span> CLI (
+            <span className="font-mono">plan</span>, <span className="font-mono">apply --resume</span>).
+          </p>
         </DialogHeader>
 
         <div className="flex flex-wrap items-end gap-3">
@@ -296,7 +301,10 @@ export function AppleOfferRuleDialog({
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Apply this plan to App Store Connect?</DialogTitle>
-            <DialogDescription>Exactly what the preview showed is applied. Each change is checked against App Store Connect first and skipped if already done.</DialogDescription>
+            <DialogDescription>
+              Exactly what the preview showed is applied. Each change is checked against App Store Connect first and skipped if already done. There is no
+              undo from the web app: download the run log afterwards, and use the CLI to undo or resume.
+            </DialogDescription>
           </DialogHeader>
           {entry && result && (
             <ul className="list-disc space-y-1 pl-5 text-sm">
