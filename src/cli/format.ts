@@ -12,7 +12,6 @@ import { compareDecimal, divideDecimal, isZeroDecimal, subtractDecimal, type Dec
 // rewrites a line, while CRLF, as in CSV output, is left alone), DEL, the
 // C1 controls (U+009B is a one-byte CSI, U+009D an OSC), and the Unicode
 // line separators and bidirectional overrides that reorder what is shown.
-// eslint-disable-next-line no-control-regex
 const TERMINAL_UNSAFE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]|\r(?!\n)/g;
 
 export function escapeTerminal(text: string): string {

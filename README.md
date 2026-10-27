@@ -606,9 +606,13 @@ Plans record per op the proceeds before and after (Apple) or the estimated proce
 (`priceChanges` in the plan file), and `pricingkit diff` shows Proceeds and Tax columns.
 
 These are **planner notes, not covered by the plan hash**: anyone can edit them without changing
-the hash you confirm. `pricingkit diff` marks them as such. It recomputes the existing-subscriber
-class of every immediate price change from the op itself (before, after, `preserveCurrentPrice`),
-shows that value, and prints a WARNING where the stored note disagrees. Scheduled changes show the
+the hash you confirm. `pricingkit diff` marks them as such. It computes the existing-subscriber
+class of every immediate subscription price change from the op itself (before, after,
+`preserveCurrentPrice`), notes or not, shows that value, and prints a WARNING where a stored note
+disagrees. An App Store op with `preserveCurrentPrice: false` moves existing subscribers to the new
+price: `diff` always marks it MOVES EXISTING SUBSCRIBERS and warns at the top. The undo plan of
+such a decrease raises the price back for new subscribers only (`preserveCurrentPrice: true`), with
+a warning, rather than raising existing subscribers' price. Scheduled changes show the
 stored class marked "(unverified)", because the op doesn't hold the current price. Plans that
 carry notes are schema version 2 or later; PricingKit reads versions 1 to 3.
 

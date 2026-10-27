@@ -65,11 +65,13 @@ describe('existing subscribers in plans and diff', () => {
     expect(byTerritory.DE).toMatchObject({ classification: 'increase-needs-consent', reasons: [expect.stringMatching(/DE requires consent for any price increase/)] });
 
     const diff = await run(['diff', 'plan.json'], { cwd: tmp.dir });
-    expect(diff.stdout).toMatch(/Proceeds\*\s+Existing subscribers\*/);
+    expect(diff.stdout).toMatch(/Proceeds\*\s+Existing subscribers/);
     expect(diff.stdout).toContain('* planner notes, not covered by the plan hash.');
     expect(diff.stdout).toContain('Planner notes (not covered by the plan hash):');
-    expect(diff.stdout).not.toContain('WARNING');
-    expect(diff.stdout).toMatch(/US\s+setPrice\s+24\.99 USD\s+34\.99 USD\s+\+40\.02%\s+17\.49 -> 24\.49\s+notified, no consent/);
+    // preserveCurrentPrice: false is in the ops (covered by the hash): diff always says so
+    expect(diff.stdout).toMatch(/WARNING: 3 App Store changes move EXISTING SUBSCRIBERS to the new price \(preserveCurrentPrice: false\)/);
+    expect(diff.stdout).not.toMatch(/the plan's note says/);
+    expect(diff.stdout).toMatch(/US\s+setPrice\s+24\.99 USD\s+34\.99 USD\s+\+40\.02%\s+17\.49 -> 24\.49\s+MOVES EXISTING SUBSCRIBERS: notified, no consent/);
     expect(diff.stdout).toMatch(/DE\s+setPrice.*NEEDS CONSENT/);
     expect(diff.stdout).toContain('Existing subscribers: ');
     expect(diff.stdout).toContain("Needs consent (subscribers who don't agree are lost at renewal): DE");
@@ -175,7 +177,7 @@ describe('proceeds targets', () => {
     expect(op.after).toEqual({ currency: 'USD', amount: '30' });
     expect(changeSet.priceChanges?.[0]).toMatchObject({ tax: '0', proceeds: { after: '25.5', estimated: true, commission: '0.15' }, classification: 'increase-to-new-subscribers-only', ifMigrated: 'opt-out-possible' });
     const diff = await run(['diff', 'plan.json'], { cwd: tmp.dir });
-    expect(diff.stdout).toMatch(/Proceeds\*\s+Tax\*\s+Existing subscribers\*/);
+    expect(diff.stdout).toMatch(/Proceeds\*\s+Tax\*\s+Existing subscribers/);
     expect(diff.stdout).toMatch(/25\.5 \(est\.\)\s+0\s+new subscribers only \(migrating: opt-out possible\)/);
     expect(diff.stdout).toContain('Google Play proceeds are estimates: (price - tax) x (1 - commission), commission 0.15.');
     expect(play.writes()).toEqual([]);

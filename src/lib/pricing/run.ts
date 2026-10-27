@@ -262,6 +262,7 @@ export function buildUndoChangeSet(
     const inverse = invertOp(op as BasePriceOp);
     if ('notReversible' in inverse) notReversible.push({ opId: op.id, reason: record.status === 'failed' ? `If it took effect: ${inverse.notReversible}` : inverse.notReversible });
     else {
+      if (inverse.warning) caveats.push({ index: inverses.length, message: inverse.warning });
       inverseOf.set(op.id, inverses.length);
       inverses.push(inverse.op);
     }
