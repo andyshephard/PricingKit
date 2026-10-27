@@ -2,9 +2,13 @@
 // Generated: 2026-02-02T14:47:17.218Z
 // Source: Apple App Store Connect API
 //
-// DO NOT EDIT MANUALLY - regenerate using: npx ts-node scripts/fetch-apple-price-tiers.ts
+// DO NOT EDIT MANUALLY - regenerate with scripts/fetch-apple-price-tiers.ts
+// (needs App Store Connect credentials and an in-app purchase ID; see the script)
 
 import rawData from './price-tier-data.json';
+
+/** When price-tier-data.json was generated (YYYY-MM-DD); updated by the script */
+export const PRICE_TIER_DATA_GENERATED_AT = '2026-02-02';
 
 export interface TierData {
   price: number;
