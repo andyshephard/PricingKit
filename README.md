@@ -88,7 +88,10 @@ CI runs all three on every pull request. See [CONTRIBUTING.md](CONTRIBUTING.md) 
 ## Project Structure
 
 ```
+bin/pricingkit.mjs        # CLI launcher (runs src/cli through tsx)
+examples/github-actions/  # Example workflows to copy (not run in this repo)
 src/
+├── cli/                  # pricingkit CLI: export, plan, diff, offers, drift (read-only)
 ├── app/
 │   ├── api/              # API routes (Google & Apple endpoints)
 │   ├── dashboard/        # Dashboard pages
@@ -116,7 +119,7 @@ src/
 ## Plans: plan, diff, apply
 
 `src/lib/pricing` is a framework-free TypeScript core (no Next.js or React; a test checks the
-whole import graph) that the web app, and later a CLI, share. It turns price changes into files
+whole import graph) that the web app and the `pricingkit` CLI share. It turns price changes into files
 you can review and commit:
 
 | File | `kind` | What it holds |
@@ -167,6 +170,106 @@ const undo = buildUndoChangeSet(plan, run);               // itself a plan to re
 
 Phase 1 covers base prices: Apple subscriptions, Google Play base plans and one-time products.
 Apple in-app purchases and offers come later; their op kinds are reserved in the format.
+
+## Command line: `pricingkit`
+
+A read-only CLI over the same core and adapters, for scripts, CI and agents. It runs from a
+clone of this repo (TypeScript runs through `tsx`; there is no build step):
+
+```bash
+npm ci
+npx pricingkit --help
+```
+
+No command writes to a store. There is no `apply` command yet.
+
+| Command | What it does |
+| --- | --- |
+| `export` | Current (and scheduled) prices of an App Store subscription or a Google Play base plan, as a `pricingkit.state` snapshot. `--out <file>` also writes it. |
+| `plan --spec <file>` | Reads a pricing spec, snaps its targets to real store prices and writes the plan (`pricingkit.changeset`, default `pricingkit-plan.json`). A dry run: it only reads. `--state-out <file>` saves the prices it planned against. |
+| `diff <plan.json>` | Human-readable summary of a plan: changes per product and territory with before, after and percent change, skipped territories by reason, warnings. No store requests. |
+| `offers` | An App Store subscription's introductory, promotional, offer code and win-back offers with each territory's price (`--kind` filters). |
+| `drift` | Checks an App Store offer against "`--percent` of each territory's current price" (`--basis perPeriod\|totalOverDuration`, `--snap nearest\|floor\|ceil`, `--threshold`, `--territories`) and prints a `pricingkit.offerDrift` report. |
+
+```bash
+export ASC_KEY_ID=... ASC_ISSUER_ID=... ASC_PRIVATE_KEY_PATH=~/keys/AuthKey_XXXX.p8
+
+npx pricingkit export --bundle-id com.example.app --subscription 1234567890 --out state.json
+npx pricingkit plan --spec pricing.json --out plan.json
+npx pricingkit diff plan.json
+npx pricingkit offers --bundle-id com.example.app --subscription 1234567890
+npx pricingkit drift --bundle-id com.example.app --subscription 1234567890 \
+  --kind apple.promo --offer example_half --percent 50 --json
+```
+
+**Shared options.** `--json` prints machine-readable JSON on stdout: the document itself
+(`pricingkit.state`, `pricingkit.changeset`, `pricingkit.planSummary`, `pricingkit.offers` or
+`pricingkit.offerDrift`), or `{"error": {"message", "code", "status"}}` on failure. Store client
+logs and the request count go to stderr. `--budget <n>` caps the store requests one run may send
+(default 3600, App Store Connect's hourly allowance). Every command runs inside a `RequestBudget`,
+and a spent budget stops the run with an error rather than a partial result.
+
+**Exit codes**
+
+| Code | Meaning |
+| --- | --- |
+| `0` | OK. For `plan` and `diff`: no changes. For `drift`: every territory matches. |
+| `1` | Error: bad arguments, invalid spec or plan, missing credentials, a store error, or a spent request budget. |
+| `2` | Something to act on: `plan`/`diff` found changes, or `drift` found the offer out of sync (any mismatch, missing, extra, unresolved or unreadable territory). |
+
+**Credentials** come only from environment variables, never from flags or files in the repo:
+
+| Store | Variables |
+| --- | --- |
+| App Store Connect | `ASC_KEY_ID`, `ASC_ISSUER_ID`, and `ASC_PRIVATE_KEY` (the key's PEM text; literal `\n` is accepted) or `ASC_PRIVATE_KEY_PATH` (path to the key file). Select the app with `--bundle-id`. |
+| Google Play | `GOOGLE_APPLICATION_CREDENTIALS` (path to a service account key file) or `GOOGLE_SERVICE_ACCOUNT_JSON` (the key JSON itself). Select the app with `--package-name`. |
+
+The CLI holds credentials in memory only: it never prints them, writes them to disk or logs
+request headers. As a backstop, everything it prints is scrubbed of the key material it loaded,
+PEM blocks, bearer tokens and JWTs.
+
+**Pricing spec** (`pricingkit.spec`, version 1, JSON). `plan` reads the products' current prices,
+turns the targets into per-territory amounts and snaps them: on the App Store to each territory's
+own price points (`snap`, default `nearest`), on Google Play through Play's price conversion (a
+read-only call). The spec never names price point IDs.
+
+```json
+{
+  "kind": "pricingkit.spec",
+  "schemaVersion": 1,
+  "app": { "bundleId": "com.example.app" },
+  "description": "Spring price review",
+  "products": [
+    {
+      "product": { "platform": "apple", "type": "subscription", "id": "1234567890" },
+      "targets": { "type": "fixed", "prices": { "GB": "4.99", "US": "5.99", "CA": { "amount": "7.99", "currency": "CAD" } } },
+      "snap": "nearest"
+    },
+    {
+      "product": { "platform": "apple", "type": "subscription", "id": "1234567891" },
+      "targets": { "type": "percentOfCurrent", "percent": "110", "territories": "all" },
+      "startDate": "2030-06-01"
+    }
+  ]
+}
+```
+
+- `targets.type: "fixed"`: these territories get these prices (alpha-2 keys). A bare amount is
+  in the territory's current currency; give `{ "amount", "currency" }` for a territory without one.
+- `targets.type: "percentOfCurrent"`: each territory's current price times `percent` / 100
+  (`"110"` is a 10% rise; above 0, at most 1000, up to 4 decimals), for `"all"` priced
+  territories or a list.
+- Optional per product: `snap` (App Store), `startDate` (App Store: schedule instead of changing
+  now), `allowNewTerritories` (default `false`: never price a territory that has no price),
+  `preserveCurrentPrice` (App Store, default `true`).
+- Products: App Store subscriptions (numeric App Store Connect ID), Google Play base plans
+  (`{ "platform": "google", "type": "subscription", "productId", "basePlanId" }`) and one-time
+  products (`{ "platform": "google", "type": "inapp", "productId" }`). All products must belong to
+  the spec's `app`.
+
+**In CI.** [`examples/github-actions/drift.yml`](examples/github-actions/drift.yml) is a weekly
+scheduled drift check using repository secrets: it opens (or comments on) an issue and fails the
+job when an offer drifts. It is an example to copy into your own repository; it does not run here.
 
 ## Environment Variables
 
