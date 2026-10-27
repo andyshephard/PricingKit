@@ -33,18 +33,35 @@ export function stateTable(state: ProductPriceState): string {
   return table(rows);
 }
 
+/**
+ * The product's current state: a subscription (--subscription, plus
+ * --base-plan on Google Play) or an in-app purchase / one-time product
+ * (--in-app <product ID>). Reads only.
+ */
+async function readProductState(ctx: CommandContext, app: AppSelection): Promise<ProductPriceState> {
+  const inApp = stringFlag(ctx.flags, 'in-app');
+  if (inApp === undefined) {
+    const product = productFromFlags(app, ctx.flags);
+    const adapter = app.platform === 'apple' ? await appleAdapter(ctx, app.bundleId) : await playAdapter(ctx, app.packageName);
+    return adapter.fetchState(product);
+  }
+  if (ctx.flags.subscription !== undefined || ctx.flags['base-plan'] !== undefined) {
+    throw new UsageError('Give either --in-app <product id> or --subscription (with --base-plan on Google Play), not both');
+  }
+  if (app.platform === 'apple') return (await appleAdapter(ctx, app.bundleId)).fetchInAppPurchaseState(inApp);
+  // Google Play one-time product: its first purchase option, the one PricingKit edits
+  return (await playAdapter(ctx, app.packageName)).fetchState({ platform: 'google', type: 'inapp', productId: inApp });
+}
+
 export async function exportCommand(ctx: CommandContext): Promise<CommandResult> {
   const app = appSelection(ctx.flags)!;
-  const product = productFromFlags(app, ctx.flags);
   const out = stringFlag(ctx.flags, 'out');
-  const adapter = app.platform === 'apple' ? await appleAdapter(ctx, app.bundleId) : await playAdapter(ctx, app.packageName);
-
-  const state = await adapter.fetchState(product);
+  const state = await readProductState(ctx, app);
   const snapshot = createStateSnapshot(appRef(app), [state], ctx.now().toISOString());
   const written = out ? await writeOutputFile(ctx, out, serializeStateSnapshot(snapshot)) : undefined;
 
   const lines = [
-    `${Object.keys(state.territories).length} territories`,
+    `${Object.keys(state.territories).length} territories${state.baseTerritory ? ` (base territory ${state.baseTerritory})` : ''}`,
     stateTable(state),
     ...(state.warnings?.length ? ['Warnings:', ...state.warnings.map((w) => `  ${w}`)] : []),
     ...(written ? [`Snapshot written to ${written}`] : []),

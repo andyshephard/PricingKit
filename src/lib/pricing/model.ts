@@ -78,6 +78,8 @@ export interface ProductPriceState {
   territories: Record<string, TerritoryPriceState>;
   /** Things the adapter could not read (e.g. a territory without a currency) */
   warnings?: string[];
+  /** Apple in-app purchases: the price schedule's base territory (alpha-2), from which Apple derives automatic prices */
+  baseTerritory?: string;
 }
 
 /**

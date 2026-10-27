@@ -21,7 +21,7 @@ const APP: OptionSpec = {
 };
 
 const OPTIONS: Record<CommandName, OptionSpec> = {
-  export: { ...COMMON, ...APP, subscription: { type: 'string' }, 'base-plan': { type: 'string' }, out: { type: 'string', short: 'o' } },
+  export: { ...COMMON, ...APP, subscription: { type: 'string' }, 'base-plan': { type: 'string' }, 'in-app': { type: 'string' }, out: { type: 'string', short: 'o' } },
   plan: {
     ...COMMON,
     ...APP,
@@ -172,7 +172,8 @@ and apply reviewed plans. Only "apply" writes to a store, and only with --confir
 Usage: pricingkit <command> [options]
 
 Commands:
-  export   Current prices of a subscription (App Store) or base plan (Google Play), as a state snapshot
+  export   Current prices of a subscription, base plan, in-app purchase or one-time product, as a
+           state snapshot
   plan     Turn a pricing spec into a plan (ChangeSet); with --rules, keep offers in step with
            base prices. A dry run: never writes to a store
   diff     Human-readable summary of a plan file
@@ -209,11 +210,18 @@ export const COMMAND_HELP: Record<CommandName, string> = {
   export: `Usage:
   pricingkit export --bundle-id <id> --subscription <subscription id> [--out <file>]
   pricingkit export --package-name <name> --subscription <product id> --base-plan <id> [--out <file>]
+  pricingkit export --bundle-id <id> --in-app <product id> [--out <file>]
+  pricingkit export --package-name <name> --in-app <product id> [--out <file>]
 
 Reads the current (and scheduled) price in every territory and prints it as a
 pricingkit.state snapshot (with --json) or a table. --out also writes the JSON
 snapshot to a file. On the App Store, --subscription is the numeric App Store
 Connect subscription ID.
+--in-app exports an App Store in-app purchase (its product ID, looked up in
+this app only; manual and automatic prices, scheduled ones and the price
+schedule's base territory) or a Google Play one-time product (its first
+purchase option). Plans and apply still cover subscriptions and one-time
+products only, not App Store in-app purchases.
 
 ${SHARED_HELP}`,
   plan: `Usage:

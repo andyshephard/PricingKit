@@ -1127,3 +1127,92 @@ export async function replaceInAppPurchaseManualPrices(
   }
   return { sent: changed.size, kept, keptScheduled };
 }
+
+/** One in-app purchase price entry (manual or automatic), read without guessing anything */
+export interface InAppPurchasePriceEntry {
+  priceId: string;
+  /** alpha-2; undefined if Apple didn't say */
+  territory?: string;
+  /** null = no start date */
+  startDate: string | null;
+  /** null = no end date */
+  endDate: string | null;
+  /** Set by the developer (manual) or derived by Apple from the base territory (automatic) */
+  manual: boolean;
+  pricePoint?: { id: string; customerPrice: string; proceeds: string };
+  currency?: string;
+  /** Why this entry can't be used as-is (missing relationship, price point or currency) */
+  problem?: string;
+}
+
+/**
+ * Every price entry of an in-app purchase's price schedule, manual and
+ * automatic, with territory, price point and currency taken only from the
+ * relationships and included resources Apple returns (paginated). Unlike
+ * getInAppPurchasePrices (used by the existing UI routes), nothing is decoded
+ * from IDs or defaulted (no USD), and dated entries are kept with their
+ * dates. Returns [] when the product has no price schedule (404).
+ */
+export async function listInAppPurchasePriceEntries(
+  credentials: AppleConnectCredentials,
+  inAppPurchaseId: string,
+  ctx: RequestContext = {}
+): Promise<InAppPurchasePriceEntry[]> {
+  type Entry = {
+    id: string;
+    attributes?: { startDate?: string | null; endDate?: string | null };
+    relationships?: { territory?: { data?: { id: string } | null }; inAppPurchasePricePoint?: { data?: { id: string } | null } };
+  };
+  const entries: InAppPurchasePriceEntry[] = [];
+  for (const [kind, manual] of [['manualPrices', true], ['automaticPrices', false]] as const) {
+    let result: { data: Entry[]; included: unknown[] };
+    try {
+      result = await appleListAll<Entry>(credentials, `/inAppPurchasePriceSchedules/${inAppPurchaseId}/${kind}`, {
+        queryParams: {
+          include: 'inAppPurchasePricePoint,territory',
+          limit: '200',
+          'fields[inAppPurchasePrices]': 'startDate,endDate,inAppPurchasePricePoint,territory',
+          'fields[inAppPurchasePricePoints]': 'customerPrice,proceeds',
+          'fields[territories]': 'currency',
+        },
+        budget: ctx.budget,
+      });
+    } catch (error) {
+      if (getErrorStatus(error) === 404) return [];
+      throw toApiError(error, 'apple');
+    }
+    const points = new Map<string, { customerPrice: string; proceeds: string }>();
+    const currencies = new Map<string, string>();
+    for (const item of result.included as Array<{ id: string; type: string; attributes?: Record<string, string> }>) {
+      if (item.type === 'inAppPurchasePricePoints' && item.attributes) points.set(item.id, { customerPrice: item.attributes.customerPrice, proceeds: item.attributes.proceeds });
+      else if (item.type === 'territories' && item.attributes?.currency) currencies.set(item.id, item.attributes.currency);
+    }
+    for (const price of result.data) {
+      const alpha3 = price.relationships?.territory?.data?.id;
+      const territory = alpha3 ? alpha3ToAlpha2(alpha3) ?? undefined : undefined;
+      const pointId = price.relationships?.inAppPurchasePricePoint?.data?.id;
+      const point = pointId ? points.get(pointId) : undefined;
+      const currency = alpha3 ? currencies.get(alpha3) : undefined;
+      const problem = !territory
+        ? `price ${price.id} has no territory`
+        : !pointId
+          ? `price ${price.id} in ${territory} has no price point`
+          : !point
+            ? `price ${price.id} in ${territory}: price point ${pointId} was not returned`
+            : !currency
+              ? `price ${price.id} in ${territory} has no currency`
+              : undefined;
+      entries.push({
+        priceId: price.id,
+        ...(territory ? { territory } : {}),
+        startDate: price.attributes?.startDate ?? null,
+        endDate: price.attributes?.endDate ?? null,
+        manual,
+        ...(point && pointId ? { pricePoint: { id: pointId, ...point } } : {}),
+        ...(currency ? { currency } : {}),
+        ...(problem ? { problem } : {}),
+      });
+    }
+  }
+  return entries;
+}

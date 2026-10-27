@@ -17,6 +17,7 @@ import {
   type ApplyContext,
   type BasePriceOp,
   type OpResponse,
+  type PriceValue,
   type PlatformAdapter,
   type ProductPriceState,
   type ProductRef,
@@ -96,6 +97,7 @@ import {
   type TerritoryPricePoint,
 } from '@/lib/apple-connect/price-points';
 import { alpha2ToAlpha3, alpha3ToAlpha2 } from '@/lib/apple-connect/territories';
+import { getBaseTerritoryForProduct, getInAppPurchase, listInAppPurchasePriceEntries, type InAppPurchasePriceEntry } from '@/lib/apple-connect/products';
 import { ApiError, getErrorStatus, toApiError } from '@/lib/utils/api-error';
 import { isBudgetExceeded, type RequestBudget } from '@/lib/utils/request-budget';
 
@@ -225,6 +227,79 @@ export class AppleAdapter implements PlatformAdapter {
       product,
       capturedAt: new Date().toISOString(),
       territories,
+      ...(warnings.length > 0 ? { warnings } : {}),
+    };
+  }
+
+  /**
+   * Current and scheduled prices of one of this app's in-app purchases,
+   * found by its product ID among the app's own in-app purchases (so an ID
+   * from another app is "not found"). Read only, for export: plans and
+   * apply still handle subscriptions only. Manual and automatic prices are
+   * both read; an expired entry (end date passed) is ignored, two prices
+   * active at once or two future prices in a territory are a problem, never
+   * a pick.
+   */
+  async fetchInAppPurchaseState(productId: string): Promise<ProductPriceState> {
+    const iap = await getInAppPurchase(this.credentials, productId, this.ctx);
+    if (!iap) throw new ApiError(`In-app purchase ${productId} not found in ${this.credentials.bundleId}`, { status: 404, code: 'NOT_FOUND', platform: 'apple', retryable: false });
+    const entries = await listInAppPurchasePriceEntries(this.credentials, iap.id, this.ctx);
+    const base = await getBaseTerritoryForProduct(this.credentials, iap.id, this.ctx);
+    const today = (this.now?.() ?? new Date()).toISOString().slice(0, 10);
+    const territories: Record<string, TerritoryPriceState> = {};
+    const warnings: string[] = [];
+    const byTerritory = new Map<string, InAppPurchasePriceEntry[]>();
+    for (const entry of entries) {
+      if (!entry.territory) {
+        warnings.push(entry.problem ?? `price ${entry.priceId} has no territory`);
+        continue;
+      }
+      byTerritory.set(entry.territory, [...(byTerritory.get(entry.territory) ?? []), entry]);
+    }
+    const value = (entry: InAppPurchasePriceEntry, scheduled: boolean): PriceValue | string => {
+      if (entry.problem || !entry.pricePoint || !entry.currency || !isDecimalString(entry.pricePoint.customerPrice)) return entry.problem ?? `unreadable price ${entry.priceId}`;
+      return {
+        currency: entry.currency,
+        amount: normalizeDecimal(entry.pricePoint.customerPrice),
+        pricePointId: entry.pricePoint.id,
+        ...(isDecimalString(entry.pricePoint.proceeds) ? { proceeds: normalizeDecimal(entry.pricePoint.proceeds) } : {}),
+        ...(scheduled && entry.startDate ? { startDate: normalizeStartDate(entry.startDate) } : {}),
+      };
+    };
+    for (const [territory, list] of [...byTerritory].sort(([a], [b]) => a.localeCompare(b))) {
+      const live = list.filter((e) => e.endDate === null || normalizeStartDate(e.endDate) > today);
+      const future = live.filter((e) => e.startDate !== null && normalizeStartDate(e.startDate) > today);
+      const active = live.filter((e) => !future.includes(e));
+      const state: TerritoryPriceState = { territory, currency: list.find((e) => e.currency)?.currency ?? '', current: null };
+      const problems: { current?: string; scheduled?: string } = {};
+      const key = (e: InAppPurchasePriceEntry) => (e.startDate ? normalizeStartDate(e.startDate) : '');
+      const latest = active.reduce<string | undefined>((max, e) => (max === undefined || key(e) > max ? key(e) : max), undefined);
+      const current = active.filter((e) => key(e) === latest);
+      if (current.length > 1) problems.current = `${current.length} prices share the latest start date`;
+      else if (current.length === 1) {
+        const v = value(current[0], false);
+        if (typeof v === 'string') problems.current = v;
+        else state.current = v;
+      }
+      if (future.length > 1) problems.scheduled = `${future.length} future prices (${future.map((e) => `${e.pricePoint?.customerPrice ?? '?'} from ${e.startDate}`).join(', ')})`;
+      else if (future.length === 1) {
+        const v = value(future[0], true);
+        if (typeof v === 'string') problems.scheduled = v;
+        else state.scheduled = v;
+      }
+      if (problems.current || problems.scheduled) {
+        state.problems = problems;
+        for (const [slot, message] of Object.entries(problems)) warnings.push(`${territory} ${slot}: ${message}`);
+      }
+      territories[territory] = state;
+    }
+    const baseTerritory = base ? toAlpha2(base) : undefined;
+    if (entries.length > 0 && !baseTerritory) warnings.push('the price schedule has no readable base territory');
+    return {
+      product: { platform: 'apple', type: 'inapp', id: iap.id, productId: iap.productId },
+      capturedAt: new Date().toISOString(),
+      territories,
+      ...(baseTerritory ? { baseTerritory } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
     };
   }

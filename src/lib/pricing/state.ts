@@ -38,6 +38,7 @@ export const productPriceStateSchema = z
     capturedAt: z.string().min(1),
     territories: z.record(z.string(), territoryStateSchema),
     warnings: z.array(z.string()).optional(),
+    baseTerritory: z.string().regex(/^[A-Z]{2}$/).optional(),
   })
   .strict();
 
