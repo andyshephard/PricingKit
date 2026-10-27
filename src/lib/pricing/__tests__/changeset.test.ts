@@ -77,6 +77,45 @@ describe('diffPrices', () => {
   });
 });
 
+describe('dates, ambiguity and reviewer warnings', () => {
+  it('takes start dates as YYYY-MM-DD, normalising timestamps and refusing anything else', () => {
+    const ok = diffPrices(appleState(), { GB: { currency: 'GBP', amount: '26.99', pricePointId: 'p', startDate: '2030-09-01T00:00:00Z' } });
+    expect(ok.ops[0].after?.startDate).toBe('2030-09-01');
+    const bad = diffPrices(appleState(), { GB: { currency: 'GBP', amount: '26.99', pricePointId: 'p', startDate: 'next week' } });
+    expect(bad.skipped[0]).toMatchObject({ reason: 'INVALID_TARGET' });
+
+    const file = JSON.parse(serializeChangeSet(applePlan()));
+    file.ops[0].after.startDate = '2030-07-01T00:00:00Z';
+    expect(() => parseChangeSet(file)).toThrow(/YYYY-MM-DD/);
+  });
+
+  it('compares scheduled prices by date, whatever the timestamp form', () => {
+    const state = appleState();
+    state.territories.DE.scheduled!.startDate = '2030-06-01T00:00:00.000Z';
+    const result = diffPrices(state, { DE: { currency: 'EUR', amount: '29.99', pricePointId: 'pp-de-2999', startDate: '2030-06-01' } });
+    expect(result.skipped[0]).toMatchObject({ reason: 'ALREADY_AT_TARGET' });
+  });
+
+  it('refuses to plan against a slot the adapter could not read', () => {
+    const state = appleState();
+    state.territories.DE.problems = { scheduled: '2 future prices' };
+    const result = diffPrices(state, {
+      DE: { currency: 'EUR', amount: '31.99', pricePointId: 'x', startDate: '2030-07-01' },
+    });
+    expect(result.ops).toEqual([]);
+    expect(result.skipped[0]).toMatchObject({ reason: 'AMBIGUOUS_STATE', detail: expect.stringMatching(/2 future prices/) });
+  });
+
+  it('flags an immediate change in a territory that has a scheduled price', () => {
+    const plan = buildChangeSet({
+      app: APPLE_APP,
+      products: [{ state: appleState(), targets: { DE: { currency: 'EUR', amount: '19.99', pricePointId: 'pp-de-1999' } } }],
+    });
+    expect(plan.warnings).toEqual([{ opId: 'op-0001', message: expect.stringMatching(/scheduled price \(29\.99 EUR .*from 2030-06-01\).*still takes effect/) }]);
+    expect(parseChangeSet(serializeChangeSet(plan)).warnings).toEqual(plan.warnings);
+  });
+});
+
 describe('ChangeSet files', () => {
   it('round-trips through JSON and keeps its hash', () => {
     const plan = applePlan();

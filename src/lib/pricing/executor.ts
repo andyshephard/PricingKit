@@ -79,6 +79,14 @@ export function classifyOp(op: BasePriceOp, state: ProductPriceState): Classific
   const territory = state.territories[op.target.territory];
   const slot = opSlot(op.kind);
   const observed = (slot === 'scheduled' ? territory?.scheduled : territory?.current) ?? null;
+  const problem = territory?.problems?.[slot];
+  if (problem) {
+    return {
+      kind: 'drifted',
+      observed,
+      message: `${op.target.territory} ${slot} price can't be read unambiguously (${problem}). Nothing was sent. Resolve it in the store (e.g. clear the extra scheduled price), then re-plan.`,
+    };
+  }
   if (samePrice(op.platform, observed, op.after, slot)) return { kind: 'atTarget', observed };
   if (samePrice(op.platform, observed, op.before, slot)) return { kind: 'ready', observed };
   return {

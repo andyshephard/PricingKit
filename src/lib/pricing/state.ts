@@ -6,7 +6,7 @@
 
 import { z } from 'zod';
 import { appRefSchema, priceValueSchema, productRefSchema } from './changeset';
-import type { AppRef, PriceValue, ProductPriceState, ProductRef, TerritoryPriceState } from './model';
+import { normalizeStartDate, type AppRef, type PriceValue, type ProductPriceState, type ProductRef, type TerritoryPriceState } from './model';
 import type { PriceExport } from '../export/types';
 
 export const STATE_SCHEMA_VERSION = 1 as const;
@@ -28,6 +28,7 @@ const territoryStateSchema = z
     scheduled: priceValueSchema.nullable().optional(),
     availability: z.string().optional(),
     refs: z.object({ scheduledPriceId: z.string().optional() }).strict().optional(),
+    problems: z.object({ current: z.string().optional(), scheduled: z.string().optional() }).strict().optional(),
   })
   .strict();
 
@@ -136,14 +137,18 @@ export function stateFromPriceExport(exp: PriceExport): ProductPriceState {
       price.amount === null
         ? null
         : { currency: price.currency, amount: price.amount, ...(price.proceeds ? { proceeds: price.proceeds } : {}) };
-    // Apple allows one future price per territory; keep the earliest
-    const next = price.scheduled?.[0];
+    // More than one future price is ambiguous: report it, never pick one
+    const several = (price.scheduled?.length ?? 0) > 1;
+    const next = several ? undefined : price.scheduled?.[0];
     territories[price.territory] = {
       territory: price.territory,
       currency: price.currency,
       current,
+      ...(several
+        ? { problems: { scheduled: `${price.scheduled!.length} future prices (${price.scheduled!.map((p) => `${p.amount} from ${p.startDate}`).join(', ')})` } }
+        : {}),
       ...(next
-        ? { scheduled: { currency: price.currency, amount: next.amount, startDate: next.startDate, ...(next.proceeds ? { proceeds: next.proceeds } : {}) } }
+        ? { scheduled: { currency: price.currency, amount: next.amount, startDate: normalizeStartDate(next.startDate), ...(next.proceeds ? { proceeds: next.proceeds } : {}) } }
         : {}),
       ...(price.availability ? { availability: price.availability } : {}),
     };

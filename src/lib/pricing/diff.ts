@@ -13,7 +13,15 @@ import {
   type PlanSkip,
 } from './changeset';
 import { isDecimalString, isNegativeDecimal, normalizeDecimal } from './decimal';
-import { samePrice, type AppRef, type PriceValue, type ProductPriceState } from './model';
+import {
+  describePrice,
+  isStartDate,
+  normalizeStartDate,
+  samePrice,
+  type AppRef,
+  type PriceValue,
+  type ProductPriceState,
+} from './model';
 
 export interface TargetPrice {
   currency: string;
@@ -37,6 +45,8 @@ export interface DiffOptions {
 export interface DiffResult {
   ops: Omit<BasePriceOp, 'id'>[];
   skipped: PlanSkip[];
+  /** Reviewer notes keyed by the op's index in `ops` */
+  warnings: Array<{ opIndex: number; message: string }>;
 }
 
 /** Compute the ops that move one product from `state` to `targets` (keyed by alpha-2). */
@@ -49,6 +59,7 @@ export function diffPrices(
   const platform = product.platform;
   const ops: Omit<BasePriceOp, 'id'>[] = [];
   const skipped: PlanSkip[] = [];
+  const warnings: DiffResult['warnings'] = [];
   const skip = (territory: string, reason: PlanSkip['reason'], detail?: string) =>
     skipped.push({ product, territory, reason, ...(detail ? { detail } : {}) });
 
@@ -58,12 +69,16 @@ export function diffPrices(
       skip(territory, 'INVALID_TARGET', `amount ${JSON.stringify(target.amount)} is not a non-negative decimal string`);
       continue;
     }
+    if (target.startDate !== undefined && !isStartDate(target.startDate)) {
+      skip(territory, 'INVALID_TARGET', `startDate ${JSON.stringify(target.startDate)} is not a YYYY-MM-DD date`);
+      continue;
+    }
     const after: PriceValue = {
       currency: target.currency,
       amount: normalizeDecimal(target.amount),
       ...(target.pricePointId ? { pricePointId: target.pricePointId } : {}),
       ...(target.proceeds ? { proceeds: normalizeDecimal(target.proceeds) } : {}),
-      ...(target.startDate ? { startDate: target.startDate } : {}),
+      ...(target.startDate ? { startDate: normalizeStartDate(target.startDate) } : {}),
     };
     const current = state.territories[territory];
 
@@ -78,6 +93,11 @@ export function diffPrices(
 
     const scheduling = Boolean(after.startDate);
     const slot = scheduling ? 'scheduled' : 'current';
+    const problem = current?.problems?.[slot];
+    if (problem) {
+      skip(territory, 'AMBIGUOUS_STATE', `${slot} price can't be read unambiguously: ${problem}`);
+      continue;
+    }
     const before = (scheduling ? current?.scheduled : current?.current) ?? null;
 
     if (!scheduling && !current?.current && !options.allowNewTerritories) {
@@ -99,8 +119,14 @@ export function diffPrices(
       ...(target.note ? { note: target.note } : {}),
     };
     ops.push({ ...op, idempotencyKey: computeIdempotencyKey(op) });
+    if (!scheduling && current?.scheduled) {
+      warnings.push({
+        opIndex: ops.length - 1,
+        message: `${territory} also has a scheduled price (${describePrice(current.scheduled)}). It is not changed and still takes effect on its date, replacing this price.`,
+      });
+    }
   }
-  return { ops, skipped };
+  return { ops, skipped, warnings };
 }
 
 export interface BuildChangeSetInput {
@@ -120,12 +146,15 @@ export function numberOps(ops: Omit<BasePriceOp, 'id'>[]): BasePriceOp[] {
 export function buildChangeSet(input: BuildChangeSetInput): ChangeSet {
   const allOps: Omit<BasePriceOp, 'id'>[] = [];
   const skipped: PlanSkip[] = [];
+  const opWarnings: Array<{ index: number; message: string }> = [];
   for (const { state, targets, options } of input.products) {
     const result = diffPrices(state, targets, options);
+    for (const w of result.warnings) opWarnings.push({ index: allOps.length + w.opIndex, message: w.message });
     allOps.push(...result.ops);
     skipped.push(...result.skipped);
   }
   const ops = numberOps(allOps);
+  const warnings = opWarnings.map((w) => ({ opId: ops[w.index].id, message: w.message }));
   const createdAt = input.createdAt ?? new Date().toISOString();
   const changeSet: ChangeSet = {
     schemaVersion: CHANGESET_SCHEMA_VERSION,
@@ -136,6 +165,7 @@ export function buildChangeSet(input: BuildChangeSetInput): ChangeSet {
     app: input.app,
     ops,
     ...(skipped.length > 0 ? { skipped } : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
   const problems = checkChangeSetRules(changeSet);
   if (problems.length > 0) throw new ChangeSetValidationError(problems);

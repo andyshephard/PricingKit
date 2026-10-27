@@ -5,7 +5,10 @@
 
 import {
   decimalEquals,
+  describePrice,
   invertOp,
+  normalizeStartDate,
+  samePrice,
   isDecimalString,
   normalizeDecimal,
   snapToPricePoints,
@@ -21,18 +24,16 @@ import {
   type TerritoryPriceState,
 } from '@/lib/pricing';
 import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
-import {
-  deleteSubscriptionPrice,
-  getSubscriptionPrices,
-  updateSubscriptionPrice,
-} from '@/lib/apple-connect/subscriptions';
+import { deleteSubscriptionPrice, updateSubscriptionPrice } from '@/lib/apple-connect/subscriptions';
 import {
   getSubscriptionPricePointEqualizations,
+  listSubscriptionPriceEntries,
   listSubscriptionPricePointsByTerritory,
+  type SubscriptionPriceEntry,
   type TerritoryPricePoint,
 } from '@/lib/apple-connect/price-points';
 import { alpha2ToAlpha3, alpha3ToAlpha2 } from '@/lib/apple-connect/territories';
-import { ApiError, getErrorStatus } from '@/lib/utils/api-error';
+import { ApiError, getErrorStatus, toApiError } from '@/lib/utils/api-error';
 import { isBudgetExceeded, type RequestBudget } from '@/lib/utils/request-budget';
 
 export interface AppleAdapterOptions {
@@ -62,10 +63,12 @@ export class AppleAdapter implements PlatformAdapter {
   readonly platform = 'apple' as const;
   private readonly credentials: AppleConnectCredentials;
   private readonly budget?: RequestBudget;
+  private readonly now?: () => Date;
 
   constructor(options: AppleAdapterOptions) {
     this.credentials = options.credentials;
     this.budget = options.budget;
+    this.now = options.now;
   }
 
   private get ctx() {
@@ -74,45 +77,73 @@ export class AppleAdapter implements PlatformAdapter {
 
   async fetchState(product: ProductRef): Promise<ProductPriceState> {
     const id = subscriptionId(product);
-    const { current, scheduled } = await getSubscriptionPrices(this.credentials, id, this.ctx);
+    const entries = await listSubscriptionPriceEntries(this.credentials, id, this.ctx);
+    const today = (this.now?.() ?? new Date()).toISOString().slice(0, 10);
     const territories: Record<string, TerritoryPriceState> = {};
     const warnings: string[] = [];
 
-    const entry = (code: string, currency: string): TerritoryPriceState | undefined => {
-      const alpha2 = toAlpha2(code);
-      if (!alpha2) {
-        warnings.push(`Ignored a price in unknown territory ${code}`);
-        return undefined;
-      }
-      return (territories[alpha2] ??= { territory: alpha2, currency, current: null });
-    };
-
-    for (const [code, price] of Object.entries(current)) {
-      if (!isDecimalString(price.customerPrice)) {
-        warnings.push(`${code}: unreadable price ${JSON.stringify(price.customerPrice)}`);
+    // Group by territory; entries Apple returned without a territory can't be placed at all
+    const byTerritory = new Map<string, SubscriptionPriceEntry[]>();
+    for (const entry of entries) {
+      if (!entry.territory) {
+        warnings.push(entry.problem ?? `price ${entry.subscriptionPriceId} has no territory`);
         continue;
       }
-      const t = entry(price.territoryCode || code, price.currency);
-      if (!t) continue;
-      t.current = {
-        currency: price.currency,
-        amount: normalizeDecimal(price.customerPrice),
-        pricePointId: price.pricePointId,
-        ...(isDecimalString(price.proceeds) ? { proceeds: normalizeDecimal(price.proceeds) } : {}),
-      };
+      byTerritory.set(entry.territory, [...(byTerritory.get(entry.territory) ?? []), entry]);
     }
-    for (const [code, price] of Object.entries(scheduled)) {
-      if (!isDecimalString(price.customerPrice) || !price.startDate) continue;
-      const t = entry(price.territoryCode || code, price.currency);
-      if (!t) continue;
-      t.scheduled = {
-        currency: price.currency,
-        amount: normalizeDecimal(price.customerPrice),
-        pricePointId: price.pricePointId,
-        startDate: price.startDate,
-        ...(isDecimalString(price.proceeds) ? { proceeds: normalizeDecimal(price.proceeds) } : {}),
-      };
-      if (price.subscriptionPriceId) t.refs = { scheduledPriceId: price.subscriptionPriceId };
+
+    for (const [territory, list] of byTerritory) {
+      const future = list.filter((e) => e.startDate !== null && normalizeStartDate(e.startDate) > today);
+      const active = list.filter((e) => !future.includes(e));
+      const state: TerritoryPriceState = { territory, currency: list.find((e) => e.currency)?.currency ?? '', current: null };
+      const problems: { current?: string; scheduled?: string } = {};
+
+      // Current: the active entry with the latest start date (no start date = oldest)
+      const key = (e: SubscriptionPriceEntry) => (e.startDate ? normalizeStartDate(e.startDate) : '');
+      const latest = active.reduce<string | undefined>((max, e) => (max === undefined || key(e) > max ? key(e) : max), undefined);
+      const currentCandidates = active.filter((e) => key(e) === latest);
+      if (currentCandidates.length > 1) {
+        problems.current = `${currentCandidates.length} prices share the latest start date`;
+      } else if (currentCandidates.length === 1) {
+        const entry = currentCandidates[0];
+        if (entry.problem || !entry.pricePoint || !entry.currency || !isDecimalString(entry.pricePoint.customerPrice)) {
+          problems.current = entry.problem ?? `unreadable price ${entry.subscriptionPriceId}`;
+        } else {
+          state.current = {
+            currency: entry.currency,
+            amount: normalizeDecimal(entry.pricePoint.customerPrice),
+            pricePointId: entry.pricePoint.id,
+            ...(isDecimalString(entry.pricePoint.proceeds) ? { proceeds: normalizeDecimal(entry.pricePoint.proceeds) } : {}),
+          };
+        }
+      }
+
+      // Scheduled: Apple keeps one future price per territory. More than one
+      // (a create that took effect after an error, or a run stopped between
+      // create and delete) is reported, never resolved by picking one.
+      if (future.length > 1) {
+        problems.scheduled = `${future.length} future prices (${future.map((e) => `${e.pricePoint?.customerPrice ?? '?'} from ${e.startDate}`).join(', ')})`;
+      } else if (future.length === 1) {
+        const entry = future[0];
+        if (entry.problem || !entry.pricePoint || !entry.currency || !isDecimalString(entry.pricePoint.customerPrice)) {
+          problems.scheduled = entry.problem ?? `unreadable price ${entry.subscriptionPriceId}`;
+        } else {
+          state.scheduled = {
+            currency: entry.currency,
+            amount: normalizeDecimal(entry.pricePoint.customerPrice),
+            pricePointId: entry.pricePoint.id,
+            startDate: normalizeStartDate(entry.startDate!),
+            ...(isDecimalString(entry.pricePoint.proceeds) ? { proceeds: normalizeDecimal(entry.pricePoint.proceeds) } : {}),
+          };
+          state.refs = { scheduledPriceId: entry.subscriptionPriceId };
+        }
+      }
+
+      if (problems.current || problems.scheduled) {
+        state.problems = problems;
+        for (const [slot, message] of Object.entries(problems)) warnings.push(`${territory} ${slot}: ${message}`);
+      }
+      territories[territory] = state;
     }
 
     return {
@@ -210,8 +241,23 @@ export class AppleAdapter implements PlatformAdapter {
 
     switch (op.kind) {
       case 'setPrice': {
-        const created = await updateSubscriptionPrice(this.credentials, id, op.after!.pricePointId!, territory, undefined, preserve, this.ctx);
-        return { createdPriceId: created.id ?? null };
+        try {
+          const created = await updateSubscriptionPrice(this.credentials, id, op.after!.pricePointId!, territory, undefined, preserve, this.ctx);
+          return { createdPriceId: created.id ?? null };
+        } catch (error) {
+          const scheduled = context.territoryState?.scheduled;
+          if (getErrorStatus(error) === 409 && scheduled) {
+            // Same wording as the subscription PATCH route: name the scheduled
+            // price, never delete anything on a 409
+            const apiError = toApiError(error, 'apple');
+            const detail = (apiError as { detail?: unknown }).detail;
+            throw new ApiError(
+              `${typeof detail === 'string' && detail ? detail : apiError.message} (a scheduled price already exists for ${territory}: ${describePrice(scheduled)}. If this is the conflict, clear the scheduled price first, then apply again.)`,
+              { status: 409, code: apiError.code, platform: 'apple', retryable: false, cause: error }
+            );
+          }
+          throw error;
+        }
       }
       case 'schedulePrice': {
         // Create the new scheduled price first. Only once it exists is the one
@@ -250,7 +296,7 @@ export class AppleAdapter implements PlatformAdapter {
       case 'deleteScheduled': {
         const scheduled = context.territoryState?.scheduled;
         const priceId = context.territoryState?.refs?.scheduledPriceId;
-        if (!scheduled || !priceId || !op.before || scheduled.pricePointId !== op.before.pricePointId || !decimalEquals(scheduled.amount, op.before.amount)) {
+        if (!scheduled || !priceId || !op.before || !samePrice('apple', scheduled, op.before, 'scheduled') || !decimalEquals(scheduled.amount, op.before.amount)) {
           throw new ApiError(`No scheduled price matching the plan in ${territory}; nothing deleted`, {
             status: 409,
             code: 'STATE_CHANGED',

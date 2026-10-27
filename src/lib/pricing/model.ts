@@ -38,7 +38,7 @@ export interface PriceValue {
   pricePointId?: string;
   /** Apple developer proceeds */
   proceeds?: Decimal;
-  /** ISO 8601 date a scheduled price takes effect */
+  /** Date a scheduled price takes effect, YYYY-MM-DD (Apple's format) */
   startDate?: string;
 }
 
@@ -61,6 +61,12 @@ export interface TerritoryPriceState {
    * only: never copied into plans.
    */
   refs?: { scheduledPriceId?: string };
+  /**
+   * Set when the adapter could not read a slot unambiguously (e.g. two future
+   * Apple prices in one territory, or a price without its price point). Ops
+   * on that slot are refused rather than applied against a guess.
+   */
+  problems?: { current?: string; scheduled?: string };
 }
 
 /** Everything the core needs to know about one product's prices right now. */
@@ -79,9 +85,21 @@ export interface ProductPriceState {
  * identifies the price exactly; otherwise currency and amount must match.
  * Scheduled prices must also share their start date.
  */
+const DATE_PREFIX = /^(\d{4}-\d{2}-\d{2})(?:$|T)/;
+
+/** "2030-06-01T00:00:00Z" -> "2030-06-01"; a plain date is returned as is. Anything else is unchanged. */
+export function normalizeStartDate(value: string): string {
+  return DATE_PREFIX.exec(value)?.[1] ?? value;
+}
+
+/** True for a YYYY-MM-DD date (or a timestamp that starts with one) */
+export function isStartDate(value: unknown): value is string {
+  return typeof value === 'string' && DATE_PREFIX.test(value);
+}
+
 export function samePrice(platform: Platform, a: PriceValue | null | undefined, b: PriceValue | null | undefined, slot: PriceSlot): boolean {
   if (!a || !b) return !a && !b;
-  if (slot === 'scheduled' && (a.startDate ?? '') !== (b.startDate ?? '')) return false;
+  if (slot === 'scheduled' && normalizeStartDate(a.startDate ?? '') !== normalizeStartDate(b.startDate ?? '')) return false;
   if (platform === 'apple' && a.pricePointId && b.pricePointId) return a.pricePointId === b.pricePointId;
   return a.currency === b.currency && compareDecimal(a.amount, b.amount) === 0;
 }

@@ -3,7 +3,8 @@
 // relationship, never from decoding Apple's base64 IDs.
 
 import type { AppleConnectCredentials, AppleSubscriptionPricePoint, AppleTerritory } from './types';
-import { appleListPages } from './pagination';
+import { appleListAll, appleListPages } from './pagination';
+import { alpha3ToAlpha2 } from './territories';
 import { APPLE_PRICE_POINT_PAGE_LIMIT } from './subscriptions';
 import type { RequestContext } from '../utils/request-budget';
 import { toApiError } from '../utils/api-error';
@@ -126,4 +127,90 @@ export async function getSubscriptionPricePointEqualizations(
     throw toApiError(error, 'apple');
   }
   return [...byTerritory.values()].flat().map((p) => ({ ...p, currency: currencies.get(p.territory) }));
+}
+
+/** One subscriptionPrices entry, read without guessing anything */
+export interface SubscriptionPriceEntry {
+  subscriptionPriceId: string;
+  /** alpha-2; undefined if Apple didn't say */
+  territory?: string;
+  /** null = no start date (the original price) */
+  startDate: string | null;
+  pricePoint?: { id: string; customerPrice: string; proceeds: string };
+  currency?: string;
+  /** Why this entry can't be used as-is (missing relationship, price point or currency) */
+  problem?: string;
+}
+
+interface StrictPriceData {
+  id: string;
+  attributes?: { startDate?: string | null };
+  relationships?: {
+    subscriptionPricePoint?: { data?: { id: string } | null };
+    territory?: { data?: { id: string } | null };
+  };
+}
+
+/**
+ * Every price entry of a subscription, current, past and future, with its
+ * territory and price point taken from the relationships Apple returns. Unlike
+ * getSubscriptionPrices (used by the existing UI routes), nothing falls back:
+ * no "first price point of the territory", no USD currency, no picking one
+ * of several future prices. Anything missing is reported on the entry.
+ */
+export async function listSubscriptionPriceEntries(
+  credentials: AppleConnectCredentials,
+  subscriptionId: string,
+  ctx: RequestContext = {}
+): Promise<SubscriptionPriceEntry[]> {
+  let result: { data: StrictPriceData[]; included: unknown[] };
+  try {
+    result = await appleListAll<StrictPriceData>(credentials, `/subscriptions/${subscriptionId}/prices`, {
+      queryParams: {
+        include: 'territory,subscriptionPricePoint',
+        limit: '200',
+        'fields[subscriptionPrices]': 'startDate,territory,subscriptionPricePoint',
+        'fields[subscriptionPricePoints]': 'customerPrice,proceeds',
+        'fields[territories]': 'currency',
+      },
+      budget: ctx.budget,
+    });
+  } catch (error) {
+    throw toApiError(error, 'apple');
+  }
+
+  const points = new Map<string, { customerPrice: string; proceeds: string }>();
+  const currencies = new Map<string, string>();
+  for (const item of result.included as Array<{ id: string; type: string; attributes?: Record<string, string> }>) {
+    if (item.type === 'subscriptionPricePoints' && item.attributes) {
+      points.set(item.id, { customerPrice: item.attributes.customerPrice, proceeds: item.attributes.proceeds });
+    } else if (item.type === 'territories' && item.attributes?.currency) {
+      currencies.set(item.id, item.attributes.currency);
+    }
+  }
+
+  return result.data.map((price) => {
+    const alpha3 = price.relationships?.territory?.data?.id;
+    const territory = alpha3 ? alpha3ToAlpha2(alpha3) ?? undefined : undefined;
+    const pointId = price.relationships?.subscriptionPricePoint?.data?.id;
+    const point = pointId ? points.get(pointId) : undefined;
+    const currency = alpha3 ? currencies.get(alpha3) : undefined;
+    const problem = !territory
+      ? `price ${price.id} has no territory`
+      : !pointId
+        ? `price ${price.id} in ${territory} has no price point`
+        : !point
+          ? `price ${price.id} in ${territory}: price point ${pointId} was not returned`
+          : !currency
+            ? `price ${price.id} in ${territory} has no currency`
+            : undefined;
+    return {
+      subscriptionPriceId: price.id,
+      ...(territory ? { territory } : {}),
+      startDate: price.attributes?.startDate ?? null,
+      ...(point && pointId ? { pricePoint: { id: pointId, ...point } } : {}),
+      ...(currency ? { currency } : {}),
+      ...(problem ? { problem } : {}),
+    };
+  });
 }

@@ -34,6 +34,22 @@ describe('price state snapshots', () => {
     expect(product.territories.FR.current).toBeNull();
   });
 
+  it('reports an export with two future prices in a territory instead of keeping one', () => {
+    const exp: PriceExport = {
+      schemaVersion: 1,
+      exportedAt: '2030-01-01T00:00:00.000Z',
+      platform: 'apple',
+      app: { bundleId: 'com.example.app' },
+      product: { type: 'subscription', id: 'com.example.app.pro.annual', storeId: '9000000001' },
+      prices: [
+        { territory: 'DE', currency: 'EUR', amount: '27.99', scheduled: [{ amount: '29.99', startDate: '2030-06-01' }, { amount: '31.99', startDate: '2030-09-01' }] },
+      ],
+    };
+    const [product] = parseStateSnapshot(exp).products;
+    expect(product.territories.DE.scheduled).toBeUndefined();
+    expect(product.territories.DE.problems?.scheduled).toMatch(/2 future prices/);
+  });
+
   it('imports several Google exports for one app and refuses mixed apps', () => {
     const base = {
       schemaVersion: 1 as const,

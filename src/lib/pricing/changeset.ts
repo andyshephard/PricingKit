@@ -91,7 +91,8 @@ export interface PlanSkip {
     | 'CURRENCY_MISMATCH'
     | 'UNRESOLVED_PRICE_POINT'
     | 'NO_TARGET'
-    | 'INVALID_TARGET';
+    | 'INVALID_TARGET'
+    | 'AMBIGUOUS_STATE';
   detail?: string;
 }
 
@@ -109,6 +110,8 @@ export interface ChangeSet {
   skipped?: PlanSkip[];
   /** Ops an undo could not express, with the reason (e.g. Apple can't remove a current price) */
   notReversible?: Array<{ opId: string; reason: string }>;
+  /** Things a reviewer should know about specific ops (e.g. a scheduled price that will still take effect) */
+  warnings?: Array<{ opId: string; message: string }>;
 }
 
 export function opSlot(kind: BasePriceOpKind): PriceSlot {
@@ -193,7 +196,7 @@ export const priceValueSchema = z
     amount: decimalSchema,
     pricePointId: z.string().min(1).optional(),
     proceeds: decimalSchema.optional(),
-    startDate: z.string().min(1).optional(),
+    startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'startDate must be a date, YYYY-MM-DD').optional(),
   })
   .strict();
 
@@ -226,7 +229,7 @@ const skipSchema = z
   .object({
     product: productRefSchema,
     territory: z.string(),
-    reason: z.enum(['ALREADY_AT_TARGET', 'NOT_CONFIGURED', 'CURRENCY_MISMATCH', 'UNRESOLVED_PRICE_POINT', 'NO_TARGET', 'INVALID_TARGET']),
+    reason: z.enum(['ALREADY_AT_TARGET', 'NOT_CONFIGURED', 'CURRENCY_MISMATCH', 'UNRESOLVED_PRICE_POINT', 'NO_TARGET', 'INVALID_TARGET', 'AMBIGUOUS_STATE']),
     detail: z.string().optional(),
   })
   .strict();
@@ -243,6 +246,7 @@ export const changeSetSchema = z
     ops: z.array(opSchema),
     skipped: z.array(skipSchema).optional(),
     notReversible: z.array(z.object({ opId: z.string(), reason: z.string() }).strict()).optional(),
+    warnings: z.array(z.object({ opId: z.string(), message: z.string() }).strict()).optional(),
   })
   .strict();
 

@@ -38,6 +38,10 @@ export class FakeAppleServer {
   private counter = 0;
   /** Fail the next POST for this territory (alpha-3) with this status */
   failCreate = new Map<string, number>();
+  /** The next POST for this territory (alpha-3) takes effect but then fails with this status */
+  failCreateAfterWrite = new Map<string, number>();
+  /** Price IDs returned without their price point relationship */
+  dropPointRelationship = new Set<string>();
   /** Fail every DELETE with this status */
   failDelete?: number;
 
@@ -79,7 +83,10 @@ export class FakeAppleServer {
           id: p.id,
           type: 'subscriptionPrices',
           attributes: { startDate: p.startDate },
-          relationships: { subscriptionPricePoint: { data: { id: p.pricePointId, type: 'subscriptionPricePoints' } } },
+          relationships: {
+            subscriptionPricePoint: this.dropPointRelationship.has(p.id) ? { data: null } : { data: { id: p.pricePointId, type: 'subscriptionPricePoints' } },
+            territory: { data: { id: TERRITORIES[p.alpha2].alpha3, type: 'territories' } },
+          },
         })),
         included: [
           ...[...used].map((id) => {
@@ -118,6 +125,8 @@ export class FakeAppleServer {
         this.failCreate.delete(alpha3);
         throw new AppleApiError(status, 'ENTITY_ERROR', 'Rejected', `Create refused for ${alpha3}`);
       }
+      const ghost = this.failCreateAfterWrite.get(alpha3);
+      if (ghost) this.failCreateAfterWrite.delete(alpha3);
       const alpha2 = Object.entries(TERRITORIES).find(([, t]) => t.alpha3 === alpha3)![0];
       const startDate = body.data.attributes.startDate;
       if (!startDate) {
@@ -126,6 +135,7 @@ export class FakeAppleServer {
       }
       const id = b64({ s: SUB_ID, c: alpha2, n: ++this.counter });
       this.prices.unshift({ id, alpha2, pricePointId: body.data.relationships.subscriptionPricePoint.data.id, startDate });
+      if (ghost) throw new AppleApiError(ghost, 'UNEXPECTED_ERROR', 'Server error', 'Gateway timeout after the create');
       return { data: { id, type: 'subscriptionPrices' } };
     }
 

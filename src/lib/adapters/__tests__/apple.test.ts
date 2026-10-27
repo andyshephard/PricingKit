@@ -41,7 +41,7 @@ beforeEach(() => {
   server.seed('US', '29.99');
   server.seed('GB', '24.99');
   server.seed('DE', '27.99');
-  server.seed('DE', '29.99', '2099-06-01T00:00:00.000Z');
+  server.seed('DE', '29.99', '2099-06-01');
   appleApiRequest.mockReset();
   appleApiRequest.mockImplementation(server.handle);
 });
@@ -57,7 +57,7 @@ describe('AppleAdapter.fetchState', () => {
   it('reads current and scheduled prices by alpha-2 territory, as decimals', async () => {
     const state = await new AppleAdapter({ credentials }).fetchState(product);
     expect(state.territories.GB.current).toMatchObject({ currency: 'GBP', amount: '24.99', pricePointId: server.point('GB', '24.99') });
-    expect(state.territories.DE.scheduled).toMatchObject({ currency: 'EUR', amount: '29.99', startDate: '2099-06-01T00:00:00.000Z' });
+    expect(state.territories.DE.scheduled).toMatchObject({ currency: 'EUR', amount: '29.99', startDate: '2099-06-01' });
     expect(state.territories.DE.refs?.scheduledPriceId).toBeTruthy();
     expect(state.territories.US.scheduled).toBeUndefined();
   });
@@ -66,6 +66,27 @@ describe('AppleAdapter.fetchState', () => {
     await expect(new AppleAdapter({ credentials }).fetchState({ platform: 'apple', type: 'inapp', id: '1' })).rejects.toMatchObject({
       code: 'UNSUPPORTED_OPERATION',
     });
+  });
+});
+
+describe('AppleAdapter.fetchState when the store is ambiguous', () => {
+  it('reports two future prices in a territory instead of picking one', async () => {
+    server.seed('DE', '31.99', '2099-09-01');
+    const state = await new AppleAdapter({ credentials }).fetchState(product);
+    expect(state.territories.DE.scheduled).toBeUndefined();
+    expect(state.territories.DE.problems?.scheduled).toMatch(/2 future prices/);
+    expect(state.territories.DE.current?.amount).toBe('27.99');
+    expect(state.warnings?.some((w) => w.startsWith('DE scheduled'))).toBe(true);
+  });
+
+  it('skips a price without its price point relationship instead of guessing', async () => {
+    const gb = server.prices.find((p) => p.alpha2 === 'GB')!;
+    server.dropPointRelationship.add(gb.id);
+    const adapter = new AppleAdapter({ credentials });
+    const state = await adapter.fetchState(product);
+    expect(state.territories.GB.current).toBeNull();
+    expect(state.territories.GB.problems?.current).toMatch(/has no price point/);
+    expect(state.territories.GB.currency).toBe('GBP'); // from Apple, never a USD default
   });
 });
 
@@ -119,7 +140,7 @@ describe('AppleAdapter with the executor', () => {
     const changeSet = await plan({
       US: { currency: 'USD', amount: '24.99' },
       GB: { currency: 'GBP', amount: '26.99' },
-      DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01T00:00:00.000Z' },
+      DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' },
     });
     expect(changeSet.ops.map((op) => `${op.kind} ${op.target.territory}`)).toEqual(['schedulePrice DE', 'setPrice GB', 'setPrice US']);
 
@@ -127,7 +148,7 @@ describe('AppleAdapter with the executor', () => {
     expect(run.status).toBe('completed');
     const applied = prices(await adapter.fetchState(product));
     expect(applied.GB.current?.amount).toBe('26.99');
-    expect(applied.DE.scheduled).toMatchObject({ amount: '31.99', startDate: '2099-07-01T00:00:00.000Z' });
+    expect(applied.DE.scheduled).toMatchObject({ amount: '31.99', startDate: '2099-07-01' });
 
     const writes = server.writes().length;
     const again = await applyChangeSet(changeSet, { adapter });
@@ -142,7 +163,7 @@ describe('AppleAdapter with the executor', () => {
 
   it('creates a replacement scheduled price before deleting the old one', async () => {
     const adapter = new AppleAdapter({ credentials });
-    const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01T00:00:00.000Z' } });
+    const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' } });
     server.calls = [];
     await applyChangeSet(changeSet, { adapter });
     const writes = server.writes();
@@ -152,14 +173,14 @@ describe('AppleAdapter with the executor', () => {
 
   it('never deletes the old scheduled price when the replacement is refused', async () => {
     const adapter = new AppleAdapter({ credentials });
-    const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01T00:00:00.000Z' } });
+    const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' } });
     server.failCreate.set('DEU', 409);
     server.calls = [];
     const run = await applyChangeSet(changeSet, { adapter });
     expect(run.ops[0]).toMatchObject({ status: 'failed', error: { status: 409 } });
     expect(server.writes()).toEqual(['POST /subscriptionPrices']);
     const state = await adapter.fetchState(product);
-    expect(state.territories.DE.scheduled).toMatchObject({ amount: '29.99', startDate: '2099-06-01T00:00:00.000Z' });
+    expect(state.territories.DE.scheduled).toMatchObject({ amount: '29.99', startDate: '2099-06-01' });
   });
 
   it('charges every request to the run budget and stops when it is spent', async () => {
@@ -206,14 +227,52 @@ describe('AppleAdapter with the executor', () => {
     expect(run.ops[0].warning).toMatch(/could not be removed/);
   });
 
+  it('on resume after a create that took effect but errored, reports two scheduled prices and sends nothing', async () => {
+    const adapter = new AppleAdapter({ credentials });
+    const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' } });
+    server.failCreateAfterWrite.set('DEU', 504);
+    const first = await applyChangeSet(changeSet, { adapter });
+    expect(first.ops[0]).toMatchObject({ status: 'failed', error: { status: 504 } });
+    expect(server.writes()).toEqual(['POST /subscriptionPrices']); // no delete after a failed create
+
+    server.calls = [];
+    const resumed = await applyChangeSet(changeSet, { adapter, run: first });
+    expect(resumed.ops[0]).toMatchObject({ status: 'failed', error: { code: 'STATE_CHANGED' } });
+    expect(resumed.ops[0].error?.message).toMatch(/2 future prices/);
+    expect(server.writes()).toEqual([]);
+  });
+
+  it('refuses a plan against a territory whose price can only be guessed', async () => {
+    const adapter = new AppleAdapter({ credentials });
+    const changeSet = await plan({ GB: { currency: 'GBP', amount: '26.99' } });
+    const gb = server.prices.find((p) => p.alpha2 === 'GB')!;
+    server.dropPointRelationship.add(gb.id);
+    server.calls = [];
+    const run = await applyChangeSet(changeSet, { adapter });
+    expect(run.ops[0]).toMatchObject({ status: 'failed', error: { code: 'STATE_CHANGED' } });
+    expect(server.writes()).toEqual([]);
+  });
+
+  it('names the scheduled price when Apple refuses an immediate change with 409, deleting nothing', async () => {
+    const adapter = new AppleAdapter({ credentials });
+    const changeSet = await plan({ DE: { currency: 'EUR', amount: '19.99' } });
+    expect(changeSet.warnings?.[0]).toMatchObject({ opId: 'op-0001', message: expect.stringMatching(/also has a scheduled price \(29\.99 EUR/) });
+    server.failCreate.set('DEU', 409);
+    server.calls = [];
+    const run = await applyChangeSet(changeSet, { adapter });
+    expect(run.ops[0].error).toMatchObject({ status: 409 });
+    expect(run.ops[0].error?.message).toMatch(/scheduled price already exists for DE: 29\.99 EUR .* from 2099-06-01/);
+    expect(server.writes()).toEqual(['POST /subscriptionPrices']);
+  });
+
   it('refuses to delete a scheduled price that no longer matches the plan', async () => {
     const adapter = new AppleAdapter({ credentials });
-    const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01T00:00:00.000Z' } });
+    const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' } });
     const run = await applyChangeSet(changeSet, { adapter });
     const undo = buildUndoChangeSet(changeSet, run);
     // Someone replaces the scheduled price before the undo runs
     server.prices = server.prices.filter((p) => !p.startDate);
-    server.seed('DE', '19.99', '2099-08-01T00:00:00.000Z');
+    server.seed('DE', '19.99', '2099-08-01');
     server.calls = [];
     const undone = await applyChangeSet(undo, { adapter });
     expect(undone.ops[0]).toMatchObject({ status: 'failed', error: { code: 'STATE_CHANGED' } });
