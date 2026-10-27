@@ -243,13 +243,14 @@ describe('pricingkit apply at a terminal', () => {
     expect(store.writes()).toHaveLength(2);
   });
 
-  it('--yes skips the question; without a terminal (CI) nothing is asked', async () => {
+  it('--yes is refused at a terminal; without a terminal (CI) nothing is asked and --yes is accepted', async () => {
     const { hash } = await planFile();
-    const yes = await run(['apply', 'plan.json', '--confirm', hash, '--yes'], { env, cwd: tmp.dir, typed: 'nope' });
-    expect(yes.code).toBe(0);
-    expect(yes.stderr).not.toMatch(/Type the app/);
-    const { hash: again } = await planFile();
-    const ci = await run(['apply', 'plan.json', '--confirm', again, '--force'], { env, cwd: tmp.dir });
+    const calls = appleApiRequest.mock.calls.length;
+    const yes = await run(['apply', 'plan.json', '--confirm', hash, '--yes'], { env, cwd: tmp.dir, typed: 'com.example.app' });
+    expect(yes.code).toBe(1);
+    expect(yes.stderr).toMatch(/--yes is for non-interactive runs/);
+    expect(appleApiRequest.mock.calls.length).toBe(calls);
+    const ci = await run(['apply', 'plan.json', '--confirm', hash, '--yes'], { env, cwd: tmp.dir });
     expect(ci.code).toBe(0);
     expect(ci.stderr).not.toMatch(/Type the app/);
   });

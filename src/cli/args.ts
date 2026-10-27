@@ -458,7 +458,8 @@ On a terminal, apply then prints a summary (the app, ops by kind, base-price
 ops, deletes, App Store changes that move existing subscribers) and asks you to
 type the app's bundle ID or package name (with --workspace-plan: the number of
 apps) before it loads credentials; anything else cancels with nothing sent.
---yes (-y) skips the question. Without a terminal (CI, pipes) nothing is asked.
+Without a terminal (CI, pipes) nothing is asked; --yes (-y) says so explicitly
+and is refused at a terminal.
 
 Exit code 0 when every op is done, 1 otherwise (the log says which).
 

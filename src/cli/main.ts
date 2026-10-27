@@ -198,8 +198,9 @@ export async function main(argv = process.argv.slice(2)): Promise<ExitCode> {
     });
     return EXIT_OK;
   }
-  // On a terminal, apply asks for a typed confirmation (unless --yes); in CI and pipes it doesn't
-  const interactive = Boolean(process.stdin.isTTY && process.stderr.isTTY);
+  // With a person at the keyboard (stdin is a terminal), apply always asks for a typed
+  // confirmation; in CI and pipes it doesn't
+  const interactive = Boolean(process.stdin.isTTY);
   return runCli(argv, {
     stdout: (text) => process.stdout.write(text),
     stderr: (text) => process.stderr.write(text),

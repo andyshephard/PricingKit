@@ -25,7 +25,7 @@ export interface CommandContext {
   redactor: Redactor;
   now: () => Date;
   /**
-   * Interactive only (stdin and stderr are a terminal): prints the lines and
+   * Interactive only (stdin is a terminal): prints the lines and
    * the question on stderr and returns the line typed, or null. Undefined
    * otherwise (CI, pipes, tests without an answer).
    */

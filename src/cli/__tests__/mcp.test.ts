@@ -92,10 +92,14 @@ describe('MCP tools', () => {
     expect(ok.structuredContent!.exitCode).toBe(2);
     const changeSet = parseChangeSet(readFileSync(join(tmp.dir, 'plan.json'), 'utf8'));
     const hash = changeSetHash(changeSet);
-    expect((ok.structuredContent!.result as { hash: string }).hash).toBe(hash);
+    // No tool output carries the confirm hash: the person applying runs diff themselves
+    expect((ok.structuredContent!.result as { hash?: string }).hash).toBeUndefined();
+    expect(JSON.stringify(ok)).not.toContain(hash);
 
     const diff = await tool('diff', { plan: 'plan.json' });
-    expect(diff.structuredContent).toMatchObject({ exitCode: 2, result: { changeSetHash: hash, byGroup: { basePrices: 2, offers: 1 } } });
+    expect(diff.structuredContent).toMatchObject({ exitCode: 2, result: { byGroup: { basePrices: 2, offers: 1 } } });
+    expect((diff.structuredContent!.result as { changeSetHash?: string }).changeSetHash).toBeUndefined();
+    expect(JSON.stringify(diff)).not.toContain(hash);
 
     const before = appleApiRequest.mock.calls.length;
     const command = await tool('apply_command', { plan: 'plan.json' });

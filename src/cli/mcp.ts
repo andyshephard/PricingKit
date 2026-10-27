@@ -83,7 +83,7 @@ export const TOOLS: Tool[] = [
   {
     name: 'plan',
     description:
-      'Make a plan (dry run: only reads from the store) from a spec (base prices or offers) and/or an offer rules file, and write it to `out`. Returns the plan and its hash. Applying it is for a person: use apply_command.',
+      'Make a plan (dry run: only reads from the store) from a spec (base prices or offers) and/or an offer rules file, and write it to `out`. Returns the plan, without its confirm hash. Applying it is for a person: use apply_command.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -101,7 +101,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'diff',
-    description: 'Summarise a plan file: ops per product and territory, skipped territories, warnings, manual actions and the plan hash. Offline: no store requests.',
+    description: 'Summarise a plan file: ops per product and territory, skipped territories, warnings and manual actions (not the confirm hash: the person applying it runs pricingkit diff themselves). Offline: no store requests.',
     inputSchema: { type: 'object', properties: { plan: str('Path of the plan file') }, required: ['plan'], additionalProperties: false },
     paths: [read('plan')],
     argv: (a) => ['diff', String(a.plan)],
@@ -298,6 +298,26 @@ export function internalErrorMessage(error: unknown, env: Record<string, string 
   return clean.length > 300 ? `${clean.slice(0, 300)}...` : clean;
 }
 
+// No tool output carries a confirm hash: the person applying a plan gets it
+// from their own `pricingkit diff`, so an agent can't hand over a complete
+// apply command (or one for a plan nobody reviewed).
+const HASH_KEYS = new Set(['hash', 'changeSetHash', 'workspacePlanHash']);
+const HASH_NOTE = 'run "pricingkit diff" yourself for the plan hash';
+
+/** A copy of a tool's JSON result without confirm-hash fields */
+export function stripHashes(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripHashes);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([k]) => !HASH_KEYS.has(k)).map(([k, v]) => [k, stripHashes(v)]));
+  }
+  return value;
+}
+
+/** Text with anything shaped like a confirm hash (32 hex digits) replaced */
+function withoutHashes(text: string): string {
+  return text.replace(/\b[0-9a-f]{32}\b/g, `[${HASH_NOTE}]`);
+}
+
 export class McpServer {
   private queue: Promise<unknown> = Promise.resolve();
 
@@ -327,14 +347,16 @@ export class McpServer {
       ...(this.options.now ? { now: this.options.now } : {}),
     };
     const exitCode = await runCli(argv, io);
-    let result: unknown = stdout;
+    let result: unknown = withoutHashes(stdout);
     try {
-      result = JSON.parse(stdout);
+      result = stripHashes(JSON.parse(stdout));
     } catch {
       // keep the text
     }
+    const text = typeof result === 'string' ? result.trim() : JSON.stringify(result, null, 2);
+    const errText = withoutHashes(stderr).trim();
     return {
-      content: [{ type: 'text', text: `${stdout.trim()}${stderr.trim() ? `\n\n[stderr]\n${stderr.trim()}` : ''}\n\n[exit code ${exitCode}]` }],
+      content: [{ type: 'text', text: `${text}${errText ? `\n\n[stderr]\n${errText}` : ''}\n\n[exit code ${exitCode}]` }],
       structuredContent: { exitCode, result },
       ...(exitCode === 1 ? { isError: true } : {}),
     };

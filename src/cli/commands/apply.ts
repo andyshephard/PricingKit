@@ -62,12 +62,16 @@ export function applySummary(changeSet: ChangeSet): string[] {
 }
 
 /**
- * At a terminal, without --yes: show the summary and require the expected
- * answer typed back, before any credential is loaded. Elsewhere (CI, pipes)
- * nothing is asked.
+ * At a terminal: always show the summary and require the expected answer
+ * typed back, before any credential is loaded; --yes is refused there (it is
+ * for CI, where an agent's relayed command can't skip the person's review).
+ * Elsewhere (CI, pipes) nothing is asked.
  */
 async function confirmAtTerminal(ctx: CommandContext, lines: string[], expected: string, what: string): Promise<void> {
-  if (ctx.flags.yes === true || !ctx.ask) return;
+  if (!ctx.ask) return;
+  if (ctx.flags.yes === true) {
+    throw new UsageError('--yes is for non-interactive runs (CI). At a terminal, apply always shows what the plan does and asks you to confirm; run it without --yes.');
+  }
   const answer = await ctx.ask(lines, `Type ${what} to apply, anything else cancels: `);
   if (answer?.trim() !== expected) throw new CliError('Not applied: the confirmation typed did not match. Nothing was read or sent.', 'NOT_CONFIRMED');
 }
