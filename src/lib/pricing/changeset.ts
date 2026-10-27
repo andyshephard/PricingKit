@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { normalizeDecimal } from './decimal';
 import { canonicalJson, fnv1a64, priceValueSchema, productRefSchema, appRefSchema, territorySchema } from './refs';
 import { checkOfferOpRules, describeOfferOp, isOfferOp, isOfferOpKind, offerOpSchema, offerTargetKey, type OfferOp, type OfferOpKind } from './offer-ops';
+import { OFFER_KINDS, type OfferKind } from './offers';
 import {
   describePrice,
   productKey,
@@ -105,6 +106,31 @@ export interface PlanSkip {
   detail?: string;
 }
 
+/**
+ * Why an offer needs a person rather than an op (sync plans):
+ * PRICES_IMMUTABLE    - the rule gives new prices, but the store can't re-price this kind of offer
+ *                       (offer codes, win-back and introductory offers); the planner never deletes or
+ *                       re-creates an offer by itself
+ * OFFER_NOT_FOUND     - the rules file names an offer the product doesn't have (sync never creates offers)
+ * OFFER_UNREADABLE    - the offer can't be read unambiguously (two offers share the key, a price without
+ *                       a price point, an unknown mode or duration)
+ * RULE_NOT_APPLICABLE - the rule can't price this offer (a free trial, weeks against months, ...)
+ * BASE_SCHEDULED      - the plan schedules the base price change for a later date; held by default
+ *                       because offer prices change as soon as they are applied
+ */
+export const MANUAL_ACTION_CODES = ['PRICES_IMMUTABLE', 'OFFER_NOT_FOUND', 'OFFER_UNREADABLE', 'RULE_NOT_APPLICABLE', 'BASE_SCHEDULED'] as const;
+export type ManualActionCode = (typeof MANUAL_ACTION_CODES)[number];
+
+/** An offer the planner looked at but can't change itself, and what to do instead */
+export interface ManualAction {
+  product: ProductRef;
+  offer: { kind: OfferKind; key: string };
+  code: ManualActionCode;
+  message: string;
+  /** Territories concerned, when it's about some of them */
+  territories?: string[];
+}
+
 export interface ChangeSet {
   schemaVersion: typeof CHANGESET_SCHEMA_VERSION;
   kind: typeof CHANGESET_KIND;
@@ -122,6 +148,8 @@ export interface ChangeSet {
   notReversible?: Array<{ opId: string; reason: string }>;
   /** Things a reviewer should know about specific ops (e.g. a scheduled price that will still take effect) */
   warnings?: Array<{ opId: string; message: string }>;
+  /** Planner notes only (sync plans): offers that need a person, with the reason. The executor ignores them. */
+  manualActions?: ManualAction[];
 }
 
 export function opSlot(kind: BasePriceOpKind): PriceSlot {
@@ -208,6 +236,19 @@ export const changeSetSchema = z
     skipped: z.array(skipSchema).optional(),
     notReversible: z.array(z.object({ opId: z.string(), reason: z.string() }).strict()).optional(),
     warnings: z.array(z.object({ opId: z.string(), message: z.string() }).strict()).optional(),
+    manualActions: z
+      .array(
+        z
+          .object({
+            product: productRefSchema,
+            offer: z.object({ kind: z.enum(OFFER_KINDS), key: z.string().min(1) }).strict(),
+            code: z.enum(MANUAL_ACTION_CODES),
+            message: z.string(),
+            territories: z.array(territorySchema).optional(),
+          })
+          .strict()
+      )
+      .optional(),
   })
   .strict();
 
@@ -224,6 +265,7 @@ export function checkChangeSetRules(changeSet: ChangeSet): string[] {
   const ids = new Set<string>();
   const slots = new Set<string>();
   const appPlatform: Platform = 'bundleId' in changeSet.app ? 'apple' : 'google';
+  const byId = new Map(changeSet.ops.map((op) => [op.id, op]));
 
   for (const op of changeSet.ops as Array<ChangeOp | ReservedOp>) {
     const where = `op ${op.id}`;
@@ -235,6 +277,14 @@ export function checkChangeSetRules(changeSet: ChangeSet): string[] {
       const slotKey = `offer|${offerTargetKey(op)}`;
       if (slots.has(slotKey)) problems.push(`${where}: another op already changes ${op.target.offer.kind} "${op.target.offer.key}"`);
       slots.add(slotKey);
+      const deps = op.dependsOn ?? [];
+      if (new Set(deps).size !== deps.length) problems.push(`${where}: dependsOn lists an op twice`);
+      for (const dep of deps) {
+        const base = byId.get(dep);
+        if (!base) problems.push(`${where}: dependsOn names ${dep}, which isn't in the plan`);
+        else if (isOfferOp(base)) problems.push(`${where}: dependsOn names ${dep}, an offer op; only base-price ops can be depended on`);
+        else if (productKey(base.target.product) !== productKey(op.target.product)) problems.push(`${where}: dependsOn names ${dep}, an op on another product`);
+      }
       continue;
     }
     if ((RESERVED_OP_KINDS as readonly string[]).includes(op.kind)) {

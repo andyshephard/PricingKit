@@ -98,6 +98,13 @@ export interface OfferOp {
   after: OfferState | null;
   idempotencyKey: string;
   note?: string;
+  /**
+   * Base-price ops (IDs in the same ChangeSet) this op's prices were derived
+   * from (sync plans: offers re-derived against the plan's target base
+   * prices). The executor applies base-price ops first and fails this op
+   * with BASE_NOT_APPLIED, sending nothing, if any of them failed.
+   */
+  dependsOn?: string[];
 }
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be a date, YYYY-MM-DD');
@@ -146,6 +153,7 @@ export const offerOpSchema = z
     after: offerStateSchema.nullable(),
     idempotencyKey: z.string().min(1),
     note: z.string().optional(),
+    dependsOn: z.array(z.string().min(1)).min(1).optional(),
   })
   .strict();
 

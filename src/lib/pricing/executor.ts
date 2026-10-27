@@ -16,6 +16,13 @@
 // `confirm` set to the plan's hash (what the reviewer saw), and an offer is
 // deleted only with `force.deleteOffers`, because App Store Connect doesn't
 // report redemptions.
+//
+// Writes go in two waves: every base-price op first, then the offer ops. An
+// offer op derived from the plan's new base prices (`dependsOn`, sync plans)
+// is applied only once those base-price ops are done (ok or already at
+// target); if any of them failed, it fails with BASE_NOT_APPLIED and nothing
+// is sent, so an offer is never re-priced against base prices that aren't in
+// place.
 
 import {
   changeSetHash,
@@ -39,6 +46,8 @@ const BUDGET_EXCEEDED = 'BUDGET_EXCEEDED';
 export const PERSIST_FAILED = 'PERSIST_FAILED';
 /** A deleteOffer op was not sent because force.deleteOffers wasn't set */
 export const REDEMPTIONS_UNCHECKED = 'REDEMPTIONS_UNCHECKED';
+/** An offer op was not sent because a base-price op it was derived from (dependsOn) failed */
+export const BASE_NOT_APPLIED = 'BASE_NOT_APPLIED';
 
 /**
  * Thrown before anything is read or sent when a plan with offer ops is
@@ -358,7 +367,8 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
     await publish();
   }
 
-  // 3. Apply, in batches the adapter can write together (offer ops one at a time)
+  // 3. Apply, in batches the adapter can write together (offer ops one at a time).
+  //    Base-price ops all go before any offer op (see dependsOn).
   const units: ReadyItem[][] = [];
   const batches = new Map<string, ReadyItem[]>();
   for (const item of ready) {
@@ -406,7 +416,37 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
     return adapter.requestsNeeded ? adapter.requestsNeeded(priceUnit.map((u) => u.op), priceUnit.map((u) => u.context)) : unit.length;
   };
 
-  await mapWithConcurrency(units, concurrency, async (unit) => {
+  /**
+   * Whether an offer op's base-price dependencies are in place: 'ok' when
+   * every one is done (ok, or skipped as already at target), 'wait' while
+   * one hasn't run (the run stopped first), or the failed ones.
+   */
+  const dependencyState = (op: OfferOp): 'ok' | 'wait' | { failed: string[] } => {
+    const deps = op.dependsOn ?? [];
+    const failed = deps.filter((id) => records.get(id)?.status === 'failed');
+    if (failed.length > 0) return { failed };
+    return deps.every((id) => ['ok', 'skipped'].includes(records.get(id)?.status ?? '')) ? 'ok' : 'wait';
+  };
+
+  const runGuarded = async (unit: ReadyItem[]) => {
+    const first = unit[0];
+    if (first.offer && first.op.dependsOn?.length) {
+      const deps = dependencyState(first.op);
+      if (deps === 'wait') return; // left pending for a resume
+      if (deps !== 'ok') {
+        update(records.get(first.op.id)!, {
+          status: 'failed',
+          finishedAt: now(),
+          error: {
+            message: `Not applied: its prices were derived from base prices that weren't applied (${deps.failed.join(', ')} failed). Nothing was sent. Fix or re-plan those, then resume.`,
+            code: BASE_NOT_APPLIED,
+            retryable: false,
+          },
+        });
+        await publish();
+        return;
+      }
+    }
     // Never start an op the budget can't finish: a two-request op (create
     // then delete) stopped halfway leaves the store in a state no plan expects.
     const needed = requestsFor(unit);
@@ -420,7 +460,17 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
     } finally {
       reserved -= needed;
     }
-  });
+  };
+  await mapWithConcurrency(
+    units.filter((unit) => !unit[0].offer),
+    concurrency,
+    runGuarded
+  );
+  await mapWithConcurrency(
+    units.filter((unit) => unit[0].offer),
+    concurrency,
+    runGuarded
+  );
 
   async function runUnit(unit: ReadyItem[]): Promise<void> {
     // Record the attempt and persist it BEFORE sending, so a crash mid-request

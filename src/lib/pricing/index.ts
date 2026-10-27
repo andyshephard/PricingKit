@@ -21,4 +21,5 @@ export * from './offers';
 export * from './offer-derivation';
 export * from './offer-ops';
 export * from './offer-plan';
+export * from './offer-sync';
 export * from './spec';
