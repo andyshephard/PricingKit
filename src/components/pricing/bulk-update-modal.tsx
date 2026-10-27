@@ -3,7 +3,7 @@
 import { useState, useMemo } from 'react';
 import { Loader2, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
-import { useForm } from 'react-hook-form';
+import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import {
@@ -37,6 +37,8 @@ import {
   FormMessage,
 } from '@/components/ui/form';
 import { GOOGLE_PLAY_REGIONS } from '@/lib/google-play/types';
+import { cn } from '@/lib/utils';
+import { ReviewDialog, type ReviewChange } from './review-dialog';
 
 const bulkUpdateFormSchema = z
   .object({
@@ -68,6 +70,14 @@ interface BulkUpdateResult {
   skippedRegions?: Array<{ regionCode: string; reason: string }>;
 }
 
+/** Items or base plans the route dropped because the request already covers them */
+interface BulkDuplicate {
+  type: 'product' | 'subscription';
+  id: string;
+  basePlanId?: string;
+  reason: 'REPEATED_ITEM' | 'BASE_PLAN_COVERED';
+}
+
 interface BulkRequestBody {
   items: Array<{ type: 'product' | 'subscription'; id: string }>;
   operation: { type: BulkUpdateFormData['operationType']; value?: number; currency?: string; roundTo?: number };
@@ -82,6 +92,63 @@ function expectedPricesFrom(preview: BulkUpdateResult[]): Record<string, Record<
     expected[r.basePlanId ? `${r.id}/${r.basePlanId}` : r.id] = Object.fromEntries(r.changes.map((c) => [c.regionCode, c.oldPrice]));
   }
   return expected;
+}
+
+/** "USD 9.99" -> { currency: "USD", amount: 9.99 } (the route's exact "<currency> <decimal>" form) */
+function splitPrice(price: string): { currency: string; amount: number } | null {
+  const m = /^([A-Z]{3}) (-?\d+(?:\.\d+)?)$/.exec(price.trim());
+  return m ? { currency: m[1], amount: Number(m[2]) } : null;
+}
+
+/** Every previewed region change, one review row each */
+function reviewChangesFrom(preview: BulkUpdateResult[]): ReviewChange[] {
+  return preview.flatMap((r) =>
+    r.success
+      ? (r.changes ?? []).map((c) => {
+          const before = splitPrice(c.oldPrice);
+          const after = splitPrice(c.newPrice);
+          const same = before && after && before.currency === after.currency;
+          return {
+            id: `${r.id}/${r.basePlanId ?? ''}/${c.regionCode}`,
+            label: `${r.id}${r.basePlanId ? ` · ${r.basePlanId}` : ''} · ${c.regionCode}`,
+            before: c.oldPrice,
+            after: c.newPrice,
+            beforeAmount: same ? before.amount : null,
+            afterAmount: same ? after.amount : null,
+          };
+        })
+      : []
+  );
+}
+
+const itemLabel = (r: { id: string; basePlanId?: string }) => (r.basePlanId ? `${r.id} / ${r.basePlanId}` : r.id);
+
+function DuplicatesNote({ duplicates }: { duplicates: BulkDuplicate[] }) {
+  return (
+    <p className="mb-2 text-sm text-muted-foreground">
+      Left out as already covered by this update:{' '}
+      {duplicates.map((d) => `${itemLabel(d)} (${d.reason === 'REPEATED_ITEM' ? 'selected twice' : 'base plan already updated'})`).join(', ')}.
+    </p>
+  );
+}
+
+function PreviewWarnings({ failures, skippedRegions, duplicates }: { failures: BulkUpdateResult[]; skippedRegions: number; duplicates: BulkDuplicate[] }) {
+  return (
+    <div className="space-y-1">
+      {failures.length > 0 && (
+        <p>
+          {failures.length} {failures.length === 1 ? 'item' : 'items'} can&apos;t be changed and will be left alone:{' '}
+          {failures.map((f) => `${itemLabel(f)} (${f.error ?? 'failed'})`).join('; ')}.
+        </p>
+      )}
+      {skippedRegions > 0 && (
+        <p>
+          {skippedRegions} target {skippedRegions === 1 ? 'region is' : 'regions are'} skipped (no current price, or billed in another currency).
+        </p>
+      )}
+      {duplicates.length > 0 && <p>{duplicates.length} repeated {duplicates.length === 1 ? 'selection is' : 'selections are'} applied once.</p>}
+    </div>
+  );
 }
 
 interface BulkUpdateModalProps {
@@ -102,7 +169,8 @@ export function BulkUpdateModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [results, setResults] = useState<BulkUpdateResult[] | null>(null);
   // Step 1 result: what the update would do (nothing written yet), and the request it came from
-  const [preview, setPreview] = useState<{ request: BulkRequestBody; results: BulkUpdateResult[] } | null>(null);
+  const [preview, setPreview] = useState<{ request: BulkRequestBody; results: BulkUpdateResult[]; duplicates: BulkDuplicate[] } | null>(null);
+  const [duplicates, setDuplicates] = useState<BulkDuplicate[]>([]);
 
   const form = useForm<BulkUpdateFormData>({
     resolver: zodResolver(bulkUpdateFormSchema),
@@ -115,7 +183,7 @@ export function BulkUpdateModal({
     },
   });
 
-  const operationType = form.watch('operationType');
+  const operationType = useWatch({ control: form.control, name: 'operationType' });
 
   const allRegions = useMemo(
     () => GOOGLE_PLAY_REGIONS.map((r) => r.code),
@@ -161,7 +229,7 @@ export function BulkUpdateModal({
         targetRegions: data.targetRegions,
       };
       const result = await postBulk({ ...request, dryRun: true });
-      setPreview({ request, results: result.results });
+      setPreview({ request, results: result.results, duplicates: result.duplicates ?? [] });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Preview failed');
     } finally {
@@ -177,6 +245,7 @@ export function BulkUpdateModal({
       const result = await postBulk({ ...preview.request, expectedPrices: expectedPricesFrom(preview.results) });
       setPreview(null);
       setResults(result.results);
+      setDuplicates(result.duplicates ?? []);
 
       // Subscription results are per base plan
       const unit = type === 'product' ? 'item' : 'base plan';
@@ -210,12 +279,15 @@ export function BulkUpdateModal({
     }
   };
 
-  const previewChanges = preview?.results.reduce((n, r) => n + (r.success ? r.changes?.length ?? 0 : 0), 0) ?? 0;
-  const shown = results ?? preview?.results ?? null;
+  const reviewChanges = useMemo(() => (preview ? reviewChangesFrom(preview.results) : []), [preview]);
+  const previewFailures = preview?.results.filter((r) => !r.success) ?? [];
+  const previewSkippedRegions = preview?.results.reduce((n, r) => n + (r.skippedRegions?.length ?? 0), 0) ?? 0;
+  const fixedCurrency = preview?.request.operation.type === 'fixed' ? preview.request.operation.currency : undefined;
 
   const handleClose = () => {
     setResults(null);
     setPreview(null);
+    setDuplicates([]);
     form.reset();
     onOpenChange(false);
   };
@@ -233,32 +305,24 @@ export function BulkUpdateModal({
           </DialogDescription>
         </DialogHeader>
 
-        {shown ? (
+        {results ? (
           <div className="flex-1 overflow-hidden">
-            {preview && (
-              <p className="mb-2 text-sm text-muted-foreground">
-                Preview: nothing has changed yet. {previewChanges} region price{previewChanges === 1 ? '' : 's'} will change. Each is applied only if
-                its price is still the one shown here.
-              </p>
-            )}
+            {duplicates.length > 0 && <DuplicatesNote duplicates={duplicates} />}
             <ScrollArea className="h-[400px] pr-4">
               <div className="space-y-3">
-                {shown.map((result, index) => (
+                {results.map((result, index) => (
                   <div
                     key={`${result.id}-${result.basePlanId || index}`}
-                    className={`p-3 rounded-lg border ${
-                      result.success && !preview
-                        ? 'bg-green-50 border-green-200 dark:bg-green-950/20 dark:border-green-900'
-                        : 'bg-red-50 border-red-200 dark:bg-red-950/20 dark:border-red-900'
-                    }`}
+                    className={cn(
+                      'rounded-xl border p-3',
+                      result.success ? 'border-line bg-success/60' : 'border-destructive/40 bg-destructive/10'
+                    )}
                   >
-                    <div className="flex items-center gap-2 mb-2">
-                      {preview ? (
-                        result.success ? <CheckCircle2 className="h-4 w-4 text-muted-foreground" /> : <XCircle className="h-4 w-4 text-red-600" />
-                      ) : result.success ? (
-                        <CheckCircle2 className="h-4 w-4 text-green-600" />
+                    <div className="mb-2 flex items-center gap-2">
+                      {result.success ? (
+                        <CheckCircle2 className="h-4 w-4 text-success-foreground" aria-hidden="true" />
                       ) : (
-                        <XCircle className="h-4 w-4 text-red-600" />
+                        <XCircle className="h-4 w-4 text-destructive" aria-hidden="true" />
                       )}
                       <span className="font-mono text-sm">{result.id}</span>
                       {result.basePlanId && (
@@ -266,19 +330,15 @@ export function BulkUpdateModal({
                           {result.basePlanId}
                         </Badge>
                       )}
+                      <span className="sr-only">{result.success ? 'updated' : 'failed'}</span>
                     </div>
-                    {result.error && (
-                      <p className="text-sm text-red-600">{result.error}</p>
-                    )}
+                    {result.error && <p className="text-sm text-destructive">{result.error}</p>}
                     {result.skippedRegions && result.skippedRegions.length > 0 && (
                       <div className="mt-2 space-y-1">
                         {result.skippedRegions.map((skipped) => (
-                          <div
-                            key={skipped.regionCode}
-                            className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-500"
-                          >
-                            <AlertTriangle className="h-3 w-3" />
-                            <Badge variant="outline">{skipped.regionCode}</Badge>
+                          <div key={skipped.regionCode} className="flex items-center gap-2 text-xs text-warn-foreground">
+                            <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                            <Badge variant="warning">{skipped.regionCode}</Badge>
                             <span>Skipped: {skipped.reason}</span>
                           </div>
                         ))}
@@ -287,17 +347,10 @@ export function BulkUpdateModal({
                     {result.changes && result.changes.length > 0 && (
                       <div className="mt-2 space-y-1">
                         {result.changes.map((change) => (
-                          <div
-                            key={change.regionCode}
-                            className="flex items-center gap-2 text-xs"
-                          >
+                          <div key={change.regionCode} className="flex items-center gap-2 font-mono text-xs">
                             <Badge variant="outline">{change.regionCode}</Badge>
-                            <span className="text-muted-foreground line-through">
-                              {change.oldPrice}
-                            </span>
-                            <span className="text-green-600">
-                              {change.newPrice}
-                            </span>
+                            <span className="text-muted-foreground line-through">{change.oldPrice}</span>
+                            <span className="text-success-foreground">{change.newPrice}</span>
                           </div>
                         ))}
                       </div>
@@ -523,32 +576,13 @@ export function BulkUpdateModal({
         <DialogFooter>
           {results ? (
             <Button onClick={handleClose}>Close</Button>
-          ) : preview ? (
-            <>
-              <Button variant="outline" onClick={() => setPreview(null)} disabled={isSubmitting}>
-                Back
-              </Button>
-              <Button onClick={handleApply} disabled={isSubmitting || previewChanges === 0}>
-                {isSubmitting ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Applying...
-                  </>
-                ) : (
-                  `Apply ${previewChanges} change${previewChanges === 1 ? '' : 's'}`
-                )}
-              </Button>
-            </>
           ) : (
             <>
               <Button variant="outline" onClick={handleClose}>
                 Cancel
               </Button>
-              <Button
-                onClick={form.handleSubmit(handlePreview)}
-                disabled={isSubmitting}
-              >
-                {isSubmitting ? (
+              <Button onClick={form.handleSubmit(handlePreview)} disabled={isSubmitting}>
+                {isSubmitting && !preview ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     Previewing...
@@ -560,6 +594,32 @@ export function BulkUpdateModal({
             </>
           )}
         </DialogFooter>
+
+        {/* Review step: the dry run's changes, applied only at the prices shown */}
+        <ReviewDialog
+          open={preview !== null}
+          onOpenChange={(next) => {
+            if (!next) setPreview(null);
+          }}
+          context={`${selectedIds.length} selected ${type === 'product' ? (selectedIds.length === 1 ? 'product' : 'products') : selectedIds.length === 1 ? 'subscription (every base plan)' : 'subscriptions (every base plan)'} · Google Play`}
+          changes={reviewChanges}
+          noun={{ one: 'region price', other: 'region prices' }}
+          warning={
+            previewFailures.length > 0 || previewSkippedRegions > 0 || (preview?.duplicates.length ?? 0) > 0 ? (
+              <PreviewWarnings failures={previewFailures} skippedRegions={previewSkippedRegions} duplicates={preview?.duplicates ?? []} />
+            ) : undefined
+          }
+          note={
+            <>
+              Nothing has changed yet. Each region is applied only if its price is still the one shown here, and checked again just before the
+              write. {fixedCurrency ? <>Only regions billed in {fixedCurrency} change; a fixed price is never converted. </> : null}
+              {type === 'subscription' ? 'Existing subscribers stay on their price (a legacy price cohort) until it is migrated.' : null}
+            </>
+          }
+          planSubject={`google-play-bulk-${type}s`}
+          applying={isSubmitting}
+          onApply={handleApply}
+        />
       </DialogContent>
     </Dialog>
   );

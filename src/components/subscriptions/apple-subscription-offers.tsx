@@ -1,11 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import { AlertTriangle, ChevronDown, ChevronRight, Plus, Tag } from 'lucide-react';
+import { AlertTriangle, ChevronDown, Plus } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { PanelCard } from '@/components/pricing/strategy-panel';
+import { cn } from '@/lib/utils';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { getTerritoryByAlpha2 } from '@/lib/apple-connect/territories';
 import type { StoreOffer } from '@/lib/pricing';
@@ -40,11 +41,17 @@ function territoryName(alpha2: string): string {
   return getTerritoryByAlpha2(alpha2)?.name ?? alpha2;
 }
 
+/** Small pill buttons of the Offers card */
+export const offerChip =
+  'inline-flex items-center gap-1.5 rounded-full bg-chip px-3 py-1.5 text-[13px] font-semibold text-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-50';
+export const offerOutline =
+  'inline-flex items-center gap-1.5 rounded-full border border-line-strong bg-card px-3 py-1.5 text-[13px] font-semibold text-foreground transition-colors hover:bg-accent hover:text-accent-foreground';
+
 function OfferPrices({ offer }: { offer: StoreOffer }) {
   const territories = [...new Set([...Object.keys(offer.prices), ...Object.keys(offer.territoryProblems ?? {})])].sort();
   if (territories.length === 0) return <p className="text-sm text-muted-foreground">No prices.</p>;
   return (
-    <div className="max-h-80 overflow-auto rounded border">
+    <div className="max-h-80 overflow-auto rounded-xl border border-line">
       <Table>
         <TableHeader>
           <TableRow>
@@ -62,16 +69,10 @@ function OfferPrices({ offer }: { offer: StoreOffer }) {
               <TableRow key={t}>
                 <TableCell className="font-mono">{t}</TableCell>
                 <TableCell>{territoryName(t)}</TableCell>
-                <TableCell>
-                  {problem ? (
-                    <span className="text-destructive">{problem}</span>
-                  ) : price?.free ? (
-                    'Free'
-                  ) : (
-                    `${price.amount} ${price.currency}`
-                  )}
+                <TableCell className="font-mono">
+                  {problem ? <span className="font-sans text-destructive">{problem}</span> : price?.free ? 'Free' : `${price.amount} ${price.currency}`}
                 </TableCell>
-                <TableCell>{price?.proceeds ? `${price.proceeds} ${price.currency}` : '–'}</TableCell>
+                <TableCell className="font-mono">{price?.proceeds ? `${price.proceeds} ${price.currency}` : '–'}</TableCell>
               </TableRow>
             );
           })}
@@ -81,138 +82,118 @@ function OfferPrices({ offer }: { offer: StoreOffer }) {
   );
 }
 
-/**
- * Re-price a promotional offer to "X% of each territory's current price".
- * The dialog asks for the rule, previews every territory (a dry-run plan) and
- * applies only after a confirm step.
- */
-function UpdateToRule({ subscriptionId, offer }: { subscriptionId: string; offer: StoreOffer }) {
-  const [updating, setUpdating] = useState(false);
-  return (
-    <div className="flex items-center gap-3 rounded border p-3">
-      <p className="text-sm text-muted-foreground">Re-price this promotional offer to a percent of each territory&apos;s current price.</p>
-      <Button size="sm" variant="outline" onClick={() => setUpdating(true)}>
-        Update prices to rule
-      </Button>
-      {updating && <AppleOfferRuleDialog subscriptionId={subscriptionId} target={{ kind: 'update', offer }} open={updating} onOpenChange={setUpdating} />}
-    </div>
-  );
+/** "Promotional · pay up front · 1 year · 175 countries" */
+function offerTerms(offer: StoreOffer): string {
+  const parts = [KIND_LABELS[offer.kind] ?? offer.kind, offer.mode ? (MODE_LABELS[offer.mode] ?? offer.mode).toLowerCase() : 'unknown mode'];
+  if (offer.duration) parts.push(`${DURATION_LABELS[offer.duration] ?? offer.duration}${offer.periods && offer.periods > 1 ? ` x ${offer.periods}` : ''}`);
+  const priced = Object.keys(offer.prices).length;
+  parts.push(`${priced} ${priced === 1 ? 'country' : 'countries'}`);
+  return parts.join(' · ');
 }
 
-function OfferRow({ subscriptionId, offer }: { subscriptionId: string; offer: StoreOffer }) {
+function OfferItem({ subscriptionId, offer }: { subscriptionId: string; offer: StoreOffer }) {
   const [open, setOpen] = useState(false);
-  const priced = Object.values(offer.prices).length;
+  const [updating, setUpdating] = useState(false);
   const problems = (offer.problems?.length ?? 0) + Object.keys(offer.territoryProblems ?? {}).length;
+  // Only promotional offers with known, paid terms can be re-priced from the web app
   const canReprice = offer.kind === 'apple.promo' && offer.mode !== null && offer.mode !== 'FREE_TRIAL' && offer.duration !== null;
+  const pricesId = `offer-prices-${offer.kind}-${offer.storeId}`.replace(/[^A-Za-z0-9_-]/g, '-');
   return (
-    <>
-      <TableRow className="cursor-pointer" onClick={() => setOpen(!open)}>
-        <TableCell>{open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}</TableCell>
-        <TableCell>
-          <Badge variant="outline">{KIND_LABELS[offer.kind] ?? offer.kind}</Badge>
-        </TableCell>
-        <TableCell>
-          <div className="font-medium">{offer.name ?? offer.key}</div>
-          {offer.name && offer.kind !== 'apple.intro' && <div className="font-mono text-xs text-muted-foreground">{offer.key}</div>}
-        </TableCell>
-        <TableCell>
-          {offer.mode ? MODE_LABELS[offer.mode] : 'Unknown'}
-          {offer.duration ? `, ${DURATION_LABELS[offer.duration] ?? offer.duration}` : ''}
-          {offer.periods && offer.periods > 1 ? ` x ${offer.periods}` : ''}
-        </TableCell>
-        <TableCell>{priced}</TableCell>
-        <TableCell>
-          {problems > 0 && (
-            <span className="inline-flex items-center gap-1 text-sm text-destructive">
-              <AlertTriangle className="h-4 w-4" />
-              {problems}
-            </span>
-          )}
-        </TableCell>
-      </TableRow>
-      {open && (
-        <TableRow>
-          <TableCell colSpan={6} className="space-y-3 bg-muted/30">
-            {offer.problems?.map((p) => (
-              <p key={p} className="text-sm text-destructive">
-                {p}
-              </p>
-            ))}
-            {offer.schedule && (
-              <p className="text-sm text-muted-foreground">
-                {offer.schedule.start ? `From ${offer.schedule.start}` : ''} {offer.schedule.end ? `until ${offer.schedule.end}` : ''}
-              </p>
-            )}
-            {offer.status && (
-              <p className="text-sm text-muted-foreground">
-                {Object.entries(offer.status)
-                  .map(([k, v]) => `${k}: ${String(v)}`)
-                  .join(' · ')}
-              </p>
-            )}
-            <OfferPrices offer={offer} />
-            {canReprice && <UpdateToRule subscriptionId={subscriptionId} offer={offer} />}
-          </TableCell>
-        </TableRow>
+    <li className="rounded-xl border border-line p-3.5">
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
+        <div className="min-w-0 flex-1">
+          <p className="font-bold break-words">{offer.name ?? offer.key}</p>
+          {offer.name && offer.kind !== 'apple.intro' && <p className="font-mono text-xs break-all text-muted-foreground">{offer.key}</p>}
+          <p className="mt-1 text-[13px] text-muted-foreground">{offerTerms(offer)}</p>
+        </div>
+        {problems > 0 && (
+          <Badge variant="warning" className="gap-1">
+            <AlertTriangle className="size-3" aria-hidden="true" />
+            {problems} {problems === 1 ? 'problem' : 'problems'}
+          </Badge>
+        )}
+      </div>
+      {offer.problems?.map((p) => (
+        <p key={p} className="mt-2 text-sm text-destructive">
+          {p}
+        </p>
+      ))}
+      {(offer.schedule?.start || offer.schedule?.end) && (
+        <p className="mt-2 text-[13px] text-soft">
+          {offer.schedule.start ? `From ${offer.schedule.start}` : ''} {offer.schedule.end ? `until ${offer.schedule.end}` : ''}
+        </p>
       )}
-    </>
+      {offer.status && (
+        <p className="mt-1 text-[13px] text-soft">
+          {Object.entries(offer.status)
+            .map(([k, v]) => `${k}: ${String(v)}`)
+            .join(' · ')}
+        </p>
+      )}
+      <div className="mt-3 flex flex-wrap gap-2">
+        {canReprice && (
+          <button type="button" className={offerChip} onClick={() => setUpdating(true)}>
+            Update prices to rule
+          </button>
+        )}
+        <button type="button" className={offerOutline} onClick={() => setOpen(!open)} aria-expanded={open} aria-controls={pricesId}>
+          <ChevronDown className={cn('size-3.5 transition-transform', open && 'rotate-180')} aria-hidden="true" />
+          {open ? 'Hide prices' : 'Show prices'}
+        </button>
+      </div>
+      {open && (
+        <div id={pricesId} className="mt-3">
+          <OfferPrices offer={offer} />
+        </div>
+      )}
+      {updating && <AppleOfferRuleDialog subscriptionId={subscriptionId} target={{ kind: 'update', offer }} open={updating} onOpenChange={setUpdating} />}
+    </li>
   );
 }
 
 /**
- * A subscription's offers. Promotional offers can be created from a
- * percent-of-current rule, and an existing one re-priced to a rule; every
- * write is previewed first and applied behind a confirm dialog.
+ * A subscription's offers, in the Atlas Offers card. Promotional offers can be
+ * created from a percent-of-current rule, and an existing one re-priced to a
+ * rule; every write is previewed, reviewed and applied with the plan's hash.
+ * Other offer kinds are read-only here (use the CLI).
  */
 export function AppleSubscriptionOffers({ subscriptionId }: { subscriptionId: string }) {
   const { data, isLoading, error, refetch } = useAppleSubscriptionOffers(subscriptionId);
   const [creating, setCreating] = useState(false);
   const offers = data?.offers ?? [];
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0">
-        <CardTitle className="text-lg flex items-center gap-2">
-          <Tag className="h-5 w-5" />
-          Offers
-        </CardTitle>
-        <Button variant="outline" size="sm" onClick={() => setCreating(true)}>
-          <Plus className="mr-2 h-4 w-4" />
-          Create offer from rule
-        </Button>
-        {creating && <AppleOfferRuleDialog subscriptionId={subscriptionId} target={{ kind: 'create' }} open={creating} onOpenChange={setCreating} />}
-      </CardHeader>
-      <CardContent>
-        {isLoading ? (
-          <Skeleton className="h-24 w-full" />
-        ) : error ? (
-          <div className="space-y-2">
-            <p className="text-sm text-destructive">Could not load offers: {error.message}</p>
-            <Button variant="outline" size="sm" onClick={() => refetch()}>
-              Retry
-            </Button>
-          </div>
-        ) : offers.length === 0 ? (
-          <p className="text-sm text-muted-foreground">This subscription has no offers.</p>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-8" />
-                <TableHead>Type</TableHead>
-                <TableHead>Offer</TableHead>
-                <TableHead>Terms</TableHead>
-                <TableHead>Regions</TableHead>
-                <TableHead>Problems</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {offers.map((offer) => (
-                <OfferRow key={`${offer.kind}:${offer.storeId}`} subscriptionId={subscriptionId} offer={offer} />
-              ))}
-            </TableBody>
-          </Table>
-        )}
-      </CardContent>
-    </Card>
+    <PanelCard
+      title="Offers"
+      action={
+        <button type="button" className={offerOutline} onClick={() => setCreating(true)}>
+          <Plus className="size-3.5" aria-hidden="true" />
+          Create from rule
+        </button>
+      }
+    >
+      {creating && <AppleOfferRuleDialog subscriptionId={subscriptionId} target={{ kind: 'create' }} open={creating} onOpenChange={setCreating} />}
+      {isLoading ? (
+        <Skeleton className="h-24 w-full" />
+      ) : error ? (
+        <div className="space-y-2">
+          <p className="text-sm text-destructive">Could not load offers: {error.message}</p>
+          <Button variant="outline" size="sm" onClick={() => refetch()}>
+            Retry
+          </Button>
+        </div>
+      ) : offers.length === 0 ? (
+        <p className="text-sm text-muted-foreground">This subscription has no offers.</p>
+      ) : (
+        <ul className="space-y-3">
+          {offers.map((offer) => (
+            <OfferItem key={`${offer.kind}:${offer.storeId}`} subscriptionId={subscriptionId} offer={offer} />
+          ))}
+        </ul>
+      )}
+      <p className="mt-3.5 text-xs text-muted-foreground">
+        The web app creates and re-prices promotional offers only. Introductory offers, offer codes and win-back offers are changed with the
+        pricingkit CLI.
+      </p>
+    </PanelCard>
   );
 }

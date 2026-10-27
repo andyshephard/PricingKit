@@ -9,7 +9,10 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { defaultOfferBasis, serializeChangeSet, serializeRun, type OfferPreviewRow, type StoreOffer } from '@/lib/pricing';
+import { ReviewDialog, type ReviewChange } from '@/components/pricing/review-dialog';
+import { countChanges } from '@/components/pricing/review-summary';
+import { getTerritoryByAlpha2 } from '@/lib/apple-connect/territories';
+import { defaultOfferBasis, serializeChangeSet, serializeRun, type OfferPlanEntry, type OfferPreviewRow, type StoreOffer } from '@/lib/pricing';
 import {
   useApplyAppleOfferPlan,
   usePlanAppleOffer,
@@ -67,7 +70,7 @@ function RuleFields({ rule, onChange, idPrefix }: { rule: OfferRuleInput; onChan
 
 function PreviewTable({ rows, changed }: { rows: OfferPreviewRow[]; changed: Set<string> }) {
   return (
-    <div className="max-h-72 overflow-auto rounded border">
+    <div className="max-h-72 overflow-auto rounded-xl border border-line">
       <Table>
         <TableHeader>
           <TableRow>
@@ -89,7 +92,7 @@ function PreviewTable({ rows, changed }: { rows: OfferPreviewRow[]; changed: Set
               <TableCell>{r.deviationRatio ? `${(Number(r.deviationRatio) * 100).toFixed(2)}%` : '–'}</TableCell>
               <TableCell className="text-xs">
                 {r.flags.map((f) => (
-                  <span key={f.code} className={f.severity === 'error' ? 'text-destructive' : 'text-amber-600'}>
+                  <span key={f.code} className={f.severity === 'error' ? 'text-destructive' : 'text-change'}>
                     {f.message}{' '}
                   </span>
                 ))}
@@ -103,10 +106,41 @@ function PreviewTable({ rows, changed }: { rows: OfferPreviewRow[]; changed: Set
   );
 }
 
+/** A 32-digit confirm hash, the only shape the apply route accepts */
+const CONFIRM_HASH = /^[0-9a-f]{32}$/;
+
+/** The plan's per-territory offer prices as review rows (same currency before and after) */
+function offerReviewChanges(entry: OfferPlanEntry): ReviewChange[] {
+  return entry.changes.map(({ territory, before, after }) => {
+    const sameCurrency = before && before.currency === after.currency;
+    return {
+      id: territory,
+      label: getTerritoryByAlpha2(territory)?.name ?? territory,
+      before: before ? `${before.amount} ${before.currency}` : 'none',
+      after: `${after.amount} ${after.currency}`,
+      beforeAmount: sameCurrency ? Number(before.amount) : null,
+      afterAmount: Number(after.amount),
+    };
+  });
+}
+
+function downloadText(text: string, fileName: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 /**
  * Create a promotional offer from a percent-of-current rule, or re-price an
- * existing one to a rule: preview every territory, then apply behind
- * a confirm dialog, then show the run with its log to download.
+ * existing one to a rule: preview every territory, review the changes
+ * (ReviewDialog: counts, every territory before and after, Download plan
+ * for the plan JSON), apply with the plan's hash, then show the run with its
+ * log to download.
  */
 export function AppleOfferRuleDialog({
   subscriptionId,
@@ -159,6 +193,8 @@ export function AppleOfferRuleDialog({
   // File names the CLI's defaults expect: <plan>.json, <plan>.run.json, <plan>.undo.json
   const planFile = result ? `${result.changeSet.id}.json` : 'plan.json';
   const runFile = result ? `${result.changeSet.id}.run.json` : 'run.json';
+  const reviewChanges = useMemo(() => (entry ? offerReviewChanges(entry) : []), [entry]);
+  const reviewCounts = useMemo(() => countChanges(reviewChanges), [reviewChanges]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -268,7 +304,7 @@ export function AppleOfferRuleDialog({
         )}
 
         {run && (
-          <div className="space-y-2 rounded border p-3">
+          <div className="space-y-2 rounded-xl border border-line p-3.5">
             <div className="flex flex-wrap items-center gap-2 text-sm">
               <Badge variant={run.status === 'completed' ? 'secondary' : 'destructive'}>{run.status === 'completed' ? 'Applied' : 'Incomplete'}</Badge>
               {Object.entries(apply.data!.summary)
@@ -320,50 +356,56 @@ export function AppleOfferRuleDialog({
             Close
           </Button>
           <Button disabled={!result || result.changeSet.ops.length === 0 || !!run || apply.isPending} onClick={() => setConfirming(true)}>
-            Apply…
+            Review and apply…
           </Button>
         </DialogFooter>
       </DialogContent>
 
-      <Dialog open={confirming} onOpenChange={setConfirming}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Apply this plan to App Store Connect?</DialogTitle>
-            <DialogDescription>
-              Exactly what the preview showed is applied. Each change is checked against App Store Connect first and skipped if already done. There is no
-              undo or resume in the web app: download the plan and the run log afterwards, and use the CLI for either.
-            </DialogDescription>
-          </DialogHeader>
-          {entry && result && (
-            <ul className="list-disc space-y-1 pl-5 text-sm">
-              <li>
-                {entry.action === 'create' ? 'Create' : 'Update the prices of'} the promotional offer <span className="font-mono">{entry.key}</span>
-              </li>
-              <li>{entry.changes.length} territory prices set</li>
-              {skipped.length > 0 && <li>{skipped.length} territories left out (no usable price)</li>}
-              {(result.changeSet.warnings?.length ?? 0) > 0 && <li>{result.changeSet.warnings!.length} warnings (see the preview)</li>}
-              <li className="text-muted-foreground">
-                Plan <span className="font-mono">{result.hash}</span>
-              </li>
-            </ul>
-          )}
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setConfirming(false)}>
-              Cancel
-            </Button>
-            <Button
-              disabled={apply.isPending}
-              onClick={() => {
-                if (!result) return;
-                apply.mutate({ changeSet: result.changeSet, confirm: result.hash }, { onSettled: () => setConfirming(false) });
-              }}
-            >
-              {apply.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Apply {entry?.changes.length ?? 0} prices
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {entry && result && (
+        <ReviewDialog
+          open={confirming}
+          onOpenChange={setConfirming}
+          context={
+            <>
+              Promotional offer <span className="font-mono">{entry.key}</span> · subscription {subscriptionId}
+            </>
+          }
+          noun={{ one: 'offer price', other: 'offer prices' }}
+          changes={reviewChanges}
+          stats={
+            entry.action === 'create'
+              ? [
+                  { label: 'New prices', value: reviewCounts.added },
+                  { label: 'Left out', value: skipped.length },
+                  { label: 'Offers created', value: 1 },
+                ]
+              : [
+                  { label: 'Decreases', value: reviewCounts.decreases },
+                  { label: 'Increases', value: reviewCounts.increases },
+                  { label: 'Offers re-priced', value: 1 },
+                ]
+          }
+          warning={
+            skipped.length > 0 || (result.changeSet.warnings?.length ?? 0) > 0 ? (
+              <>
+                {skipped.length > 0 && <>{skipped.length} territories are left out (no usable price). </>}
+                {(result.changeSet.warnings?.length ?? 0) > 0 && <>{result.changeSet.warnings!.length} warnings: see the preview.</>}
+              </>
+            ) : undefined
+          }
+          note={
+            <>
+              Exactly what the preview showed is applied, confirmed with the plan&apos;s hash. Each territory is checked against App Store Connect first
+              and skipped if already done. The web app can&apos;t resume or undo: download the plan now and the run log afterwards, and use the CLI for
+              either.
+            </>
+          }
+          onDownloadPlan={() => downloadText(serializeChangeSet(result.changeSet), planFile)}
+          applying={apply.isPending}
+          applyDisabled={!CONFIRM_HASH.test(result.hash) || !!run}
+          onApply={() => apply.mutate({ changeSet: result.changeSet, confirm: result.hash }, { onSettled: () => setConfirming(false) })}
+        />
+      )}
     </Dialog>
   );
 }
