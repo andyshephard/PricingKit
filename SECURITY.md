@@ -20,7 +20,7 @@ key (`.p8` private key, Key ID, Issuer ID) and/or a Google Play service account 
 1. **Upload.** The browser sends the credentials over HTTPS to the PricingKit server you are
    using. They do leave your browser: the server makes the Apple/Google API calls.
 2. **Session cookie.** The server validates them with a read-only API call, then encrypts
-   them with AES-256-GCM using a key derived from `ENCRYPTION_KEY` (PBKDF2-SHA-256), and
+   them with AES-256-GCM using a key derived from `ENCRYPTION_KEY` (HKDF-SHA-256, derived once per process; cookies from before this change, keyed with PBKDF2, are still read and re-encrypted on their next request), and
    returns them in an `HttpOnly`, `SameSite=Strict` cookie (`Secure` in production) that
    expires after 24 hours. Page JavaScript cannot read it.
 3. **Per request.** Each API request sends the cookie back. The server decrypts it in

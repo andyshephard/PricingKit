@@ -18,7 +18,35 @@ import {
   APPLE_SESSION_COOKIE,
   GOOGLE_PACKAGE_NAME_COOKIE,
   GOOGLE_SESSION_COOKIE,
+  SESSION_COOKIE_MAX_AGE,
 } from '@/lib/session';
+import { isLegacyCiphertext, reencryptLegacyCiphertext } from '@/lib/encryption';
+
+type CookieStore = Awaited<ReturnType<typeof cookies>>;
+
+/**
+ * Session cookies written before the v2 (HKDF) format are re-encrypted on
+ * the request that reads them, so nobody is logged out by the upgrade. Same
+ * attributes as the login routes set; the cookie gets a fresh lifetime once.
+ * Best effort: where cookies can't be set (e.g. a Server Component render),
+ * the old cookie keeps working and is migrated on a later API request.
+ */
+async function migrateLegacySessionCookie(cookieStore: CookieStore, name: string, value: string): Promise<void> {
+  if (!isLegacyCiphertext(value)) return;
+  const upgraded = await reencryptLegacyCiphertext(value);
+  if (!upgraded) return;
+  try {
+    cookieStore.set(name, upgraded, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: SESSION_COOKIE_MAX_AGE,
+      path: '/',
+    });
+  } catch {
+    // read-only cookie store here; try again on the next request
+  }
+}
 
 /**
  * Google Play authentication result
@@ -68,6 +96,7 @@ export async function getGoogleAuthFromCookies(): Promise<GoogleAuthResult | nul
     if (!credentials) {
       return null;
     }
+    await migrateLegacySessionCookie(cookieStore, GOOGLE_SESSION_COOKIE, sessionId);
 
     return { credentials, packageName };
   } catch (error) {
@@ -88,6 +117,7 @@ export async function getAppleSessionFromCookies(): Promise<AppleConnectCredenti
     if (!sessionId) return null;
     const sessionCredentials = await getAppleSessionCredentials(sessionId);
     if (!sessionCredentials) return null;
+    await migrateLegacySessionCookie(cookieStore, APPLE_SESSION_COOKIE, sessionId);
     return { ...sessionCredentials, bundleId: sessionCredentials.bundleId ?? '' };
   } catch (error) {
     console.error('Error getting Apple session from cookies:', error);
@@ -113,6 +143,7 @@ export async function getAppleAuthFromCookies(): Promise<AppleAuthResult | null>
     if (!sessionCredentials) {
       return null;
     }
+    await migrateLegacySessionCookie(cookieStore, APPLE_SESSION_COOKIE, sessionId);
 
     const credentials: AppleConnectCredentials = {
       ...sessionCredentials,
