@@ -52,6 +52,16 @@ import {
   type OfferPlan,
   type OfferPlanInput,
   type OfferSpec,
+  checkRulesDrift,
+  planOfferSync,
+  productKey,
+  ruleProducts,
+  type ChangeSet,
+  type OfferRules,
+  type OfferSyncPlan,
+  type OfferSyncProduct,
+  type RulesDriftReport,
+  type ScheduledBasePolicy,
 } from '@/lib/pricing';
 import { getSubscriptionOffer, listSubscriptionOffers, listSubscriptionOffersOfKind } from '@/lib/apple-connect/offers';
 import {
@@ -563,6 +573,67 @@ export class AppleAdapter implements PlatformAdapter {
     await this.verifyProduct(input.product);
     const existing = await listSubscriptionOffersOfKind(this.credentials, subscriptionId(input.product), input.kind, this.ctx);
     return planOfferLifecycle({ ...input, existing });
+  }
+
+  // -------------------------------------------------------------------------
+  // Sync and drift from a rules file (reads only)
+
+  /**
+   * Everything sync and drift need for each product a rules file names,
+   * each read once: app ownership, billing period, base prices (or the
+   * state a base plan was made against, from `states`), the offers of every
+   * kind the rules name, and each base territory's price points. Reads only.
+   */
+  async readRuleProducts(rules: OfferRules, states: ProductPriceState[] = []): Promise<OfferSyncProduct[]> {
+    this.assertApp(rules.app);
+    const out: OfferSyncProduct[] = [];
+    for (const product of ruleProducts(rules)) {
+      const id = subscriptionId(product);
+      const key = productKey(product);
+      await this.verifyProduct(product);
+      const billingPeriod = await this.fetchBillingPeriod(product);
+      const base = states.find((s) => productKey(s.product) === key) ?? (await this.fetchState(product));
+      const kinds = [...new Set(rules.offers.filter((r) => productKey(r.product) === key).map((r) => r.kind as AppleOfferKind))];
+      const offers: StoreOffer[] = [];
+      for (const kind of kinds) offers.push(...(await listSubscriptionOffersOfKind(this.credentials, id, kind, this.ctx)));
+      const ladders = await this.fetchPriceLadders(product, Object.keys(base.territories));
+      out.push({ product, billingPeriod, base, ladders, offers });
+    }
+    return out;
+  }
+
+  /**
+   * Plan keeping the rules file's syncWithBase offers in step: against the
+   * target prices of `base` (a base-price plan, whose ops come first), or
+   * today's prices without one. Pass the states `base` was planned against
+   * to avoid reading them again. Reads only.
+   */
+  async planOfferSync(input: {
+    rules: OfferRules;
+    base?: ChangeSet;
+    states?: ProductPriceState[];
+    scheduledBase?: ScheduledBasePolicy;
+    id?: string;
+    createdAt?: string;
+    description?: string;
+  }): Promise<OfferSyncPlan> {
+    const products = await this.readRuleProducts(input.rules, input.states);
+    return planOfferSync({
+      app: input.rules.app,
+      rules: input.rules.offers,
+      products,
+      ...(input.base ? { base: input.base } : {}),
+      ...(input.scheduledBase ? { scheduledBase: input.scheduledBase } : {}),
+      ...(input.id ? { id: input.id } : {}),
+      createdAt: input.createdAt ?? (this.now?.() ?? new Date()).toISOString(),
+      ...(input.description ? { description: input.description } : {}),
+    });
+  }
+
+  /** Check every offer in a rules file against its rule; one combined pricingkit.rulesDrift report. Reads only. */
+  async checkRulesDrift(rules: OfferRules): Promise<RulesDriftReport> {
+    const products = await this.readRuleProducts(rules);
+    return checkRulesDrift({ app: rules.app, rules: rules.offers, products, now: (this.now?.() ?? new Date()).toISOString() });
   }
 
   private assertApp(app: AppRef): void {
