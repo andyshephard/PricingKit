@@ -279,9 +279,10 @@ offer op lists the base ops of its product it depends on (`dependsOn`):
   rules on free trials are listed there too.
 - **Scheduled base prices** (a spec `startDate`): an offer's new prices apply as soon as the plan
   is applied, so re-deriving an offer against a base price that starts in June would charge the
-  June-based offer price from today. By default sync **holds** those offers: they get no op and a
-  `BASE_SCHEDULED` manual action saying to sync again on or after the date (the weekly drift check
-  flags them then). `--scheduled-base now` re-derives them against the scheduled prices anyway,
+  June-based offer price from today. By default sync **holds** those territories: they keep their
+  offer price and are named in a `BASE_SCHEDULED` manual action saying to sync again on or after
+  the date (the weekly drift check flags them then). The offer's other territories, with immediate
+  base changes, are still re-priced in the same plan, waiting only for those immediate changes. `--scheduled-base now` re-derives them against the scheduled prices anyway,
   with a warning in the plan. A base price already scheduled in the store is warned about too: the
   offer will drift when it takes effect.
 - `pricingkit diff` shows base prices and offers in separate groups, in the order they are

@@ -16,9 +16,10 @@
 // Scheduled base prices (Apple, a future startDate): an offer price change
 // takes effect as soon as it is applied, so re-deriving an offer against a
 // base price that starts later would price it against a base that doesn't
-// apply yet. By default ('hold') such offers get no op and a BASE_SCHEDULED
-// manual action ("sync again on or after the date"); 'deriveNow' re-derives
-// them anyway, with a warning.
+// apply yet. By default ('hold') those territories keep their offer price,
+// with a BASE_SCHEDULED manual action naming them ("sync again on or after
+// the date"), while the offer's other territories are re-priced now;
+// 'deriveNow' re-derives them all, with a warning.
 
 import { z } from 'zod';
 import {
@@ -216,8 +217,10 @@ export function resolveOfferRule(pricing: OfferRulePricing, offer: Pick<StoreOff
 
 /**
  * How a sync treats base prices a plan schedules for a later date (Apple):
- * hold      - default. Offers covering such a territory get no op and a
- *             BASE_SCHEDULED manual action: sync again on or after the date.
+ * hold      - default. Those territories keep their offer price and get a
+ *             BASE_SCHEDULED manual action (sync again on or after the
+ *             date); the offer's other territories are re-priced now, the op
+ *             depending only on the immediate (setPrice) base ops.
  * deriveNow - re-derive against the scheduled price now. The offer's new
  *             prices apply as soon as the plan is applied, before the base
  *             price changes (a warning says so).
@@ -416,16 +419,24 @@ export function planOfferSync(input: PlanOfferSyncInput): OfferSyncPlan {
 
     const productOps = baseOps.filter((op) => productKey(op.target.product) === pk && scope.includes(op.target.territory));
     const scheduledOps = productOps.filter((op) => op.kind === 'schedulePrice' && op.after?.startDate);
+    // Under 'hold', territories whose base price the plan schedules for later keep their offer
+    // price; the rest (immediate base changes, or none) are re-derived now
+    let deriveScope = scope;
     if (scheduledOps.length > 0 && policy === 'hold') {
+      const held = [...new Set(scheduledOps.map((op) => op.target.territory))].sort();
       const dates = [...new Set(scheduledOps.map((op) => op.after!.startDate!))].sort();
+      deriveScope = scope.filter((t) => !held.includes(t));
       manual(
         'BASE_SCHEDULED',
-        `The plan schedules new base prices for ${scheduledOps.length} of this offer's territories from ${listOf(dates, 3)}. Offer prices change as soon as they are applied, so re-deriving now would price the offer against base prices that don't apply yet. Sync again on or after ${earliest(dates)} (the drift check flags the offer then), or plan with scheduled base prices derived now (CLI: --scheduled-base now) to change the offer immediately.`,
-        scheduledOps.map((op) => op.target.territory).sort()
+        `The plan schedules new base prices for ${held.length} of this offer's territories (${listOf(held)}) from ${listOf(dates, 3)}. Offer prices change as soon as they are applied, so those territories keep their current offer price${deriveScope.length > 0 ? ' (the others are re-priced in this plan)' : ''}. Sync again on or after ${earliest(dates)} (the drift check flags the offer then), or plan with scheduled base prices derived now (CLI: --scheduled-base now) to change them immediately.`,
+        held
       );
-      continue;
+      if (deriveScope.length === 0) continue;
+      entry.warnings.push(`${listOf(held)} ${held.length === 1 ? 'keeps its' : 'keep their'} offer price: the plan schedules ${held.length === 1 ? 'its' : 'their'} base price from ${earliest(dates)}; sync again then.`);
     }
-    const used = productOps.filter((op) => op.kind === 'setPrice' || (op.kind === 'schedulePrice' && policy === 'deriveNow'));
+    const used = productOps.filter(
+      (op) => deriveScope.includes(op.target.territory) && (op.kind === 'setPrice' || (op.kind === 'schedulePrice' && policy === 'deriveNow'))
+    );
     if (used.length > 0) entry.pricedAgainst = 'planTargets';
     const projected = projectBasePrices(data.base, used, policy);
 
@@ -437,7 +448,7 @@ export function planOfferSync(input: PlanOfferSyncInput): OfferSyncPlan {
         billingPeriod: data.billingPeriod,
         base: projected,
         ladders: data.ladders,
-        territories: scope,
+        territories: deriveScope,
         ...(rule.deviationThreshold ? { deviationThreshold: rule.deviationThreshold } : {}),
       });
     } catch (error) {
@@ -465,7 +476,7 @@ export function planOfferSync(input: PlanOfferSyncInput): OfferSyncPlan {
 
     // Base prices already scheduled in the store (not replaced by this plan) will move under the offer later
     const replaced = new Set(productOps.filter((op) => op.kind === 'schedulePrice' || op.kind === 'deleteScheduled').map((op) => op.target.territory));
-    const storeScheduled = scope.filter((t) => data.base.territories[t]?.scheduled && !replaced.has(t));
+    const storeScheduled = deriveScope.filter((t) => data.base.territories[t]?.scheduled && !replaced.has(t));
     if (storeScheduled.length > 0) {
       const dates = storeScheduled.map((t) => data.base.territories[t]!.scheduled!.startDate ?? '').filter(Boolean);
       entry.warnings.push(
@@ -482,7 +493,7 @@ export function planOfferSync(input: PlanOfferSyncInput): OfferSyncPlan {
     const after: OfferState = { ...state, prices: { ...state.prices, ...derived } };
     const changed = changedTerritories(state.prices, after.prices);
     if (changed.length === 0) {
-      entry.action = 'none';
+      entry.action = entry.manual ? 'manual' : 'none';
       for (const t of Object.keys(derived).sort()) skipped.push({ product: rule.product, territory: t, offerKey: rule.key, reason: 'ALREADY_AT_TARGET' });
       continue;
     }

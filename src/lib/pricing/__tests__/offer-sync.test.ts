@@ -230,6 +230,33 @@ describe('planOfferSync', () => {
       ]);
     });
 
+    it('hold with immediate and scheduled changes: re-prices the immediate territories now and holds only the scheduled ones', () => {
+      const base = buildChangeSet({
+        app,
+        products: [
+          {
+            state: baseState(),
+            targets: {
+              US: { currency: 'USD', amount: '69.99', pricePointId: 'us-6999' },
+              GB: { currency: 'GBP', amount: '54.99', pricePointId: 'gb-5499', startDate: '2030-06-01' },
+            },
+          },
+        ],
+        createdAt: '2030-01-01T00:00:00Z',
+      });
+      const usOp = base.ops.find((op) => op.kind === 'setPrice' && 'territory' in op.target && op.target.territory === 'US')!;
+      const result = sync([rule()], [offer('apple.promo', 'example_half')], { base });
+      const op = result.changeSet.ops.find((o) => o.kind === 'updateOfferPrices') as OfferOp;
+      expect(op.after!.prices.US).toEqual(price('USD', '34.99', 'us-3499')); // 50% of the immediate 69.99
+      expect(op.after!.prices.GB).toEqual(price('GBP', '24.99', 'gb-2499')); // held at its current price
+      expect(op.dependsOn).toEqual([usOp.id]); // not the scheduled GB op
+      expect(result.manualActions).toEqual([
+        expect.objectContaining({ code: 'BASE_SCHEDULED', territories: ['GB'], message: expect.stringMatching(/\(GB\) from 2030-06-01.*the others are re-priced in this plan/) }),
+      ]);
+      expect(result.entries[0]).toMatchObject({ action: 'updatePrices', manual: { code: 'BASE_SCHEDULED' } });
+      expect(result.changeSet.warnings).toContainEqual({ opId: op.id, message: expect.stringMatching(/GB keeps its offer price/) });
+    });
+
     it('deriveNow: re-derives against the scheduled prices, with a warning that the offer changes first', () => {
       const result = sync([rule()], [offer('apple.promo', 'example_half')], { base: basePlan({ startDate: '2030-06-01' }), scheduledBase: 'deriveNow' });
       const op = result.changeSet.ops[2] as OfferOp;

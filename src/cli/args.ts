@@ -226,8 +226,9 @@ Only promotional offers can be re-priced. Offer codes, win-back and
 introductory offers whose prices no longer match are listed under "Needs
 manual action" with what to do; PricingKit never deletes or re-creates an
 offer. Base prices scheduled for a later date (spec startDate) are held by
-default: offer prices change as soon as they are applied, so those offers
-are listed for a sync on or after the date. --scheduled-base now re-prices
+default: offer prices change as soon as they are applied, so those
+territories keep their offer price and are listed for a sync on or after the
+date (the offer's other territories are still re-priced). --scheduled-base now re-prices
 them now, against the scheduled prices, with a warning.
 "pricingkit apply" applies offer-only plans; a plan that also changes base
 prices is refused there (change base prices in the web app, then run
