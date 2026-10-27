@@ -2,7 +2,6 @@
 // declares its own options; unknown options are an error.
 
 import { parseArgs, type ParseArgsConfig } from 'node:util';
-import { DEFAULT_REQUEST_BUDGET_LIMIT } from '@/lib/utils/request-budget';
 import { UsageError } from './errors';
 
 export const COMMANDS = ['export', 'plan', 'diff', 'offers', 'drift'] as const;
@@ -23,7 +22,7 @@ const APP: OptionSpec = {
 
 const OPTIONS: Record<CommandName, OptionSpec> = {
   export: { ...COMMON, ...APP, subscription: { type: 'string' }, 'base-plan': { type: 'string' }, out: { type: 'string', short: 'o' } },
-  plan: { ...COMMON, ...APP, spec: { type: 'string' }, out: { type: 'string', short: 'o' }, 'state-out': { type: 'string' } },
+  plan: { ...COMMON, ...APP, spec: { type: 'string' }, out: { type: 'string', short: 'o' }, 'state-out': { type: 'string' }, force: { type: 'boolean' } },
   diff: { ...COMMON, plan: { type: 'string' } },
   offers: { ...COMMON, ...APP, subscription: { type: 'string' }, kind: { type: 'string' } },
   drift: {
@@ -50,9 +49,14 @@ export type ParsedArgs =
   | { kind: 'command'; command: CommandName; flags: Flags; positionals: string[]; json: boolean; budget: number };
 
 export const MAX_BUDGET = 100_000;
+/**
+ * Default request cap for one CLI run. Lower than App Store Connect's hourly
+ * 3600 so a run leaves room for the web app or another job on the same key.
+ */
+export const DEFAULT_CLI_BUDGET = 1000;
 
 export function parseBudget(value: string | undefined): number {
-  if (value === undefined) return DEFAULT_REQUEST_BUDGET_LIMIT;
+  if (value === undefined) return DEFAULT_CLI_BUDGET;
   if (!/^\d+$/.test(value)) throw new UsageError(`--budget must be a whole number of requests, got ${JSON.stringify(value)}`);
   const n = Number(value);
   if (n < 1 || n > MAX_BUDGET) throw new UsageError(`--budget must be between 1 and ${MAX_BUDGET}`);
@@ -125,7 +129,7 @@ export function appSelection(flags: Flags, required = true): AppSelection | unde
 
 const SHARED_HELP = `Shared options:
   --json            Machine-readable JSON on stdout
-  --budget <n>      Most store requests this run may send (default ${DEFAULT_REQUEST_BUDGET_LIMIT})
+  --budget <n>      Most store requests this run may send (default ${DEFAULT_CLI_BUDGET})
   -h, --help        Help for the command`;
 
 export const MAIN_HELP = `pricingkit: read store prices, plan price changes and check offers for drift.
@@ -148,7 +152,8 @@ Exit codes:
   2  Drift found, or the plan has ops
 
 Credentials come only from environment variables:
-  App Store Connect: ASC_KEY_ID, ASC_ISSUER_ID, and ASC_PRIVATE_KEY (the .p8 contents) or ASC_PRIVATE_KEY_PATH
+  App Store Connect: ASC_KEY_ID, ASC_ISSUER_ID, and one of ASC_PRIVATE_KEY (the .p8 contents),
+                     ASC_PRIVATE_KEY_HEX (the same, hex-encoded) or ASC_PRIVATE_KEY_PATH
   Google Play:       GOOGLE_APPLICATION_CREDENTIALS (key file path) or GOOGLE_SERVICE_ACCOUNT_JSON (key JSON)
 
 Run "pricingkit help <command>" for a command's options.`;
@@ -165,11 +170,12 @@ Connect subscription ID.
 
 ${SHARED_HELP}`,
   plan: `Usage:
-  pricingkit plan --spec <spec.json> [--out <plan.json>] [--state-out <state.json>]
+  pricingkit plan --spec <spec.json> [--out <plan.json>] [--state-out <state.json>] [--force]
 
 Reads the products in the spec, turns its targets into per-territory prices,
 snaps them to valid store prices and writes the ChangeSet (default
-pricingkit-plan.json). A dry run: it only reads from the store (Google Play's
+pricingkit-plan.json, never overwritten unless you pass --force or name it
+with --out). A dry run: it only reads from the store (Google Play's
 price conversion is a read-only call). Prints the ChangeSet with --json,
 otherwise a summary. --state-out writes the prices the plan was made against.
 The app comes from the spec; --bundle-id or --package-name, if given, must match.
@@ -204,6 +210,8 @@ Checks every territory's offer price against "percent of that territory's
 current price, snapped to its price points" and prints a pricingkit.offerDrift
 report. Without --basis, a pay-up-front offer is checked over its whole
 duration and any other offer per billing period. App Store only.
+With --territories, only those territories are checked; the offer's other
+territories are listed as outOfScope and don't affect the result.
 
 Exit code 2 when the offer is not in sync (any mismatch, missing, extra,
 unresolved or unreadable territory), 0 when every territory matches.

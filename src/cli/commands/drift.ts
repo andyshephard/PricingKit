@@ -34,6 +34,7 @@ export function formatDriftReport(report: OfferDriftReport): string {
       ])
     );
   }
+  if (report.outOfScope?.length) lines.push(`Not checked (outside --territories): ${report.outOfScope.join(', ')}`);
   for (const p of report.problems ?? []) lines.push(`problem: ${p}`);
   for (const w of report.warnings ?? []) lines.push(`warning: ${w.territory}: ${w.message}`);
   return lines.join('\n');

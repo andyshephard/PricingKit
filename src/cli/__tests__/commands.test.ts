@@ -16,7 +16,7 @@ vi.mock('@/lib/google-play/client', () => ({ googlePlayFetch: (...args: unknown[
 import { FakeAppleServer, SUB_ID } from '@/lib/adapters/__tests__/fake-apple';
 import { OFFER_SUB_ID, type FakeOfferServer } from '@/lib/adapters/__tests__/fake-apple-offers';
 import { parseChangeSet, parseStateSnapshot, PRICING_SPEC_KIND } from '@/lib/pricing';
-import { APPLE_ENV_FAKE, FakePlay, offerServer, run, tempDir, throwawayRsaPem } from './fixtures';
+import { fakeAppleEnv, FakePlay, offerServer, run, tempDir, throwawayRsaPem } from './fixtures';
 
 const BUNDLE = 'com.example.app';
 const PKG = 'com.example.app';
@@ -25,6 +25,7 @@ let apple: FakeAppleServer;
 let offers: FakeOfferServer;
 let play: FakePlay;
 let googleEnv: Record<string, string>;
+let appleEnv: Record<string, string>;
 let tmp: ReturnType<typeof tempDir>;
 
 beforeEach(async () => {
@@ -48,6 +49,7 @@ beforeEach(async () => {
       private_key: await throwawayRsaPem(),
     }),
   };
+  appleEnv = await fakeAppleEnv();
   tmp = tempDir();
 });
 
@@ -70,7 +72,7 @@ const appleSpec = (targets: unknown, extra: Record<string, unknown> = {}) => ({
 
 describe('export', () => {
   it('prints an App Store subscription as a state snapshot with --json', async () => {
-    const r = await run(['export', '--bundle-id', BUNDLE, '--subscription', SUB_ID, '--json'], { env: APPLE_ENV_FAKE });
+    const r = await run(['export', '--bundle-id', BUNDLE, '--subscription', SUB_ID, '--json'], { env: appleEnv });
     expect(r.code).toBe(0);
     const snapshot = parseStateSnapshot(r.stdout);
     expect(snapshot.kind).toBe('pricingkit.state');
@@ -81,7 +83,7 @@ describe('export', () => {
   });
 
   it('prints a table without --json and writes the snapshot with --out', async () => {
-    const r = await run(['export', '--bundle-id', BUNDLE, '--subscription', SUB_ID, '--out', 'state.json'], { env: APPLE_ENV_FAKE, cwd: tmp.dir });
+    const r = await run(['export', '--bundle-id', BUNDLE, '--subscription', SUB_ID, '--out', 'state.json'], { env: appleEnv, cwd: tmp.dir });
     expect(r.code).toBe(0);
     expect(r.stdout).toMatch(/DE\s+27\.99 EUR/);
     expect(() => JSON.parse(r.stdout)).toThrow();
@@ -100,18 +102,18 @@ describe('export', () => {
 
   it('needs --base-plan on Google Play and a numeric subscription ID on the App Store', async () => {
     expect((await run(['export', '--package-name', PKG, '--subscription', 'pro'], { env: googleEnv })).code).toBe(1);
-    const r = await run(['export', '--bundle-id', BUNDLE, '--subscription', 'com.example.app.pro'], { env: APPLE_ENV_FAKE });
+    const r = await run(['export', '--bundle-id', BUNDLE, '--subscription', 'com.example.app.pro'], { env: appleEnv });
     expect(r.code).toBe(1);
     expect(r.stderr).toMatch(/numeric App Store Connect subscription ID/);
     expect(appleApiRequest).not.toHaveBeenCalled();
   });
 
   it('charges every request to the run budget and stops when it is spent', async () => {
-    const r = await run(['export', '--bundle-id', BUNDLE, '--subscription', SUB_ID, '--budget', '1'], { env: APPLE_ENV_FAKE });
+    const r = await run(['export', '--bundle-id', BUNDLE, '--subscription', SUB_ID, '--budget', '1'], { env: appleEnv });
     expect(r.code).toBe(0);
     expect(r.stderr).toContain('1 of 1 store requests used');
 
-    const offersRun = await run(['offers', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID, '--budget', '2', '--json'], { env: APPLE_ENV_FAKE });
+    const offersRun = await run(['offers', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID, '--budget', '2', '--json'], { env: appleEnv });
     expect(offersRun.code).toBe(1);
     expect(JSON.parse(offersRun.stdout).error).toMatchObject({ code: 'BUDGET_EXCEEDED', status: 429 });
   });
@@ -121,7 +123,7 @@ describe('export', () => {
       console.log('[Apple API] 503 on GET ... Retry 1/3');
       return apple.handle(...(args as Parameters<FakeAppleServer['handle']>));
     });
-    const r = await run(['export', '--bundle-id', BUNDLE, '--subscription', SUB_ID, '--json'], { env: APPLE_ENV_FAKE });
+    const r = await run(['export', '--bundle-id', BUNDLE, '--subscription', SUB_ID, '--json'], { env: appleEnv });
     expect(r.code).toBe(0);
     expect(() => JSON.parse(r.stdout)).not.toThrow();
     expect(r.stderr).toContain('Retry 1/3');
@@ -131,7 +133,7 @@ describe('export', () => {
 describe('plan', () => {
   it('writes and prints a ChangeSet, exits 2 when there are ops, and sends only reads', async () => {
     const spec = writeSpec(appleSpec({ type: 'fixed', prices: { US: '29.99', GB: '26.50', DE: '27.99' } }));
-    const r = await run(['plan', '--spec', spec, '--out', 'plan.json', '--json'], { env: APPLE_ENV_FAKE, cwd: tmp.dir });
+    const r = await run(['plan', '--spec', spec, '--out', 'plan.json', '--json'], { env: appleEnv, cwd: tmp.dir });
     expect(r.code).toBe(2);
     const printed = parseChangeSet(r.stdout);
     const written = parseChangeSet(readFileSync(join(tmp.dir, 'plan.json'), 'utf8'));
@@ -148,9 +150,27 @@ describe('plan', () => {
     expect(apple.writes()).toEqual([]);
   });
 
+  it('never overwrites the default plan file unless told to', async () => {
+    const spec = writeSpec(appleSpec({ type: 'fixed', prices: { US: '29.99' } }));
+    writeFileSync(join(tmp.dir, 'pricingkit-plan.json'), 'keep me');
+    const refused = await run(['plan', '--spec', spec], { env: appleEnv, cwd: tmp.dir });
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toMatch(/pricingkit-plan\.json already exists\. Pass --force/);
+    expect(readFileSync(join(tmp.dir, 'pricingkit-plan.json'), 'utf8')).toBe('keep me');
+    expect(appleApiRequest).not.toHaveBeenCalled();
+
+    expect((await run(['plan', '--spec', spec, '--force'], { env: appleEnv, cwd: tmp.dir })).code).toBe(2);
+    expect(parseChangeSet(readFileSync(join(tmp.dir, 'pricingkit-plan.json'), 'utf8')).ops).toHaveLength(1);
+
+    // Naming the file is explicit enough
+    writeFileSync(join(tmp.dir, 'mine.json'), 'old');
+    expect((await run(['plan', '--spec', spec, '--out', 'mine.json'], { env: appleEnv, cwd: tmp.dir })).code).toBe(2);
+    expect(parseChangeSet(readFileSync(join(tmp.dir, 'mine.json'), 'utf8')).ops).toHaveLength(1);
+  });
+
   it('exits 0 with an empty plan when everything is at target', async () => {
     const spec = writeSpec(appleSpec({ type: 'fixed', prices: { US: '24.99', DE: '27.99' } }));
-    const r = await run(['plan', '--spec', spec, '--out', 'plan.json'], { env: APPLE_ENV_FAKE, cwd: tmp.dir });
+    const r = await run(['plan', '--spec', spec, '--out', 'plan.json'], { env: appleEnv, cwd: tmp.dir });
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('No changes');
     expect(r.stdout).toContain('Dry run');
@@ -159,7 +179,7 @@ describe('plan', () => {
 
   it('plans percent-of-current targets snapped to each territory, scheduled when the spec says so', async () => {
     const spec = writeSpec(appleSpec({ type: 'percentOfCurrent', percent: '120', territories: ['US', 'GB'] }, { startDate: '2030-06-01', snap: 'floor' }));
-    const r = await run(['plan', '--spec', spec, '--json', '--state-out', 'state.json'], { env: APPLE_ENV_FAKE, cwd: tmp.dir });
+    const r = await run(['plan', '--spec', spec, '--json', '--state-out', 'state.json'], { env: appleEnv, cwd: tmp.dir });
     expect(r.code).toBe(2);
     const plan = parseChangeSet(r.stdout);
     // 24.99 x 1.2 = 29.988. Floor: GB's ladder gives 26.99; US's next point is 29.99 (above), so 24.99,
@@ -191,7 +211,7 @@ describe('plan', () => {
 
   it('refuses an invalid spec, naming the problem', async () => {
     const spec = writeSpec(appleSpec({ type: 'fixed', prices: { GBR: 4.99 } }));
-    const r = await run(['plan', '--spec', spec, '--json'], { env: APPLE_ENV_FAKE, cwd: tmp.dir });
+    const r = await run(['plan', '--spec', spec, '--json'], { env: appleEnv, cwd: tmp.dir });
     expect(r.code).toBe(1);
     const error = JSON.parse(r.stdout).error;
     expect(error.code).toBe('INVALID_SPEC');
@@ -201,7 +221,7 @@ describe('plan', () => {
 
   it('refuses a command-line app that differs from the spec', async () => {
     const spec = writeSpec(appleSpec({ type: 'fixed', prices: { US: '29.99' } }));
-    const r = await run(['plan', '--spec', spec, '--bundle-id', 'com.example.other'], { env: APPLE_ENV_FAKE, cwd: tmp.dir });
+    const r = await run(['plan', '--spec', spec, '--bundle-id', 'com.example.other'], { env: appleEnv, cwd: tmp.dir });
     expect(r.code).toBe(1);
     expect(r.stderr).toMatch(/not the app in the spec/);
   });
@@ -210,7 +230,7 @@ describe('plan', () => {
 describe('diff', () => {
   async function makePlan(prices: Record<string, string>): Promise<string> {
     const spec = writeSpec(appleSpec({ type: 'fixed', prices }));
-    await run(['plan', '--spec', spec, '--out', 'plan.json'], { env: APPLE_ENV_FAKE, cwd: tmp.dir });
+    await run(['plan', '--spec', spec, '--out', 'plan.json'], { env: appleEnv, cwd: tmp.dir });
     return join(tmp.dir, 'plan.json');
   }
 
@@ -219,6 +239,8 @@ describe('diff', () => {
     appleApiRequest.mockClear();
     const r = await run(['diff', plan], { cwd: tmp.dir });
     expect(r.code).toBe(2);
+    // No store requests, so no request count line
+    expect(r.stderr).toBe('');
     expect(r.stdout).toContain('2 changes (setPrice 2)');
     expect(r.stdout).toMatch(/US\s+setPrice\s+24\.99 USD\s+29\.99 USD\s+\+20\.01%/);
     expect(r.stdout).toContain('Skipped 1 territories (ALREADY_AT_TARGET 1)');
@@ -240,7 +262,7 @@ describe('diff', () => {
     expect(summary.opCount).toBe(2);
     expect(summary.products).toHaveLength(1);
     expect(summary.products[0].key).toBe(`apple:subscription:${SUB_ID}`);
-    expect(summary.products[0].ops[0]).toMatchObject({ id: 'op-0001', kind: 'setPrice', territory: 'GB', change: '+8%' });
+    expect(summary.products[0].ops[0]).toMatchObject({ id: 'op-0001', kind: 'setPrice', territory: 'GB', change: '+8.00%' });
   });
 
   it('refuses a tampered plan', async () => {
@@ -263,7 +285,7 @@ describe('diff', () => {
 
 describe('offers', () => {
   it('lists the offers with prices per territory', async () => {
-    const r = await run(['offers', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID], { env: APPLE_ENV_FAKE });
+    const r = await run(['offers', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID], { env: appleEnv });
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('apple.promo  example_half "Half price year"  PAY_UP_FRONT P1Y x1  (id promo-1)');
     expect(r.stdout).toMatch(/GB\s+13\.99 GBP/);
@@ -271,20 +293,20 @@ describe('offers', () => {
   });
 
   it('prints a pricingkit.offers document with --json and filters by --kind', async () => {
-    const r = await run(['offers', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID, '--json', '--kind', 'apple.promo'], { env: APPLE_ENV_FAKE });
+    const r = await run(['offers', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID, '--json', '--kind', 'apple.promo'], { env: appleEnv });
     expect(r.code).toBe(0);
     const list = JSON.parse(r.stdout);
     expect(list).toMatchObject({ kind: 'pricingkit.offers', schemaVersion: 1, app: { bundleId: BUNDLE }, product: { platform: 'apple', type: 'subscription', id: OFFER_SUB_ID } });
     expect(list.offers.map((o: { key: string }) => o.key)).toEqual(['example_half']);
     expect(list.offers[0].prices.US).toMatchObject({ currency: 'USD', amount: '29.99' });
 
-    const none = JSON.parse((await run(['offers', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID, '--json', '--kind', 'apple.winBack'], { env: APPLE_ENV_FAKE })).stdout);
+    const none = JSON.parse((await run(['offers', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID, '--json', '--kind', 'apple.winBack'], { env: appleEnv })).stdout);
     expect(none.offers).toEqual([]);
   });
 
   it('is App Store only and checks --kind', async () => {
     expect((await run(['offers', '--package-name', PKG, '--subscription', 'pro'], { env: googleEnv })).stderr).toMatch(/App Store only/);
-    expect((await run(['offers', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID, '--kind', 'promo'], { env: APPLE_ENV_FAKE })).code).toBe(1);
+    expect((await run(['offers', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID, '--kind', 'promo'], { env: appleEnv })).code).toBe(1);
   });
 });
 
@@ -292,7 +314,7 @@ describe('drift', () => {
   const args = ['drift', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID, '--kind', 'apple.promo', '--offer', 'example_half', '--percent', '50', '--basis', 'perPeriod'];
 
   it('exits 0 and prints an in-sync offerDrift report when every territory matches', async () => {
-    const r = await run([...args, '--json'], { env: APPLE_ENV_FAKE });
+    const r = await run([...args, '--json'], { env: appleEnv });
     expect(r.code).toBe(0);
     const report = JSON.parse(r.stdout);
     expect(report).toMatchObject({ kind: 'pricingkit.offerDrift', schemaVersion: 1, inSync: true, billingPeriod: 'P1Y', summary: { match: 2, mismatch: 0 } });
@@ -302,40 +324,55 @@ describe('drift', () => {
 
   it('exits 2 when the offer has drifted, and says where', async () => {
     offers = offerServer({ gbPoint: 'pp-gbr-1299' });
-    const json = await run([...args, '--json'], { env: APPLE_ENV_FAKE });
+    const json = await run([...args, '--json'], { env: appleEnv });
     expect(json.code).toBe(2);
     const report = JSON.parse(json.stdout);
     expect(report.inSync).toBe(false);
     expect(report.territories.find((t: { territory: string }) => t.territory === 'GB')).toMatchObject({ status: 'mismatch' });
 
-    const text = await run(args, { env: APPLE_ENV_FAKE });
+    const text = await run(args, { env: appleEnv });
     expect(text.code).toBe(2);
     expect(text.stdout).toContain('DRIFT');
     expect(text.stdout).toMatch(/GB\s+mismatch\s+12\.99 GBP\s+13\.99 GBP/);
   });
 
-  it('defaults the basis from the offer, and limits territories', async () => {
+  it('defaults the basis from the offer, and checks only the listed territories', async () => {
     // A 1-year pay-up-front offer on an annual subscription: totalOverDuration = 1 x 50%, same prices
-    const r = await run(['drift', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID, '--kind', 'apple.promo', '--offer', 'example_half', '--percent', '50', '--territories', 'us', '--json'], {
-      env: APPLE_ENV_FAKE,
-    });
+    const scoped = ['drift', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID, '--kind', 'apple.promo', '--offer', 'example_half', '--percent', '50', '--territories', 'us'];
+    const r = await run([...scoped, '--json'], { env: appleEnv });
     const report = JSON.parse(r.stdout);
     expect(report.rule.basis).toBe('totalOverDuration');
-    expect(report.territories.map((t: { territory: string; status: string }) => `${t.territory}:${t.status}`)).toEqual(['GB:extra', 'US:match']);
+    expect(report.territories.map((t: { territory: string; status: string }) => `${t.territory}:${t.status}`)).toEqual(['US:match']);
+    expect(report.outOfScope).toEqual(['GB']);
+    expect(report.inSync).toBe(true);
+    // A scoped check can pass in CI
+    expect(r.code).toBe(0);
+
+    const text = await run(scoped, { env: appleEnv });
+    expect(text.code).toBe(0);
+    expect(text.stdout).toContain('Not checked (outside --territories): GB');
+  });
+
+  it('a scoped check still fails when a listed territory drifted', async () => {
+    offers = offerServer({ gbPoint: 'pp-gbr-1299' });
+    const r = await run(['drift', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID, '--kind', 'apple.promo', '--offer', 'example_half', '--percent', '50', '--territories', 'GB,US', '--json'], {
+      env: appleEnv,
+    });
     expect(r.code).toBe(2);
+    expect(JSON.parse(r.stdout).summary).toMatchObject({ match: 1, mismatch: 1, extra: 0 });
   });
 
   it('exits 1 for an unknown offer, a bad rule or a missing flag', async () => {
-    const missing = await run([...args.slice(0, 8), 'nope', ...args.slice(9), '--json'], { env: APPLE_ENV_FAKE });
+    const missing = await run([...args.slice(0, 8), 'nope', ...args.slice(9), '--json'], { env: appleEnv });
     expect(missing.code).toBe(1);
     expect(JSON.parse(missing.stdout).error).toMatchObject({ code: 'NOT_FOUND' });
 
-    const badPercent = await run([...args.slice(0, 10), '150'], { env: APPLE_ENV_FAKE });
+    const badPercent = await run([...args.slice(0, 10), '150'], { env: appleEnv });
     expect(badPercent.code).toBe(1);
     expect(badPercent.stderr).toMatch(/percent must be above 0 and below 100/);
 
     appleApiRequest.mockClear();
-    const noOffer = await run(['drift', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID, '--kind', 'apple.promo', '--percent', '50'], { env: APPLE_ENV_FAKE });
+    const noOffer = await run(['drift', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID, '--kind', 'apple.promo', '--percent', '50'], { env: appleEnv });
     expect(noOffer.code).toBe(1);
     expect(noOffer.stderr).toMatch(/--offer is required/);
     expect(appleApiRequest).not.toHaveBeenCalled();

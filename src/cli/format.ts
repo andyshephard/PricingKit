@@ -21,12 +21,18 @@ export function priceCell(value: PriceValue | null | undefined): string {
   return value.startDate ? `${money(value)} from ${value.startDate}` : money(value);
 }
 
-/** "+10.02%" / "-5.00%" for after vs before in the same currency; undefined otherwise */
+/** "+10.02%" / "-5.00%" / "+8.00%" (always two decimals) for after vs before in the same currency; undefined otherwise */
 export function percentChange(before: PriceValue | null | undefined, after: PriceValue | null | undefined): string | undefined {
   if (!before || !after || before.currency !== after.currency || isZeroDecimal(before.amount)) return undefined;
   const ratio = divideDecimal(subtractDecimal(after.amount, before.amount), before.amount, 6);
-  const pct = divideDecimal(ratio, '0.01', 2);
+  const pct = fixed2(divideDecimal(ratio, '0.01', 2));
   return compareDecimal(pct, '0') > 0 ? `+${pct}%` : `${pct}%`;
+}
+
+/** A Decimal with exactly two fraction digits: "8" -> "8.00", "-0.5" -> "-0.50" */
+export function fixed2(value: Decimal): string {
+  const [whole, fraction = ''] = value.split('.');
+  return `${whole}.${fraction.padEnd(2, '0').slice(0, 2)}`;
 }
 
 export function countBy<T>(items: T[], key: (item: T) => string): Record<string, number> {

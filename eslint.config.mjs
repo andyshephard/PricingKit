@@ -36,7 +36,7 @@ const eslintConfig = defineConfig([
     },
   },
   // The CLI uses the core and the adapters directly: no Next.js, React or web-app imports.
-  // src/cli/__tests__/cli-boundary.test.ts also checks the transitive graph.
+  // The "CLI boundary" tests in src/lib/pricing/__tests__/core-boundary.test.ts also check the transitive graph.
   {
     files: ["src/cli/**/*.ts"],
     ignores: ["src/cli/**/__tests__/**"],

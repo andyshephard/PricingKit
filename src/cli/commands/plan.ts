@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   buildChangeSet,
   createStateSnapshot,
@@ -70,7 +72,12 @@ export async function planFromSpec(spec: PricingSpec, reader: PriceReader, creat
 
 export async function planCommand(ctx: CommandContext): Promise<CommandResult> {
   const specPath = stringFlag(ctx.flags, 'spec', true);
-  const out = stringFlag(ctx.flags, 'out') ?? DEFAULT_PLAN_FILE;
+  const explicitOut = stringFlag(ctx.flags, 'out');
+  const out = explicitOut ?? DEFAULT_PLAN_FILE;
+  // The default file name is easy to clobber by accident: keep an existing one unless told otherwise
+  if (!explicitOut && ctx.flags.force !== true && existsSync(resolve(ctx.cwd, out))) {
+    throw new UsageError(`${out} already exists. Pass --force to replace it, or choose a file with --out`);
+  }
   const stateOut = stringFlag(ctx.flags, 'state-out');
   if (stateOut && stateOut === out) throw new UsageError('--out and --state-out must be different files');
 

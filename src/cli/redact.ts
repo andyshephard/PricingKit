@@ -6,6 +6,8 @@ const PEM_BLOCK = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*
 const BEARER = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
 // A signed JWT (header.payload.signature, base64url, header starts with {")
 const JWT = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g;
+// A Google OAuth access token (ya29.<opaque>), even without "Bearer"
+const GOOGLE_ACCESS_TOKEN = /\bya29\.[A-Za-z0-9._~+/=-]+/g;
 
 export const REDACTED = '[redacted]';
 
@@ -28,7 +30,7 @@ export class Redactor {
   }
 
   redact(text: string): string {
-    let out = text.replace(PEM_BLOCK, REDACTED).replace(BEARER, `Bearer ${REDACTED}`).replace(JWT, REDACTED);
+    let out = text.replace(PEM_BLOCK, REDACTED).replace(BEARER, `Bearer ${REDACTED}`).replace(JWT, REDACTED).replace(GOOGLE_ACCESS_TOKEN, REDACTED);
     for (const secret of this.secrets) {
       if (out.includes(secret)) out = out.split(secret).join(REDACTED);
       // Also the JSON-escaped form, e.g. a key inside an error body

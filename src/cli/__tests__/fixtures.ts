@@ -51,12 +51,10 @@ export async function throwawayRsaPem(): Promise<string> {
   return `-----BEGIN PRIVATE KEY-----\n${der.match(/.{1,64}/g)!.join('\n')}\n-----END PRIVATE KEY-----\n`;
 }
 
-export const APPLE_ENV_FAKE = {
-  ASC_KEY_ID: 'FAKEKEY123',
-  ASC_ISSUER_ID: '11111111-2222-3333-4444-555555555555',
-  // Not a key: the store client is mocked in tests that use this, so it is never parsed
-  ASC_PRIVATE_KEY: 'bm90LWEta2V5LWp1c3QtdGVzdC1ieXRlcw==',
-};
+/** App Store Connect env vars with a fresh throwaway key */
+export async function fakeAppleEnv(): Promise<Record<string, string>> {
+  return { ASC_KEY_ID: 'FAKEKEY123', ASC_ISSUER_ID: '11111111-2222-3333-4444-555555555555', ASC_PRIVATE_KEY: await throwawayP8() };
+}
 
 // ---------------------------------------------------------------------------
 // App Store offers: one annual subscription with a 50% promo offer

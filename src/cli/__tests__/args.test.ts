@@ -12,7 +12,7 @@ describe('parseCliArgs', () => {
       flags: { 'bundle-id': 'com.example.app', subscription: '123', json: true },
       positionals: [],
       json: true,
-      budget: 3600,
+      budget: 1000,
     });
   });
 
@@ -50,8 +50,8 @@ describe('parseCliArgs', () => {
 });
 
 describe('parseBudget', () => {
-  it('defaults to 3600 and takes whole numbers in range', () => {
-    expect(parseBudget(undefined)).toBe(3600);
+  it('defaults to 1000 and takes whole numbers in range', () => {
+    expect(parseBudget(undefined)).toBe(1000);
     expect(parseBudget('1')).toBe(1);
     expect(parseBudget(String(MAX_BUDGET))).toBe(MAX_BUDGET);
   });
