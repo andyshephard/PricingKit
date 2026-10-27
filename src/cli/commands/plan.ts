@@ -2,6 +2,8 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
   isOfferOp,
+  basePriceOps,
+  productKey,
   changeSetHash,
   OFFER_PLAN_SPEC_KIND,
   parseOfferPlanSpec,
@@ -50,13 +52,15 @@ export interface PlanOutcome {
 export async function planFromSpec(spec: PricingSpec, reader: PriceReader, createdAt: string): Promise<PlanOutcome> {
   const products: Parameters<typeof buildChangeSet>[0]['products'] = [];
   const unresolvedSkips: PlanSkip[] = [];
+  const strategyWarnings: Array<{ product: ProductRef; territory: string; message: string }> = [];
   const states: ProductPriceState[] = [];
 
   for (const entry of spec.products) {
     const state = await reader.fetchState(entry.product);
     states.push(state);
-    const { targets: raw, skipped } = specTargets(entry, state);
+    const { targets: raw, skipped, warnings } = specTargets(entry, state);
     unresolvedSkips.push(...skipped);
+    for (const w of warnings ?? []) strategyWarnings.push({ product: entry.product, ...w });
 
     const resolved = Object.keys(raw).length > 0 ? await reader.resolvePricePoints(entry.product, raw, { mode: entry.snap ?? 'nearest' }) : { resolved: {}, unresolved: {} };
     for (const [territory, reason] of Object.entries(resolved.unresolved)) {
@@ -89,7 +93,15 @@ export async function planFromSpec(spec: PricingSpec, reader: PriceReader, creat
 
   const changeSet = buildChangeSet({ app: spec.app, ...(spec.description ? { description: spec.description } : {}), products, createdAt });
   const skipped = [...(changeSet.skipped ?? []), ...unresolvedSkips];
-  return { changeSet: { ...changeSet, ...(skipped.length > 0 ? { skipped } : {}) }, states };
+  // Strategy notes (e.g. a minimum price not enforced) go on the op they concern, or on "-" when that territory needs no change
+  const warnings = [
+    ...(changeSet.warnings ?? []),
+    ...strategyWarnings.map((w) => {
+      const op = basePriceOps(changeSet).find((o) => o.target.territory === w.territory && productKey(o.target.product) === productKey(w.product));
+      return op ? { opId: op.id, message: `${w.territory}: ${w.message}` } : { opId: '-', message: `${productKey(w.product)} ${w.territory} (no change): ${w.message}` };
+    }),
+  ];
+  return { changeSet: { ...changeSet, ...(skipped.length > 0 ? { skipped } : {}), ...(warnings.length > 0 ? { warnings } : {}) }, states };
 }
 
 export async function planCommand(ctx: CommandContext): Promise<CommandResult> {

@@ -215,6 +215,8 @@ export interface SpecTargetResult {
   targets: Record<string, ResolveTarget>;
   /** Territories the spec names that get no target, and why */
   skipped: PlanSkip[];
+  /** Strategy targets: the strategy's own notes per territory (e.g. a minimum price not enforced) */
+  warnings?: Array<{ territory: string; message: string }>;
 }
 
 /**
@@ -298,6 +300,7 @@ function strategyTargets(
     ? { base: 'USD', fetchedAt: '', rates: Object.fromEntries(Object.entries(t.exchangeRates).map(([c, r]) => [c, decimalToNumber(r)])) }
     : undefined;
   const baseAmount = decimalToNumber(t.base.amount);
+  const warnings: Array<{ territory: string; message: string }> = [];
   for (const territory of [...new Set(wanted)].sort()) {
     const current = state.territories[territory];
     const currency = current?.currency || undefined;
@@ -311,6 +314,7 @@ function strategyTargets(
       continue;
     }
     targets[territory] = { currency, amount: normalizeDecimal(decimalFromNumber(price.rawPrice, currencyScale(currency))) };
+    for (const message of price.warnings ?? []) warnings.push({ territory, message });
   }
-  return { targets, skipped };
+  return { targets, skipped, ...(warnings.length > 0 ? { warnings } : {}) };
 }
