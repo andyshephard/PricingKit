@@ -9,3 +9,8 @@ export * from './rounding';
 export * from './decimal';
 export * from './snap';
 export * from './concurrency';
+export * from './model';
+export * from './changeset';
+export * from './diff';
+export * from './inverse';
+export * from './state';
