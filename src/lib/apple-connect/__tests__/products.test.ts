@@ -22,6 +22,7 @@ import {
   getInAppPurchasePrices,
   getAvailablePricePoints,
 } from '../products';
+import { updateAppPriceSchedule } from '../app-price';
 
 const credentials: AppleConnectCredentials = {
   privateKey: 'unused',
@@ -258,5 +259,26 @@ describe('listInAppPurchases base prices', () => {
     expect(products[0].prices).toEqual({
       GBR: { territoryCode: 'GBR', currency: 'GBP', customerPrice: '0.99', proceeds: '0.70', pricePointId: 'pp-1' },
     });
+  });
+});
+
+// API keys reach every app of a team. In-app purchase and app price writes are scoped to the
+// session's app by construction: the product is found by SKU in that app's own list, and the
+// app price schedule names that app. No client-supplied Apple resource ID is ever written to.
+describe('writes are scoped to the session app', () => {
+  it("finds an in-app purchase only in the session app's own list", async () => {
+    appleApiRequest.mockResolvedValue({ data: [] });
+    await expect(getInAppPurchase(credentials, 'coins_100')).resolves.toBeNull();
+    expect(getAppIdForBundleId).toHaveBeenCalledWith(credentials, expect.anything());
+    const [, endpoint, options] = appleApiRequest.mock.calls[0];
+    expect(endpoint).toBe('/apps/app-1/inAppPurchasesV2');
+    expect(options.queryParams['filter[productId]']).toBe('coins_100');
+  });
+
+  it("writes the app price schedule for the session app only", async () => {
+    await updateAppPriceSchedule(credentials, [{ territoryId: 'USA', pricePointId: 'pp-usa' }], 'USA');
+    expect(getAppIdForBundleId).toHaveBeenCalledWith(credentials);
+    const post = appleApiRequest.mock.calls.find(([, , o]) => o?.method === 'POST')!;
+    expect(post[2].body.data.relationships.app.data).toEqual({ id: 'app-1', type: 'apps' });
   });
 });

@@ -131,6 +131,14 @@ describe('PATCH /api/apple/products/[id]', () => {
     );
   }
 
+  it("writes nothing for a product that isn't in the session app (looked up by SKU in that app only)", async () => {
+    getInAppPurchase.mockResolvedValue(null);
+    const response = await patch({ GB: { pricePointId: 'pp-gb' } });
+    expect(response.status).toBe(404);
+    expect(replaceInAppPurchaseManualPrices).not.toHaveBeenCalled();
+    expect(updateInAppPurchasePrices).not.toHaveBeenCalled();
+  });
+
   it('sends every territory in one schedule, not one schedule per territory', async () => {
     getInAppPurchase.mockResolvedValue({ ...product });
     getInAppPurchasePrices.mockResolvedValue({});

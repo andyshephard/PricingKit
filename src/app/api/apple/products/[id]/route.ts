@@ -148,7 +148,8 @@ export async function PATCH(
       );
     }
 
-    // Get the product to find its internal ID
+    // Get the product to find its internal ID. Looked up by SKU in the session app's own
+    // in-app purchase list, so another app's product (API keys are team-wide) is never found
     const product = await getInAppPurchase(auth.credentials, productId, ctx);
     if (!product) {
       return NextResponse.json(

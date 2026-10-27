@@ -55,6 +55,8 @@ const updateAppPriceSchema = z.object({
 });
 
 // PATCH /api/apple/app-price — update app price schedule
+// Writes only the session app's price schedule: updateAppPriceSchedule resolves the app from the
+// session's bundle ID (exact match), never from a client-supplied ID
 export async function PATCH(request: NextRequest) {
   try {
     const auth = await getAppleAuthFromCookies();
