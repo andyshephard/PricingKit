@@ -89,6 +89,32 @@ describe('getExchangeRates', () => {
     await expect(getExchangeRates(false, 'userkey00000000')).resolves.toMatchObject({ base: 'USD' });
   });
 
+  it("a bogus user key can't poison the operator key: its failure isn't remembered and its request isn't shared", async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      new URL(url).searchParams.get('app_id') === 'bogususerkey0000' ? new Response('{"error":true}', { status: 401 }) : ratesBody()
+    );
+    await expect(getExchangeRates(false, 'bogususerkey0000')).rejects.toThrow(/401/);
+    await expect(getExchangeRates(true, 'bogususerkey0000')).rejects.toThrow(/401/);
+    // The next visitor, on the operator key, still goes upstream and gets rates
+    await expect(getExchangeRates()).resolves.toMatchObject({ base: 'USD' });
+    expect(fetchMock.mock.calls.map(keyOf)).toEqual(['bogususerkey0000', 'bogususerkey0000', 'operatorkey0000']);
+  });
+
+  it('a user-key request never waits on, or hands its result to, an operator-key request in flight', async () => {
+    let release!: () => void;
+    fetchMock.mockImplementation((url: string) =>
+      new URL(url).searchParams.get('app_id') === 'operatorkey0000'
+        ? new Promise((resolve) => (release = () => resolve(ratesBody())))
+        : Promise.resolve(new Response('{"error":true}', { status: 401 }))
+    );
+    const operator = getExchangeRates();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await expect(getExchangeRates(false, 'bogususerkey0000')).rejects.toThrow(/401/);
+    release();
+    await expect(operator).resolves.toMatchObject({ base: 'USD' });
+    expect(fetchMock.mock.calls.map(keyOf)).toEqual(['operatorkey0000', 'bogususerkey0000']);
+  });
+
   it("shares results across isolates through the platform cache (Cloudflare's caches.default)", async () => {
     const store = new Map<string, Response>();
     vi.stubGlobal('caches', {

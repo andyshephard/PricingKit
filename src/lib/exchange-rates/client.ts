@@ -188,16 +188,25 @@ async function fetchFromApi(providedApiKey?: string): Promise<ExchangeRatesData>
   };
 }
 
-async function fetchAndStore(apiKey: string | undefined, rememberFailure: boolean): Promise<ExchangeRatesData> {
+async function store(fresh: ExchangeRatesData): Promise<void> {
+  memoryCache = fresh;
+  await saveShared(fresh);
+  await saveToDisk(fresh);
+}
+
+/**
+ * One upstream request with the operator's key (OPEN_EXCHANGE_RATES_APP_ID).
+ * The only fetch whose failure is remembered and whose promise is shared:
+ * both describe the operator key, so nothing a visitor sends can affect them.
+ */
+async function fetchWithOperatorKey(): Promise<ExchangeRatesData> {
   try {
-    const fresh = await fetchFromApi(apiKey);
-    memoryCache = fresh;
+    const fresh = await fetchFromApi();
     lastFailure = null;
-    await saveShared(fresh);
-    await saveToDisk(fresh);
+    await store(fresh);
     return fresh;
   } catch (error) {
-    if (rememberFailure && !(error instanceof NoApiKeyError)) lastFailure = { at: Date.now(), error };
+    if (!(error instanceof NoApiKeyError)) lastFailure = { at: Date.now(), error };
     const stale = await staleCached();
     if (stale) {
       console.warn('Using stale exchange rates cache due to API error:', error instanceof Error ? error.message : error);
@@ -208,35 +217,53 @@ async function fetchAndStore(apiKey: string | undefined, rememberFailure: boolea
 }
 
 /**
+ * One upstream request with a user's own key (saved in Settings). Never
+ * shares a promise with other requests and never touches the operator key's
+ * failure memory: a bogus user key can't make other visitors' requests fail.
+ */
+async function fetchWithUserKey(apiKey: string): Promise<ExchangeRatesData> {
+  try {
+    const fresh = await fetchFromApi(apiKey);
+    await store(fresh);
+    return fresh;
+  } catch (error) {
+    const stale = await staleCached();
+    if (stale) return stale;
+    throw error;
+  }
+}
+
+/**
  * Exchange rates, from a cache when one is fresh (6 hours).
  *
- * `forceRefresh` bypasses the caches only with the caller's own key
- * (`apiKey`, saved in Settings): a refresh never spends the operator's key
- * (OPEN_EXCHANGE_RATES_APP_ID), so with only that key it is served from the
- * caches like any other request. Otherwise concurrent misses share one
- * upstream request, and after a failure no request is sent for 5 minutes
- * (stale data, if any, is served meanwhile; else the same error).
+ * With the user's own key (`apiKey`, saved in Settings) a miss, or a
+ * `forceRefresh`, goes upstream with that key, on its own. Otherwise the
+ * operator's key (OPEN_EXCHANGE_RATES_APP_ID) is used: concurrent misses
+ * share one upstream request, and after a failure no request is sent for 5
+ * minutes (stale data, if any, is served meanwhile; else the same error).
+ * `forceRefresh` never spends the operator key: without a user key it is
+ * served from the caches like any other request.
  */
 export async function getExchangeRates(forceRefresh = false, apiKey?: string): Promise<ExchangeRatesData> {
-  if (forceRefresh && apiKey) return fetchAndStore(apiKey, false);
-
-  const cached = await freshCached();
-  if (cached) return cached;
+  if (!(forceRefresh && apiKey)) {
+    const cached = await freshCached();
+    if (cached) return cached;
+  }
+  if (apiKey) return fetchWithUserKey(apiKey);
 
   // A missing key fails without contacting anyone; it isn't cached (a key may be added any moment)
-  if (!getApiKey(apiKey)) {
+  if (!getApiKey()) {
     const stale = await staleCached();
     if (stale) return stale;
     throw new NoApiKeyError();
   }
-
   if (lastFailure && Date.now() - lastFailure.at < FAILURE_CACHE_MS) {
     const stale = await staleCached();
     if (stale) return stale;
     throw lastFailure.error;
   }
   if (!inFlight) {
-    inFlight = fetchAndStore(apiKey, true).finally(() => {
+    inFlight = fetchWithOperatorKey().finally(() => {
       inFlight = null;
     });
   }
