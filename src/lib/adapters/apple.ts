@@ -243,11 +243,11 @@ export class AppleAdapter implements PlatformAdapter {
   async fetchInAppPurchaseState(productId: string): Promise<ProductPriceState> {
     const iap = await getInAppPurchase(this.credentials, productId, this.ctx);
     if (!iap) throw new ApiError(`In-app purchase ${productId} not found in ${this.credentials.bundleId}`, { status: 404, code: 'NOT_FOUND', platform: 'apple', retryable: false });
-    const entries = await listInAppPurchasePriceEntries(this.credentials, iap.id, this.ctx);
+    const { entries, warnings: readWarnings } = await listInAppPurchasePriceEntries(this.credentials, iap.id, this.ctx);
     const base = await getBaseTerritoryForProduct(this.credentials, iap.id, this.ctx);
     const today = (this.now?.() ?? new Date()).toISOString().slice(0, 10);
     const territories: Record<string, TerritoryPriceState> = {};
-    const warnings: string[] = [];
+    const warnings: string[] = [...readWarnings];
     const byTerritory = new Map<string, InAppPurchasePriceEntry[]>();
     for (const entry of entries) {
       if (!entry.territory) {

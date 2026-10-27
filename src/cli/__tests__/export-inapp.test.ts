@@ -18,6 +18,7 @@ vi.mock('@/lib/apple-connect/client', async (importOriginal) => {
 const googlePlayFetch = vi.fn();
 vi.mock('@/lib/google-play/client', () => ({ googlePlayFetch: (...args: unknown[]) => googlePlayFetch(...args) }));
 
+import { AppleApiError } from '@/lib/apple-connect/client';
 import { parseStateSnapshot } from '@/lib/pricing';
 import { fakeAppleEnv, run, tempDir, throwawayRsaPem } from './fixtures';
 
@@ -30,15 +31,17 @@ const price = (id: string, alpha3: string, pp: string | null, startDate: string 
   relationships: { territory: { data: { type: 'territories', id: alpha3 } }, inAppPurchasePricePoint: { data: pp ? { type: 'inAppPurchasePricePoints', id: pp } : null } },
 });
 
-function appleStore(calls: string[]) {
+function appleStore(calls: string[], setup: { iaps?: Array<{ id: string; productId: string }>; automatic404?: boolean } = {}) {
   return async (_credentials: unknown, endpoint: string, options: { method?: string; queryParams?: Record<string, string>; budget?: { consume: (p: string) => void } } = {}) => {
     options.budget?.consume('apple');
     const method = options.method ?? 'GET';
     calls.push(`${method} ${endpoint}`);
     if (method !== 'GET') throw new Error(`unexpected write ${method} ${endpoint}`);
     if (endpoint === '/apps/app-1/inAppPurchasesV2') {
+      const iap = (id: string, productId: string) => ({ type: 'inAppPurchases', id, attributes: { productId, name: 'Coins', inAppPurchaseType: 'CONSUMABLE', state: 'APPROVED' } });
+      if (setup.iaps) return { data: setup.iaps.map((i) => iap(i.id, i.productId)) };
       const found = options.queryParams?.['filter[productId]'] === 'com.example.app.coins';
-      return { data: found ? [{ type: 'inAppPurchases', id: 'iap-1', attributes: { productId: 'com.example.app.coins', name: 'Coins', inAppPurchaseType: 'CONSUMABLE', state: 'APPROVED' } }] : [] };
+      return { data: found ? [iap('iap-1', 'com.example.app.coins')] : [] };
     }
     if (endpoint === '/inAppPurchasePriceSchedules/iap-1/manualPrices') {
       return {
@@ -48,6 +51,7 @@ function appleStore(calls: string[]) {
       };
     }
     if (endpoint === '/inAppPurchasePriceSchedules/iap-1/automaticPrices') {
+      if (setup.automatic404) throw new AppleApiError(404, 'NOT_FOUND', 'Not found', 'No automatic prices');
       return {
         data: [price('a-gbr', 'GBR', 'pp-gbr-099'), price('a-deu', 'DEU', null)],
         included: [point('pp-gbr-099', '0.99'), territory('GBR', 'GBP'), territory('DEU', 'EUR')],
@@ -109,6 +113,31 @@ describe('pricingkit export --in-app (App Store)', () => {
     expect(JSON.parse(missing.stdout).error).toMatchObject({ status: 404, message: expect.stringMatching(/not found in com\.example\.app/) });
     const mixed = await run(['export', '--bundle-id', 'com.example.app', '--in-app', 'x', '--subscription', '1'], { env, cwd: tmp.dir });
     expect(mixed.stderr).toMatch(/either --in-app <product id> or --subscription/);
+  });
+});
+
+describe('pricingkit export --in-app (App Store reads, strictly)', () => {
+  const args = ['export', '--bundle-id', 'com.example.app', '--in-app', 'com.example.app.coins', '--json'];
+
+  it('keeps the manual prices and warns when the automatic prices answer 404', async () => {
+    appleApiRequest.mockImplementation(appleStore([], { automatic404: true }));
+    const r = await run(args, { env: await fakeAppleEnv(), cwd: tmp.dir });
+    expect(r.code).toBe(0);
+    const [state] = parseStateSnapshot(r.stdout).products;
+    expect(Object.keys(state.territories)).toEqual(['US']);
+    expect(state.warnings).toEqual([expect.stringMatching(/404 for the automatic prices; only manual prices were read/)]);
+  });
+
+  it('never picks one of several products, and never takes a product with another ID', async () => {
+    appleApiRequest.mockImplementation(appleStore([], { iaps: [{ id: 'iap-1', productId: 'com.example.app.coins' }, { id: 'iap-2', productId: 'com.example.app.coins' }] }));
+    const several = await run(args, { env: await fakeAppleEnv(), cwd: tmp.dir });
+    expect(several.code).toBe(1);
+    expect(JSON.parse(several.stdout).error).toMatchObject({ code: 'AMBIGUOUS_PRODUCT' });
+
+    appleApiRequest.mockImplementation(appleStore([], { iaps: [{ id: 'iap-1', productId: 'com.example.app.coins.extra' }] }));
+    const other = await run(args, { env: await fakeAppleEnv(), cwd: tmp.dir });
+    expect(other.code).toBe(1);
+    expect(JSON.parse(other.stdout).error).toMatchObject({ status: 404, message: expect.stringMatching(/not found/) });
   });
 });
 

@@ -267,10 +267,19 @@ export async function getInAppPurchase(
     if (!response.data || response.data.length === 0) {
       return null;
     }
-
-    const products = normalizeProducts(response);
-    return products[0] ?? null;
+    // filter[productId] should give exactly this product; never pick one of several
+    if (response.data.length !== 1) {
+      throw new ApiError(`App Store Connect returned ${response.data.length} in-app purchases for product ID ${productId}; expected one`, {
+        status: 502,
+        code: 'AMBIGUOUS_PRODUCT',
+        platform: 'apple',
+        retryable: false,
+      });
+    }
+    const [product] = normalizeProducts(response);
+    return product && product.productId === productId ? product : null;
   } catch (error) {
+    if (error instanceof ApiError && error.code === 'AMBIGUOUS_PRODUCT') throw error;
     if (getErrorStatus(error) === 404) {
       return null;
     }
@@ -1151,19 +1160,22 @@ export interface InAppPurchasePriceEntry {
  * relationships and included resources Apple returns (paginated). Unlike
  * getInAppPurchasePrices (used by the existing UI routes), nothing is decoded
  * from IDs or defaulted (no USD), and dated entries are kept with their
- * dates. Returns [] when the product has no price schedule (404).
+ * dates. No entries when the product has no price schedule (404 on its
+ * manual prices). A 404 on the automatic prices keeps the manual entries and
+ * says so in `warnings`.
  */
 export async function listInAppPurchasePriceEntries(
   credentials: AppleConnectCredentials,
   inAppPurchaseId: string,
   ctx: RequestContext = {}
-): Promise<InAppPurchasePriceEntry[]> {
+): Promise<{ entries: InAppPurchasePriceEntry[]; warnings: string[] }> {
   type Entry = {
     id: string;
     attributes?: { startDate?: string | null; endDate?: string | null };
     relationships?: { territory?: { data?: { id: string } | null }; inAppPurchasePricePoint?: { data?: { id: string } | null } };
   };
   const entries: InAppPurchasePriceEntry[] = [];
+  const warnings: string[] = [];
   for (const [kind, manual] of [['manualPrices', true], ['automaticPrices', false]] as const) {
     let result: { data: Entry[]; included: unknown[] };
     try {
@@ -1178,7 +1190,11 @@ export async function listInAppPurchasePriceEntries(
         budget: ctx.budget,
       });
     } catch (error) {
-      if (getErrorStatus(error) === 404) return [];
+      if (getErrorStatus(error) === 404) {
+        if (manual) return { entries: [], warnings: [] };
+        warnings.push('App Store Connect answered 404 for the automatic prices; only manual prices were read');
+        break;
+      }
       throw toApiError(error, 'apple');
     }
     const points = new Map<string, { customerPrice: string; proceeds: string }>();
@@ -1214,5 +1230,5 @@ export async function listInAppPurchasePriceEntries(
       });
     }
   }
-  return entries;
+  return { entries, warnings };
 }
