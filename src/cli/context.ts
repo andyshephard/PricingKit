@@ -2,7 +2,7 @@
 // environment (credentials), file access relative to cwd, and store adapters
 // built from env credentials.
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { AppleAdapter } from '@/lib/adapters/apple';
 import { PlayAdapter } from '@/lib/adapters/play';
@@ -47,6 +47,24 @@ export async function writeOutputFile(ctx: CommandContext, path: string, content
   try {
     await writeFile(full, content, 'utf8');
   } catch (error) {
+    const code = (error as { code?: string }).code;
+    throw new CliError(`Can't write ${path}${code ? ` (${code})` : ''}`);
+  }
+  return full;
+}
+
+/**
+ * Write a file atomically: a temporary file next to it, then a rename, so a
+ * crash mid-write never leaves a truncated run log.
+ */
+export async function writeOutputFileAtomic(ctx: CommandContext, path: string, content: string): Promise<string> {
+  const full = resolve(ctx.cwd, path);
+  const temp = `${full}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await writeFile(temp, content, 'utf8');
+    await rename(temp, full);
+  } catch (error) {
+    await rm(temp, { force: true }).catch(() => undefined);
     const code = (error as { code?: string }).code;
     throw new CliError(`Can't write ${path}${code ? ` (${code})` : ''}`);
   }

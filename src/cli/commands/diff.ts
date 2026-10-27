@@ -123,6 +123,7 @@ export function formatPlanSummary(summary: PlanSummary): string {
     `Created ${summary.createdAt}${summary.description ? `: ${summary.description}` : ''}`,
     ...(summary.undoOf ? [`Undoes run ${summary.undoOf.runId} of ${summary.undoOf.changeSetId}`] : []),
     summary.opCount === 0 ? 'No changes: every territory is already at its target.' : `${summary.opCount} changes (${describeCounts(summary.byKind)})`,
+    ...(summary.opCount > 0 ? [`Plan hash: ${summary.changeSetHash} (what "pricingkit apply --confirm" needs once you have reviewed this plan)`] : []),
   ];
   for (const product of summary.products) {
     lines.push('', product.key);

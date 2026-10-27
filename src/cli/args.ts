@@ -37,7 +37,15 @@ const OPTIONS: Record<CommandName, OptionSpec> = {
     threshold: { type: 'string' },
     territories: { type: 'string' },
   },
-  apply: { ...COMMON, plan: { type: 'string' }, confirm: { type: 'string' }, resume: { type: 'string' }, 'run-out': { type: 'string' }, 'force-delete': { type: 'boolean' } },
+  apply: {
+    ...COMMON,
+    plan: { type: 'string' },
+    confirm: { type: 'string' },
+    resume: { type: 'string' },
+    'run-out': { type: 'string' },
+    force: { type: 'boolean' },
+    'force-delete': { type: 'boolean' },
+  },
 };
 
 const ALLOWS_POSITIONAL: Partial<Record<CommandName, true>> = { diff: true, apply: true };
@@ -226,7 +234,7 @@ unresolved or unreadable territory), 0 when every territory matches.
 
 ${SHARED_HELP}`,
   apply: `Usage:
-  pricingkit apply <plan.json> --confirm <plan hash> [--run-out <run.json>]
+  pricingkit apply <plan.json> --confirm <plan hash> [--run-out <run.json>] [--force]
   pricingkit apply <plan.json> --confirm <plan hash> --resume <run.json>
                    [--force-delete]
 
@@ -236,8 +244,9 @@ any other value refuses the whole run before anything is read or sent.
 Each op is checked against App Store Connect first: one already done is
 skipped, one whose offer changed since the plan was made fails with nothing
 sent. The run log (pricingkit.applyRun) is saved after every step to
---run-out (default <plan>.run.json, never overwritten); resume a failed or
-interrupted run with --resume. Deleting an offer needs --force-delete, because
+--run-out (default <plan>.run.json), written atomically. An existing log is
+never replaced unless you pass --force (or resume it in place); resume a
+failed or interrupted run with --resume. Deleting an offer needs --force-delete, because
 App Store Connect doesn't report redemptions.
 
 Exit code 0 when every op is done, 1 otherwise (the log says which).

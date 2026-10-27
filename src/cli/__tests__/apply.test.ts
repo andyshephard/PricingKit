@@ -2,7 +2,7 @@
 // the in-memory offer store. The App Store client is mocked: nothing leaves
 // the process.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const appleApiRequest = vi.fn();
@@ -77,6 +77,8 @@ describe('pricingkit apply', () => {
     const wrong = await run(['apply', 'plan.json', '--confirm', '0000000000000000', '--json'], { env, cwd: tmp.dir });
     expect(wrong.code).toBe(1);
     expect(JSON.parse(wrong.stdout).error.code).toBe('CONFIRM_MISMATCH');
+    // The error never hands out the right hash
+    expect(`${wrong.stdout}${wrong.stderr}${missing.stdout}${missing.stderr}`).not.toContain(changeSetHash(parseChangeSet(readFileSync(join(tmp.dir, 'plan.json'), 'utf8'))));
     expect(appleApiRequest.mock.calls.length).toBe(calls);
     expect(existsSync(join(tmp.dir, 'plan.run.json'))).toBe(false);
   });
@@ -94,6 +96,16 @@ describe('pricingkit apply', () => {
     const clobber = await run(['apply', 'plan.json', '--confirm', hash], { env, cwd: tmp.dir });
     expect(clobber.code).toBe(1);
     expect(clobber.stderr).toMatch(/already exists/);
+
+    // --run-out doesn't replace an existing file either, unless --force
+    writeFileSync(join(tmp.dir, 'keep.json'), 'precious');
+    const keep = await run(['apply', 'plan.json', '--confirm', hash, '--run-out', 'keep.json'], { env, cwd: tmp.dir });
+    expect(keep.code).toBe(1);
+    expect(readFileSync(join(tmp.dir, 'keep.json'), 'utf8')).toBe('precious');
+    const forced = await run(['apply', 'plan.json', '--confirm', hash, '--run-out', 'keep.json', '--force'], { env, cwd: tmp.dir });
+    expect(forced.code).toBe(0);
+    expect(parseRun(readFileSync(join(tmp.dir, 'keep.json'), 'utf8')).status).toBe('completed');
+    expect(readdirSync(tmp.dir).filter((f) => f.endsWith('.tmp'))).toEqual([]);
 
     const again = await run(['apply', 'plan.json', '--confirm', hash, '--run-out', 'again.json', '--json'], { env, cwd: tmp.dir });
     expect(again.code).toBe(0);

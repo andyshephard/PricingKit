@@ -18,7 +18,7 @@ import {
   type ChangeSet,
 } from '@/lib/pricing';
 import { stringFlag } from '../args';
-import { appleAdapter, readInputFile, writeOutputFile, type CommandContext, type CommandResult } from '../context';
+import { appleAdapter, readInputFile, writeOutputFileAtomic, type CommandContext, type CommandResult } from '../context';
 import { CliError, EXIT_ERROR, EXIT_OK, UsageError } from '../errors';
 
 /** Default run log file for a plan file: plan.json -> plan.run.json */
@@ -36,8 +36,10 @@ export async function applyCommand(ctx: CommandContext): Promise<CommandResult> 
   const confirm = stringFlag(ctx.flags, 'confirm', true);
   const resumePath = stringFlag(ctx.flags, 'resume');
   const runOut = stringFlag(ctx.flags, 'run-out') ?? resumePath ?? defaultRunFile(planPath);
-  if (!resumePath && existsSync(resolve(ctx.cwd, runOut))) {
-    throw new UsageError(`${runOut} already exists. Resume that run with --resume ${runOut}, or choose a new log file with --run-out`);
+  // A run log is never replaced by accident: only the log being resumed, or with --force
+  const resumingInPlace = resumePath !== undefined && resolve(ctx.cwd, resumePath) === resolve(ctx.cwd, runOut);
+  if (!resumingInPlace && ctx.flags.force !== true && existsSync(resolve(ctx.cwd, runOut))) {
+    throw new UsageError(`${runOut} already exists. Resume that run with --resume ${runOut}, choose a new log file with --run-out, or pass --force to replace it`);
   }
 
   let changeSet: ChangeSet;
@@ -49,7 +51,8 @@ export async function applyCommand(ctx: CommandContext): Promise<CommandResult> 
   }
   const hash = changeSetHash(changeSet);
   if (confirm !== hash) {
-    throw new CliError(`--confirm doesn't match this plan (its hash is ${hash}). Review it with "pricingkit diff ${planPath}" and confirm that hash.`, 'CONFIRM_MISMATCH');
+    // Never print the right hash here: it must come from reviewing the plan
+    throw new CliError(`--confirm doesn't match this plan. Review it with "pricingkit diff ${planPath}" and confirm the hash shown there.`, 'CONFIRM_MISMATCH');
   }
   if (!('bundleId' in changeSet.app)) throw new UsageError('apply supports App Store offer plans only in this version');
   const notOffer = changeSet.ops.find((op) => !isOfferOp(op));
@@ -77,7 +80,7 @@ export async function applyCommand(ctx: CommandContext): Promise<CommandResult> 
     ...(ctx.flags['force-delete'] === true ? { force: { deleteOffers: true } } : {}),
     // Saved before and after every write: a crash leaves a log that can be resumed
     onUpdate: async (snapshot) => {
-      saved = await writeOutputFile(ctx, runOut, serializeRun(snapshot));
+      saved = await writeOutputFileAtomic(ctx, runOut, serializeRun(snapshot));
     },
     now: () => ctx.now().toISOString(),
   });

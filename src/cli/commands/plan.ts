@@ -138,7 +138,6 @@ export function formatOfferPlan(plan: OfferPlan): string {
     if (entry.action === 'none') lines.push('', `${where}: already matches its rule`);
     for (const r of entry.refusals) lines.push('', `${where}: refused (${r.code}): ${r.message}`);
   }
-  lines.push('', `Plan hash: ${plan.hash} (pass it to "pricingkit apply --confirm" after review)`);
   return lines.join('\n');
 }
 
