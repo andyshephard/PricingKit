@@ -65,10 +65,23 @@ export function applySummary(changeSet: ChangeSet): string[] {
  * At a terminal: always show the summary and require the expected answer
  * typed back, before any credential is loaded; --yes is refused there (it is
  * for CI, where an agent's relayed command can't skip the person's review).
+ * stdin redirected while stderr is a terminal (`apply ... < /dev/null`): show
+ * the summary anyway and require --yes, so skipping the question is visible.
  * Elsewhere (CI, pipes) nothing is asked.
  */
 async function confirmAtTerminal(ctx: CommandContext, lines: string[], expected: string, what: string): Promise<void> {
-  if (!ctx.ask) return;
+  if (!ctx.ask) {
+    if (ctx.show) {
+      ctx.show([...lines, 'stdin is not a terminal, so nothing is asked.']);
+      if (ctx.flags.yes !== true) {
+        throw new CliError(
+          `Not applied: stdin is not a terminal, so PricingKit can't ask you to type ${what}. Run apply at a terminal, or pass --yes to apply without the question (meant for CI). Nothing was read or sent.`,
+          'NOT_CONFIRMED'
+        );
+      }
+    }
+    return;
+  }
   if (ctx.flags.yes === true) {
     throw new UsageError('--yes is for non-interactive runs (CI). At a terminal, apply always shows what the plan does and asks you to confirm; run it without --yes.');
   }

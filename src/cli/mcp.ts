@@ -299,23 +299,38 @@ export function internalErrorMessage(error: unknown, env: Record<string, string 
 }
 
 // No tool output carries a confirm hash: the person applying a plan gets it
-// from their own `pricingkit diff`, so an agent can't hand over a complete
-// apply command (or one for a plan nobody reviewed).
+// from their own `pricingkit diff`, so an agent can't simply hand over a
+// complete apply command (or one for a plan nobody reviewed). This is a speed
+// bump, not a gate: an agent that can run code can recompute the hash from the
+// plan file. The real gate is `pricingkit apply` at a terminal, which shows the
+// plan and asks the person to type the app's ID.
 const HASH_KEYS = new Set(['hash', 'changeSetHash', 'workspacePlanHash']);
 const HASH_NOTE = 'run "pricingkit diff" yourself for the plan hash';
+// A run of 32 or more hex digits, not part of a longer one (a full SHA-256
+// digest starts with the confirm hash, so longer runs are masked too)
+const HASH_SHAPE = /(?<![0-9A-Fa-f])[0-9A-Fa-f]{32,}(?![0-9A-Fa-f])/g;
 
-/** A copy of a tool's JSON result without confirm-hash fields */
-export function stripHashes(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stripHashes);
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([k]) => !HASH_KEYS.has(k)).map(([k, v]) => [k, stripHashes(v)]));
-  }
-  return value;
+/** Text with anything shaped like a confirm hash (32 or more hex digits) replaced */
+export function withoutHashes(text: string): string {
+  return text.replace(HASH_SHAPE, `[${HASH_NOTE}]`);
 }
 
-/** Text with anything shaped like a confirm hash (32 hex digits) replaced */
-function withoutHashes(text: string): string {
-  return text.replace(/\b[0-9a-f]{32}\b/g, `[${HASH_NOTE}]`);
+/**
+ * A copy of a tool's JSON result without confirm-hash fields, and with
+ * hash-shaped runs masked inside every string value (warnings, notes, file
+ * names) and key
+ */
+export function stripHashes(value: unknown): unknown {
+  if (typeof value === 'string') return withoutHashes(value);
+  if (Array.isArray(value)) return value.map(stripHashes);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([k]) => !HASH_KEYS.has(k))
+        .map(([k, v]) => [withoutHashes(k), stripHashes(v)])
+    );
+  }
+  return value;
 }
 
 export class McpServer {

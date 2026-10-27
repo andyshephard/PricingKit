@@ -46,6 +46,11 @@ export interface CliIO {
   now?: () => Date;
   /** Interactive sessions only: reads one line typed by the person (null at end of input) */
   readLine?: () => Promise<string | null>;
+  /**
+   * stderr is a terminal although stdin isn't (e.g. `apply ... < /dev/null`):
+   * apply still shows its summary there and requires --yes
+   */
+  stderrIsTerminal?: boolean;
 }
 
 const CONSOLE_METHODS = ['log', 'info', 'warn', 'error', 'debug'] as const;
@@ -157,7 +162,9 @@ export async function runCli(argv: string[], io: CliIO): Promise<ExitCode> {
                 return io.readLine!();
               },
             }
-          : {}),
+          : io.stderrIsTerminal
+            ? { show: (lines: string[]) => err(`${lines.join('\n')}\n`) }
+            : {}),
       };
       const result = await HANDLERS[args.command](ctx);
       if (args.json) outJson(result.json);
@@ -199,13 +206,17 @@ export async function main(argv = process.argv.slice(2)): Promise<ExitCode> {
     return EXIT_OK;
   }
   // With a person at the keyboard (stdin is a terminal), apply always asks for a typed
-  // confirmation; in CI and pipes it doesn't
+  // confirmation; in CI and pipes it doesn't. stdin redirected while stderr is still a
+  // terminal (`< /dev/null`) shows the summary and needs --yes, so skipping the
+  // question is visible
   const interactive = Boolean(process.stdin.isTTY);
+  const stderrIsTerminal = !interactive && Boolean(process.stderr.isTTY);
   return runCli(argv, {
     stdout: (text) => process.stdout.write(text),
     stderr: (text) => process.stderr.write(text),
     env: process.env,
     cwd: process.cwd(),
+    ...(stderrIsTerminal ? { stderrIsTerminal: true } : {}),
     ...(interactive
       ? {
           readLine: async () => {

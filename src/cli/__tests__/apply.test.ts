@@ -254,6 +254,21 @@ describe('pricingkit apply at a terminal', () => {
     expect(ci.code).toBe(0);
     expect(ci.stderr).not.toMatch(/Type the app/);
   });
+
+  it('stdin redirected but stderr a terminal (< /dev/null): shows the summary and needs --yes', async () => {
+    const { hash } = await planFile();
+    const calls = appleApiRequest.mock.calls.length;
+    const bypass = await run(['apply', 'plan.json', '--confirm', hash], { env, cwd: tmp.dir, stderrIsTerminal: true });
+    expect(bypass.code).toBe(1);
+    expect(bypass.stderr).toMatch(/Plan offers-\S+ for com\.example\.app \(App Store\): 2 ops/);
+    expect(bypass.stderr).toMatch(/stdin is not a terminal, so nothing is asked/);
+    expect(bypass.stderr).toMatch(/pass --yes/);
+    expect(appleApiRequest.mock.calls.length).toBe(calls);
+    expect(existsSync(join(tmp.dir, 'plan.run.json'))).toBe(false);
+    const yes = await run(['apply', 'plan.json', '--confirm', hash, '--yes'], { env, cwd: tmp.dir, stderrIsTerminal: true });
+    expect(yes.code).toBe(0);
+    expect(yes.stderr).toMatch(/Plan offers-\S+ for com\.example\.app/);
+  });
 });
 
 describe('run logs', () => {

@@ -459,7 +459,8 @@ ops, deletes, App Store changes that move existing subscribers) and asks you to
 type the app's bundle ID or package name (with --workspace-plan: the number of
 apps) before it loads credentials; anything else cancels with nothing sent.
 Without a terminal (CI, pipes) nothing is asked; --yes (-y) says so explicitly
-and is refused at a terminal.
+and is refused at a terminal. With stdin redirected but stderr still a terminal
+(apply ... < /dev/null), the summary is shown and --yes is required.
 
 Exit code 0 when every op is done, 1 otherwise (the log says which).
 

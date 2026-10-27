@@ -36,7 +36,8 @@ import { currencyCodeSchema, googlePlayBasePlanIdSchema, googlePlaySkuSchema, re
 // again by the write helper against its own fresh read just before the PATCH
 // (`expected`), so a price changed in between refuses the write
 // (PRICE_CHANGED). Items are deduplicated on product / base plan, so no base
-// plan is written twice in one request.
+// plan is written twice in one request; what was dropped is listed in
+// `duplicates`.
 
 type SkippedRegion = { regionCode: string; reason: string; code?: 'NO_PRICE' | 'OTHER_CURRENCY' | 'PRICE_CHANGED' | 'NOT_PREVIEWED' };
 
@@ -142,6 +143,15 @@ type BulkResult = {
   skippedRegions?: SkippedRegion[];
 };
 
+/** An item or base plan left out because the request already covers it */
+type DroppedDuplicate = {
+  type: 'product' | 'subscription';
+  id: string;
+  basePlanId?: string;
+  /** REPEATED_ITEM: the same item twice; BASE_PLAN_COVERED: a base plan an earlier item already handled */
+  reason: 'REPEATED_ITEM' | 'BASE_PLAN_COVERED';
+};
+
 export async function POST(request: NextRequest) {
   const crossSite = rejectCrossSite(request);
   if (crossSite) return crossSite;
@@ -181,6 +191,7 @@ export async function POST(request: NextRequest) {
     // Each product / base plan at most once per request (first occurrence wins)
     const seen = new Set<string>();
     const firstTime = (key: string) => (seen.has(key) ? false : (seen.add(key), true));
+    const duplicates: DroppedDuplicate[] = [];
 
     /** Plans one product or base plan, writes it unless this is a dry run, and records the result */
     const run = async (
@@ -193,7 +204,11 @@ export async function POST(request: NextRequest) {
       const plan = dryRun ? planned : confirmedAgainst(planned, expectedPrices?.[key]);
       const changes = plan.changes.map(({ regionCode, oldPrice, newPrice }) => ({ regionCode, oldPrice, newPrice }));
       const skipped = plan.skippedRegions.length > 0 ? { skippedRegions: plan.skippedRegions } : {};
-      if (!firstTime(key)) return; // already handled in this request (a subscription item and one of its base plans)
+      if (!firstTime(key)) {
+        // already handled in this request (a subscription item and one of its base plans)
+        duplicates.push({ type: head.basePlanId ? 'subscription' : 'product', ...head, reason: 'BASE_PLAN_COVERED' });
+        return;
+      }
       // Nothing to write is a failure, not a successful no-op
       if (plan.changes.length === 0) {
         results.push({ ...head, success: false, committed: false, error: 'None of the target regions can be changed', ...skipped });
@@ -204,7 +219,11 @@ export async function POST(request: NextRequest) {
       results.push({ ...head, success: true, committed: !dryRun, changes, ...skipped });
     };
 
-    const uniqueItems = items.filter((item) => firstTime(`${item.type}:${item.id}/${item.basePlanId ?? '*'}`));
+    const uniqueItems = items.filter((item) => {
+      if (firstTime(`${item.type}:${item.id}/${item.basePlanId ?? '*'}`)) return true;
+      duplicates.push({ type: item.type, id: item.id, ...(item.basePlanId ? { basePlanId: item.basePlanId } : {}), reason: 'REPEATED_ITEM' });
+      return false;
+    });
     seen.clear();
     for (const item of uniqueItems) {
       if (stopped) {
@@ -302,6 +321,8 @@ export async function POST(request: NextRequest) {
       committed,
       skippedRegions,
       ...(stopped ? { stoppedEarly: true, skipped } : {}),
+      // Items and base plans dropped because the request already covers them
+      ...(duplicates.length > 0 ? { duplicates } : {}),
       results,
     });
   } catch (error) {

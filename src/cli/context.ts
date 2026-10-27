@@ -30,6 +30,11 @@ export interface CommandContext {
    * otherwise (CI, pipes, tests without an answer).
    */
   ask?: (lines: string[], question: string) => Promise<string | null>;
+  /**
+   * Set when stdin is not a terminal but stderr is (and `ask` is not):
+   * prints the lines on stderr
+   */
+  show?: (lines: string[]) => void;
 }
 
 export interface CommandResult {

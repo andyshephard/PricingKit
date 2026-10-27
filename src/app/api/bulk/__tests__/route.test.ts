@@ -386,6 +386,12 @@ describe('POST /api/bulk', () => {
       expect(updateInAppProductPrices).toHaveBeenCalledTimes(1);
       expect(updateBasePlanPrices.mock.calls.map((c) => c[3])).toEqual(['monthly', 'yearly']);
       expect(body.results.map((r: { id: string; basePlanId?: string }) => `${r.id}/${r.basePlanId ?? ''}`)).toEqual(['coins_100/', 'premium/monthly', 'premium/yearly']);
+      // What was dropped is reported, not silently swallowed
+      expect(body.duplicates).toEqual([
+        { type: 'product', id: 'coins_100', reason: 'REPEATED_ITEM' },
+        { type: 'subscription', id: 'premium', reason: 'REPEATED_ITEM' },
+        { type: 'subscription', id: 'premium', basePlanId: 'monthly', reason: 'BASE_PLAN_COVERED' },
+      ]);
     });
 
     it('hands the previewed prices to the write helpers, which re-check them against their own fresh read', async () => {

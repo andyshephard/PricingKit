@@ -15,7 +15,7 @@ vi.mock('@/lib/apple-connect/client', async (importOriginal) => {
 
 import { FakeOfferStore } from '@/lib/adapters/__tests__/fake-apple-offer-store';
 import { changeSetHash, parseChangeSet } from '@/lib/pricing';
-import { internalErrorMessage, MAX_LINE_BYTES, MAX_TOOL_FILE_BYTES, McpServer, serveMcp, shellQuote, TOOLS } from '../mcp';
+import { internalErrorMessage, MAX_LINE_BYTES, MAX_TOOL_FILE_BYTES, McpServer, serveMcp, shellQuote, stripHashes, TOOLS, withoutHashes } from '../mcp';
 import { run as runCliCaptured, fakeAppleEnv, tempDir } from './fixtures';
 
 const BUNDLE = 'com.example.app';
@@ -241,6 +241,29 @@ describe('MCP tools', () => {
     expect(r.isError).toBe(true);
     expect(r.structuredContent).toMatchObject({ exitCode: 1, result: { error: { message: expect.stringMatching(/missing\.json/) } } });
     expect(JSON.stringify(r)).not.toContain(env.ASC_PRIVATE_KEY.split('\n')[1]);
+  });
+});
+
+describe('MCP hash masking', () => {
+  const hash = 'a'.repeat(8) + '0123456789abcdef' + 'b'.repeat(8);
+  it('drops hash fields and masks hash-shaped runs inside JSON string values and keys', () => {
+    const out = stripHashes({
+      hash,
+      nested: { changeSetHash: hash, warning: `plan ${hash} is ready`, list: [`x-${hash}.json`, 42, null] },
+      [hash]: 'key',
+    });
+    const text = JSON.stringify(out);
+    expect(text).not.toContain(hash);
+    expect(out).toMatchObject({ nested: { warning: expect.stringMatching(/^plan \[run "pricingkit diff" yourself/), list: [expect.stringMatching(/^x-\[/), 42, null] } });
+    expect((out as { hash?: string }).hash).toBeUndefined();
+  });
+
+  it('masks longer hex runs (a full digest starts with the hash) and uppercase, but not shorter ones', () => {
+    expect(withoutHashes(`sha256 ${hash}${hash}`)).not.toContain(hash);
+    expect(withoutHashes(hash.toUpperCase())).not.toContain(hash.toUpperCase());
+    expect(withoutHashes(`_${hash}_`)).not.toContain(hash);
+    const short = hash.slice(0, 31);
+    expect(withoutHashes(`id ${short}`)).toBe(`id ${short}`);
   });
 });
 

@@ -1,9 +1,11 @@
 // Every route handler that changes something (POST, PUT, PATCH, DELETE) must
-// start with the cross-site check, and no route may read a request body
-// itself (only readJsonBody, which caps it). Checked with the TypeScript
-// compiler and its type checker, not regular expressions: it finds handlers
-// however they are exported, and body reads on a Request whatever the
-// variable is called (aliases included).
+// start with the cross-site check (the rejectCrossSite exported by
+// src/lib/request-guard.ts, not a local look-alike), and no route may read a
+// request body itself (only readJsonBody, which caps it). Checked with the
+// TypeScript compiler and its type checker, not regular expressions: it finds
+// handlers however they are exported, and body reads on a Request whatever
+// the variable is called (aliases included), whether a reader is called,
+// referenced or destructured, or the raw .body stream is touched.
 import { describe, it, expect } from 'vitest';
 import { readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
@@ -12,7 +14,8 @@ import ts from 'typescript';
 const API = join(__dirname, '..');
 const ROOT = join(__dirname, '../../../..');
 const METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-const BODY_READS = new Set(['json', 'text', 'formData', 'arrayBuffer', 'blob', 'bytes']);
+const BODY_READS = new Set(['json', 'text', 'formData', 'arrayBuffer', 'blob', 'bytes', 'body']);
+const REQUEST_GUARD = join(ROOT, 'src/lib/request-guard.ts');
 
 function routeFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -61,13 +64,26 @@ function analyse(files: string[], virtual: Record<string, string> = {}): Record<
         first?.getText(source).replace(/\s+/g, ' ') === `const crossSite = rejectCrossSite(${paramName});` &&
         second?.getText(source).replace(/\s+/g, ' ') === 'if (crossSite) return crossSite;';
       if (!checks) problems.push(`${exported.name} must start with: const crossSite = rejectCrossSite(<its request>); if (crossSite) return crossSite;`);
+      else if (!isRequestGuardExport(checker, first as ts.VariableStatement)) {
+        problems.push(`${exported.name} calls a rejectCrossSite that is not the one exported by @/lib/request-guard`);
+      }
     }
+    const isRequest = (expression: ts.Expression) => {
+      const type = checker.getTypeAtLocation(expression);
+      const names = [type.getSymbol()?.getName(), ...(type.isUnion() ? type.types.map((t) => t.getSymbol()?.getName()) : [])];
+      return names.some((n) => n === 'Request' || n === 'NextRequest');
+    };
     const visit = (node: ts.Node) => {
-      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && BODY_READS.has(node.expression.name.text)) {
-        const receiver = checker.getTypeAtLocation(node.expression.expression);
-        const names = [receiver.getSymbol()?.getName(), ...(receiver.isUnion() ? receiver.types.map((t) => t.getSymbol()?.getName()) : [])];
-        if (names.some((n) => n === 'Request' || n === 'NextRequest')) {
-          problems.push(`reads the request body itself (.${node.expression.name.text}()); use readJsonBody`);
+      // request.json(), request.body, const read = request.text, ...
+      if (ts.isPropertyAccessExpression(node) && BODY_READS.has(node.name.text) && isRequest(node.expression)) {
+        const what = node.name.text === 'body' ? '.body' : `.${node.name.text}()`;
+        problems.push(`reads the request body itself (${what}); use readJsonBody`);
+      }
+      // const { body, json } = request
+      if (ts.isVariableDeclaration(node) && node.initializer && ts.isObjectBindingPattern(node.name) && isRequest(node.initializer)) {
+        for (const element of node.name.elements) {
+          const name = (element.propertyName ?? element.name).getText(source);
+          if (BODY_READS.has(name)) problems.push(`reads the request body itself (destructures ${name}); use readJsonBody`);
         }
       }
       ts.forEachChild(node, visit);
@@ -76,6 +92,16 @@ function analyse(files: string[], virtual: Record<string, string> = {}): Record<
     out[relative(API, file)] = problems;
   }
   return out;
+}
+
+/** The first statement's rejectCrossSite resolves (through imports and aliases) to the export of src/lib/request-guard.ts */
+function isRequestGuardExport(checker: ts.TypeChecker, statement: ts.VariableStatement): boolean {
+  const init = statement.declarationList.declarations[0]?.initializer;
+  if (!init || !ts.isCallExpression(init)) return false;
+  let symbol = checker.getSymbolAtLocation(init.expression);
+  if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
+  const declaration = symbol?.declarations?.[0];
+  return symbol?.getName() === 'rejectCrossSite' && declaration?.getSourceFile().fileName === REQUEST_GUARD;
 }
 
 describe('route guards (TypeScript AST and types)', () => {
@@ -95,6 +121,9 @@ describe('route guards (TypeScript AST and types)', () => {
       [at('alias')]: `${head}async function handler(req: NextRequest) { const crossSite = rejectCrossSite(req); if (crossSite) return crossSite; const r = req; await r.text(); return NextResponse.json({}); }\nexport { handler as PATCH };\n`,
       [at('renamed')]: `${head}export async function PUT(req: NextRequest) { const crossSite = rejectCrossSite(req); if (crossSite) return crossSite; const body = await req.json(); return NextResponse.json(body); }\n`,
       [at('fine')]: `${head}export async function POST(req: Request) {\n  const crossSite = rejectCrossSite(req);\n  if (crossSite) return crossSite;\n  const upstream = await fetch('https://example.invalid');\n  return NextResponse.json(await upstream.json());\n}\n`,
+      [at('lookalike')]: `import { NextRequest, NextResponse } from 'next/server';\nfunction rejectCrossSite(_r: NextRequest): Response | null { return null; }\nexport async function POST(request: NextRequest) { const crossSite = rejectCrossSite(request); if (crossSite) return crossSite; return NextResponse.json({}); }\n`,
+      [at('stream')]: `${head}export async function POST(request: NextRequest) { const crossSite = rejectCrossSite(request); if (crossSite) return crossSite; const reader = request.body?.getReader(); return NextResponse.json({ ok: !!reader }); }\n`,
+      [at('destructured')]: `${head}export async function POST(request: Request) { const crossSite = rejectCrossSite(request); if (crossSite) return crossSite; const { json: read } = request; return NextResponse.json(await read.call(request)); }\n`,
     };
     const result = analyse([], virtual);
     const of = (name: string) => result[relative(API, at(name))];
@@ -104,5 +133,8 @@ describe('route guards (TypeScript AST and types)', () => {
     expect(of('renamed')).toEqual([expect.stringMatching(/\.json\(\)/)]);
     // A Response's body (an upstream fetch) is fine
     expect(of('fine')).toEqual([]);
+    expect(of('lookalike')).toEqual([expect.stringMatching(/not the one exported by @\/lib\/request-guard/)]);
+    expect(of('stream')).toEqual([expect.stringMatching(/\(\.body\)/)]);
+    expect(of('destructured')).toEqual([expect.stringMatching(/destructures json/)]);
   }, 60_000);
 });

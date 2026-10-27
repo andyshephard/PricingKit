@@ -19,7 +19,7 @@ export interface RunResult {
  * Run the CLI in-process. `typed` simulates a terminal: the line the person
  * types when asked (null: end of input). Without it the run is non-interactive, like CI.
  */
-export async function run(argv: string[], options: { env?: Record<string, string | undefined>; cwd?: string; typed?: string | null } = {}): Promise<RunResult> {
+export async function run(argv: string[], options: { env?: Record<string, string | undefined>; cwd?: string; typed?: string | null; stderrIsTerminal?: boolean } = {}): Promise<RunResult> {
   let stdout = '';
   let stderr = '';
   const code = await runCli(argv, {
@@ -29,6 +29,7 @@ export async function run(argv: string[], options: { env?: Record<string, string
     cwd: options.cwd ?? process.cwd(),
     now: () => new Date('2030-01-01T00:00:00Z'),
     ...(options.typed !== undefined ? { readLine: async () => options.typed ?? null } : {}),
+    ...(options.stderrIsTerminal ? { stderrIsTerminal: true } : {}),
   });
   return { code, stdout, stderr };
 }

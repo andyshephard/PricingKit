@@ -737,12 +737,15 @@ file whose name starts with `.` (such as `.github/` or `.env.json`, also through
 replaces a file that isn't already a plan (or state) file. The command
 `apply_command` returns is shell-quoted, and a `resume` log must belong to the plan.
 
-An agent relays what it likes, so the human step is built in: no tool returns a plan's confirm hash
-(`plan` and `diff` leave it out), so `apply_command` can't hand over a ready-to-run command; the
-person runs `pricingkit diff` themselves to get it. `pricingkit apply` at a terminal always shows
-what the plan does (app, ops, base prices, deletes, existing-subscriber moves) and asks for the
-app's bundle ID or package name before it loads credentials; `--yes` is refused at a terminal and
-only meant for CI, which is never asked. **Pin the app** the
+An agent relays what it likes, so the human step is built in. No tool returns a plan's confirm hash
+(`plan` and `diff` leave it out, and anything shaped like one is masked), so `apply_command` doesn't
+hand over a ready-to-run command; the person runs `pricingkit diff` themselves to get it. That is a
+speed bump, not a gate: an agent that can run code can recompute the hash from the plan file. The
+gate is `pricingkit apply` at a terminal, which always shows what the plan does (app, ops, base
+prices, deletes, existing-subscriber moves) and asks for the app's bundle ID or package name before
+it loads credentials. `--yes` is refused at a terminal and only meant for CI, which is never asked;
+with stdin redirected but stderr still a terminal (`< /dev/null`), the summary is shown and `--yes`
+is required, so skipping the question is visible. **Pin the app** the
 server may touch with `PRICINGKIT_EXPECT_BUNDLE_ID` / `PRICINGKIT_EXPECT_PACKAGE` in its environment
 (see the configuration above), so a plan or spec for another app is refused before anything is read.
 
