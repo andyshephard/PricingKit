@@ -46,7 +46,7 @@ export async function listSubscriptionGroups(
 
   for await (const page of appleListPages<AppleSubscriptionGroup>(
     credentials,
-    `/apps/${appId}/subscriptionGroups`,
+    `/apps/${encodeURIComponent(appId)}/subscriptionGroups`,
     { queryParams, budget: ctx.budget }
   )) {
     // For each group, fetch its subscriptions directly
@@ -81,7 +81,7 @@ async function fetchGroupSubscriptions(
 
   for await (const page of appleListPages<AppleSubscription>(
     credentials,
-    `/subscriptionGroups/${groupId}/subscriptions`,
+    `/subscriptionGroups/${encodeURIComponent(groupId)}/subscriptions`,
     { queryParams, budget: ctx.budget }
   )) {
     for (const sub of page.data) {
@@ -149,7 +149,7 @@ async function getSubscriptionDetails(
     // Single item endpoint returns AppleApiResponse (not list)
     const response = await appleApiRequest<
       AppleApiResponse<AppleSubscription> | AppleApiListResponse<AppleSubscription>
-    >(credentials, `/subscriptions/${subscriptionId}`, {
+    >(credentials, `/subscriptions/${encodeURIComponent(subscriptionId)}`, {
       queryParams: {
         include: 'subscriptionLocalizations',
         'fields[subscriptions]':
@@ -265,7 +265,7 @@ export async function getSubscriptionPrices(
 
     for await (const response of appleListPages<SubscriptionPriceData>(
       credentials,
-      `/subscriptions/${subscriptionId}/prices`,
+      `/subscriptions/${encodeURIComponent(subscriptionId)}/prices`,
       { queryParams, budget: ctx.budget }
     )) {
       allPriceData.push(...response.data);
@@ -425,7 +425,7 @@ export async function getSubscriptionPricePoints(
 
     for await (const response of appleListPages<AppleSubscriptionPricePoint>(
       credentials,
-      `/subscriptions/${subscriptionId}/pricePoints`,
+      `/subscriptions/${encodeURIComponent(subscriptionId)}/pricePoints`,
       { queryParams, budget: ctx.budget }
     )) {
       for (const pp of response.data) {
@@ -519,7 +519,7 @@ export async function deleteSubscriptionPrice(
 ): Promise<void> {
   await appleApiRequest(
     credentials,
-    `/subscriptionPrices/${subscriptionPriceId}`,
+    `/subscriptionPrices/${encodeURIComponent(subscriptionPriceId)}`,
     {
       method: 'DELETE',
       budget: ctx.budget,

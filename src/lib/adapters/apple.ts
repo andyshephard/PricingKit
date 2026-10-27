@@ -684,9 +684,10 @@ export class AppleAdapter implements PlatformAdapter {
     this.assertApp(app);
   }
 
+  /** The plan's app must be the credentials' app; credentials without a bundle ID match nothing */
   private assertApp(app: AppRef): void {
-    if (!('bundleId' in app) || (this.credentials.bundleId && app.bundleId !== this.credentials.bundleId)) {
-      throw new ApiError(`The plan is for ${'bundleId' in app ? app.bundleId : app.packageName}, but the session is for ${this.credentials.bundleId}`, {
+    if (!('bundleId' in app) || !this.credentials.bundleId || app.bundleId !== this.credentials.bundleId) {
+      throw new ApiError(`The plan is for ${'bundleId' in app ? app.bundleId : app.packageName}, but the session is for ${this.credentials.bundleId || 'no app'}`, {
         status: 409,
         code: 'APP_MISMATCH',
         platform: 'apple',

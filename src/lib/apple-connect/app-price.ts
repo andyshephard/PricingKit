@@ -32,7 +32,7 @@ export async function getAppPriceSchedule(
           baseTerritory?: { data: { id: string; type: 'territories' } };
         };
       }>
-    >(credentials, `/apps/${appId}/appPriceSchedule`, {
+    >(credentials, `/apps/${encodeURIComponent(appId)}/appPriceSchedule`, {
       queryParams: {
         include: 'baseTerritory',
         'fields[appPriceSchedules]': 'baseTerritory',
@@ -101,8 +101,8 @@ export async function getAppPrices(
 
   // Fetch both manual and automatic prices with pagination
   const [manualPrices, automaticPrices] = await Promise.all([
-    fetchPaginatedPrices(credentials, `/appPriceSchedules/${scheduleId}/manualPrices`),
-    fetchPaginatedPrices(credentials, `/appPriceSchedules/${scheduleId}/automaticPrices`),
+    fetchPaginatedPrices(credentials, `/appPriceSchedules/${encodeURIComponent(scheduleId)}/manualPrices`),
+    fetchPaginatedPrices(credentials, `/appPriceSchedules/${encodeURIComponent(scheduleId)}/automaticPrices`),
   ]);
 
   return {

@@ -59,7 +59,7 @@ export async function listInAppPurchases(
 
   for await (const response of appleListPages<AppleInAppPurchase>(
     credentials,
-    `/apps/${appId}/inAppPurchasesV2`,
+    `/apps/${encodeURIComponent(appId)}/inAppPurchasesV2`,
     { queryParams, budget: ctx.budget }
   )) {
     // Build a map of price schedule IDs and base territories from included data
@@ -182,7 +182,7 @@ async function getProductBasePriceBySchedule(
           };
         };
       }>
-    >(credentials, `/inAppPurchasePriceSchedules/${priceScheduleId}/manualPrices`, {
+    >(credentials, `/inAppPurchasePriceSchedules/${encodeURIComponent(priceScheduleId)}/manualPrices`, {
       budget: ctx.budget,
       queryParams: {
         include: 'inAppPurchasePricePoint,territory',
@@ -253,7 +253,7 @@ export async function getInAppPurchase(
 
     const response = await appleApiRequest<
       AppleApiListResponse<AppleInAppPurchase>
-    >(credentials, `/apps/${appId}/inAppPurchasesV2`, {
+    >(credentials, `/apps/${encodeURIComponent(appId)}/inAppPurchasesV2`, {
       budget: ctx.budget,
       queryParams: {
         'filter[productId]': productId,
@@ -298,7 +298,7 @@ export async function getBaseTerritoryForProduct(
   try {
     const response = await appleApiRequest<AppleApiResponse<AppleTerritory>>(
       credentials,
-      `/inAppPurchasePriceSchedules/${inAppPurchaseId}/baseTerritory`,
+      `/inAppPurchasePriceSchedules/${encodeURIComponent(inAppPurchaseId)}/baseTerritory`,
       { queryParams: { 'fields[territories]': 'currency' }, budget: ctx.budget }
     );
     return response.data?.id || null;
@@ -353,7 +353,7 @@ export async function getInAppPurchasePrices(
           type: string;
           attributes: { startDate?: string };
         }>
-      >(credentials, `/inAppPurchasePriceSchedules/${inAppPurchaseId}/manualPrices`, {
+      >(credentials, `/inAppPurchasePriceSchedules/${encodeURIComponent(inAppPurchaseId)}/manualPrices`, {
         budget: ctx.budget,
         queryParams: {
           include: 'inAppPurchasePricePoint,territory',
@@ -370,7 +370,7 @@ export async function getInAppPurchasePrices(
           type: string;
           attributes: { startDate?: string };
         }>
-      >(credentials, `/inAppPurchasePriceSchedules/${inAppPurchaseId}/automaticPrices`, {
+      >(credentials, `/inAppPurchasePriceSchedules/${encodeURIComponent(inAppPurchaseId)}/automaticPrices`, {
         budget: ctx.budget,
         queryParams: {
           include: 'inAppPurchasePricePoint,territory',
@@ -532,7 +532,7 @@ export async function getAvailablePricePoints(
   try {
     const response = await appleApiRequest<
       AppleApiListResponse<ApplePricePoint>
-    >(credentials, `/apps/${appId}/appPricePoints`, {
+    >(credentials, `/apps/${encodeURIComponent(appId)}/appPricePoints`, {
       budget: ctx.budget,
       queryParams: {
         'filter[territory]': territoryCode,
@@ -732,7 +732,7 @@ async function getSourceIdForIAP(
   // Fetch just 1 price point (limit=1) to get the sourceId
   const response: PricePointResponse = await appleApiRequest<PricePointResponse>(
     credentials,
-    `/inAppPurchases/${inAppPurchaseId}/pricePoints`,
+    `/inAppPurchases/${encodeURIComponent(inAppPurchaseId)}/pricePoints`,
     {
       budget: ctx.budget,
       queryParams: {
@@ -958,7 +958,7 @@ export async function getInAppPurchasePricePointsForTerritory(
       id: string;
       type: string;
       attributes: { customerPrice: string; proceeds: string };
-    }>(credentials, `/inAppPurchases/${inAppPurchaseId}/pricePoints`, { queryParams, apiVersion: 'v2', budget: ctx.budget })) {
+    }>(credentials, `/inAppPurchases/${encodeURIComponent(inAppPurchaseId)}/pricePoints`, { queryParams, apiVersion: 'v2', budget: ctx.budget })) {
       for (const pp of response.data) {
         allPricePoints.push({
           id: pp.id,
@@ -1005,7 +1005,7 @@ export async function getInAppPurchaseManualPrices(
   };
   let data: Entry[];
   try {
-    ({ data } = await appleListAll<Entry>(credentials, `/inAppPurchasePriceSchedules/${inAppPurchaseId}/manualPrices`, {
+    ({ data } = await appleListAll<Entry>(credentials, `/inAppPurchasePriceSchedules/${encodeURIComponent(inAppPurchaseId)}/manualPrices`, {
       queryParams: {
         include: 'inAppPurchasePricePoint,territory',
         limit: '200',
@@ -1179,7 +1179,7 @@ export async function listInAppPurchasePriceEntries(
   for (const [kind, manual] of [['manualPrices', true], ['automaticPrices', false]] as const) {
     let result: { data: Entry[]; included: unknown[] };
     try {
-      result = await appleListAll<Entry>(credentials, `/inAppPurchasePriceSchedules/${inAppPurchaseId}/${kind}`, {
+      result = await appleListAll<Entry>(credentials, `/inAppPurchasePriceSchedules/${encodeURIComponent(inAppPurchaseId)}/${encodeURIComponent(kind)}`, {
         queryParams: {
           include: 'inAppPurchasePricePoint,territory',
           limit: '200',

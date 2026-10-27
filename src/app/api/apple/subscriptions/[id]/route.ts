@@ -46,6 +46,8 @@ export async function GET(
     let subscription;
 
     if (isNumericSubscriptionId(id)) {
+      // API keys reach every app of a team: refuse another app's subscription
+      await assertSubscriptionInApp(auth.credentials, id);
       // Fetch directly by Apple subscription ID
       subscription = await getSubscriptionById(auth.credentials, id);
     } else {

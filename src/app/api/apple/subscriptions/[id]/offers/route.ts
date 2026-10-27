@@ -3,6 +3,7 @@ import { getAppleAuthFromCookies } from '@/middleware/auth';
 import { AppleAdapter } from '@/lib/adapters/apple';
 import { RequestBudget } from '@/lib/utils/request-budget';
 import { appleErrorResponse } from '../../../_lib/error-response';
+import { assertSubscriptionInApp } from '@/lib/apple-connect/ownership';
 
 // GET /api/apple/subscriptions/[id]/offers
 // Read-only: every offer of the subscription (introductory, promotional, offer
@@ -18,7 +19,10 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Use the numeric App Store Connect subscription ID' }, { status: 400 });
     }
 
-    const adapter = new AppleAdapter({ credentials: auth.credentials, budget: new RequestBudget() });
+    const budget = new RequestBudget();
+    // API keys reach every app of a team: refuse another app's subscription
+    await assertSubscriptionInApp(auth.credentials, id, { budget });
+    const adapter = new AppleAdapter({ credentials: auth.credentials, budget });
     const offers = await adapter.fetchOffers({ platform: 'apple', type: 'subscription', id });
     return NextResponse.json({ offers });
   } catch (error) {

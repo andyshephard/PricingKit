@@ -68,7 +68,7 @@ export async function listSubscriptionPricePointsByTerritory(
   try {
     for (let i = 0; i < unique.length; i += perRequest) {
       const chunk = unique.slice(i, i + perRequest);
-      for await (const page of appleListPages<AppleSubscriptionPricePoint>(credentials, `/subscriptions/${subscriptionId}/pricePoints`, {
+      for await (const page of appleListPages<AppleSubscriptionPricePoint>(credentials, `/subscriptions/${encodeURIComponent(subscriptionId)}/pricePoints`, {
         queryParams: {
           'filter[territory]': chunk.join(','),
           include: 'territory',
@@ -166,7 +166,7 @@ export async function listSubscriptionPriceEntries(
 ): Promise<SubscriptionPriceEntry[]> {
   let result: { data: StrictPriceData[]; included: unknown[] };
   try {
-    result = await appleListAll<StrictPriceData>(credentials, `/subscriptions/${subscriptionId}/prices`, {
+    result = await appleListAll<StrictPriceData>(credentials, `/subscriptions/${encodeURIComponent(subscriptionId)}/prices`, {
       queryParams: {
         include: 'territory,subscriptionPricePoint',
         limit: '200',

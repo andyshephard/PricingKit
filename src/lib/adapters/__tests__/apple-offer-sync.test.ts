@@ -65,6 +65,12 @@ describe('AppleAdapter.planOfferSync', () => {
     expect(store.writes()).toEqual([]);
   });
 
+  it('refuses every app when the credentials name none', async () => {
+    const noApp = new AppleAdapter({ credentials: { ...credentials, bundleId: '' }, budget: new RequestBudget() });
+    await expect(noApp.planOfferSync({ rules: rules() })).rejects.toMatchObject({ code: 'APP_MISMATCH' });
+    expect(appleApiRequest).not.toHaveBeenCalled();
+  });
+
   it('on demand: re-prices the out-of-step promo, lists the offer code for manual action, and the plan applies', async () => {
     const plan = await adapter().planOfferSync({ rules: rules(), id: 'sync' });
     expect(plan.changeSet.ops.map((op) => [op.kind, (op as OfferOp).target.offer.key])).toEqual([['updateOfferPrices', 'example_annual_alt_50']]);
