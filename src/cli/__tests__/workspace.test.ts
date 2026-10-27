@@ -1,4 +1,4 @@
-// Workspaces end to end: plan, diff, apply, undo, drift and parity across an
+// Workspaces end to end: plan, diff, apply, undo and parity across an
 // App Store app, a second App Store app and a Google Play app, against the
 // in-memory stores. Both store clients are mocked and every request records
 // the app its credentials were made for, so the tests can check each op ran
@@ -304,7 +304,7 @@ describe('diff, apply and undo --workspace-plan', () => {
   });
 });
 
-describe('parity and drift --workspace', () => {
+describe('parity --workspace', () => {
   it('parity is NOT CHECKED (exit 1) when nothing could be compared, and lists one-store territories', async () => {
     write('workspace.json', workspace({ parity: [{ ...parity, territories: ['JP'] }] }));
     const r = await run(['parity', '--workspace', 'workspace.json'], { env, cwd: tmp.dir });
@@ -332,27 +332,6 @@ describe('parity and drift --workspace', () => {
     expect(unknown.stderr).toMatch(/no parity mapping "nope"/);
   });
 
-  it('drift checks each app with a rules file through its own adapter', async () => {
-    store.seedPromo(A, 'retention', {}, { USA: '24.99', GBR: '22.99' });
-    write('rules.json', { kind: 'pricingkit.offerRules', schemaVersion: 1, app: { bundleId: MAIN }, offers: [{ product: { platform: 'apple', type: 'subscription', id: A }, kind: 'apple.promo', key: 'retention', pricing: { type: 'percentOfCurrent', percent: '50', snap: 'nearest' }, syncWithBase: true }] });
-    const ws = workspace({ parity: [] });
-    ws.apps[0] = { id: 'ios', app: { bundleId: MAIN }, rules: 'rules.json' } as never;
-    write('workspace.json', ws);
-    const r = await run(['drift', '--workspace', 'workspace.json', '--json'], { env, cwd: tmp.dir });
-    const report = JSON.parse(r.stdout);
-    expect(report).toMatchObject({ kind: 'pricingkit.workspaceDrift', inSync: true });
-    expect(report.apps.map((a: { appId: string; report?: unknown }) => [a.appId, Boolean(a.report)])).toEqual([
-      ['ios', true],
-      ['android', false],
-      ['other', false],
-    ]);
-    expect(r.code).toBe(0);
-    // The offer's US price moves off its rule
-    store.offers[0].prices.find((p) => p.alpha3 === 'USA')!.pointId = store.point(A, 'USA', '44.99');
-    const drifted = await run(['drift', '--workspace', 'workspace.json'], { env, cwd: tmp.dir });
-    expect(drifted.code).toBe(2);
-    expect(drifted.stdout).toMatch(/^Workspace workspace\.json: DRIFT/);
-  });
 });
 
 describe('prices CSV in the CLI', () => {

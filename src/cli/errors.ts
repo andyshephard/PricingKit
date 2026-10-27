@@ -2,7 +2,7 @@
 export const EXIT_OK = 0;
 /** Any error: bad arguments, missing credentials, a store error, a spent request budget */
 export const EXIT_ERROR = 1;
-/** The command worked and found something to act on: drift, or a plan with ops */
+/** The command worked and found something to act on: a plan with ops, or a parity gap */
 export const EXIT_CHANGES = 2;
 
 export type ExitCode = typeof EXIT_OK | typeof EXIT_ERROR | typeof EXIT_CHANGES;

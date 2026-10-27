@@ -18,7 +18,6 @@ import { Redactor } from './redact';
 import { applyCommand } from './commands/apply';
 import { diffCommand } from './commands/diff';
 import { undoCommand } from './commands/undo';
-import { driftCommand } from './commands/drift';
 import { exportCommand } from './commands/export';
 import { offerCommand } from './commands/offer';
 import { offersCommand } from './commands/offers';
@@ -33,7 +32,6 @@ const HANDLERS: Record<CommandName, (ctx: CommandContext) => Promise<CommandResu
   diff: diffCommand,
   offers: offersCommand,
   offer: offerCommand,
-  drift: driftCommand,
   parity: parityCommand,
   apply: applyCommand,
   undo: undoCommand,

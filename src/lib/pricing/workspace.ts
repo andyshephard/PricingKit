@@ -55,7 +55,7 @@ export interface WorkspaceApp {
   spec?: string;
   /** Or: the spec's products inline (same schema as a pricingkit.spec's products) */
   products?: unknown[];
-  /** A pricingkit.offerRules file for this app (sync and drift) */
+  /** A pricingkit.offerRules file for this app (sync) */
   rules?: string;
   /** A pricingkit.offerPlanSpec file for this app (offers to create or re-price) */
   offers?: string;

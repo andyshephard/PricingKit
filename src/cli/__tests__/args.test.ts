@@ -17,8 +17,8 @@ describe('parseCliArgs', () => {
   });
 
   it('takes --budget and --flag=value forms', () => {
-    const parsed = parseCliArgs(['drift', '--budget=250', '--percent=50']);
-    expect(parsed).toMatchObject({ kind: 'command', budget: 250, json: false, flags: { percent: '50' } });
+    const parsed = parseCliArgs(['offers', '--budget=250', '--kind=apple.promo']);
+    expect(parsed).toMatchObject({ kind: 'command', budget: 250, json: false, flags: { kind: 'apple.promo' } });
   });
 
   it('accepts a positional plan file only for diff', () => {
@@ -35,7 +35,7 @@ describe('parseCliArgs', () => {
   });
 
   it('has exactly one write command, apply, and it needs --confirm', () => {
-    expect(COMMANDS).toEqual(['export', 'plan', 'diff', 'offers', 'offer', 'drift', 'parity', 'apply', 'undo']);
+    expect(COMMANDS).toEqual(['export', 'plan', 'diff', 'offers', 'offer', 'parity', 'apply', 'undo']);
     expect(parseCliArgs(['apply', 'plan.json', '--confirm', 'abc'])).toMatchObject({ command: 'apply', positionals: ['plan.json'], flags: { confirm: 'abc' } });
   });
 
@@ -43,7 +43,8 @@ describe('parseCliArgs', () => {
     expect(parseCliArgs([])).toEqual({ kind: 'help' });
     expect(parseCliArgs(['--help'])).toEqual({ kind: 'help' });
     expect(parseCliArgs(['-h'])).toEqual({ kind: 'help' });
-    expect(parseCliArgs(['help', 'drift'])).toEqual({ kind: 'help', command: 'drift' });
+    expect(parseCliArgs(['help', 'parity'])).toEqual({ kind: 'help', command: 'parity' });
+    expect(() => parseCliArgs(['drift', '--rules', 'rules.json'])).toThrow(/Unknown command "drift"/);
     expect(parseCliArgs(['plan', '--help'])).toEqual({ kind: 'help', command: 'plan' });
     expect(parseCliArgs(['--version'])).toEqual({ kind: 'version' });
     expect(() => parseCliArgs(['help', 'nope'])).toThrow(UsageError);
@@ -88,7 +89,8 @@ describe('exit codes and output streams', () => {
     const r = await run(['--help']);
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('Usage: pricingkit <command>');
-    expect(r.stdout).toContain('2  Drift found, or the plan has ops');
+    expect(r.stdout).toContain('2  The plan has ops');
+    expect(r.stdout).not.toMatch(/drift/i);
     expect(r.stderr).toBe('');
     for (const command of COMMANDS) {
       const help = await run(['help', command]);

@@ -1,5 +1,5 @@
 // The CLI with Google Play offers, end to end against the stateful Play fake:
-// offers, plan (offer specs and --rules), diff, apply, undo and drift, with
+// offers, plan (offer specs and --rules), diff, apply and undo, with
 // their exit codes. The Play client is mocked: nothing leaves the process.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -215,8 +215,8 @@ describe('pricingkit plan, diff, apply and undo with Play offers', () => {
   });
 });
 
-describe('pricingkit drift and plan --rules with Play offers', () => {
-  it('drift --rules: 0 in sync, 2 after a base change breaks a percent-of-current offer', async () => {
+describe('pricingkit plan --rules with Play offers', () => {
+  it('plan --rules: nothing to do while in step; re-prices a percent-of-current offer after a base change', async () => {
     store.seed('annual', retentionOfferResource());
     store.seed('annual', {
       offerId: 'annual-half-price',
@@ -231,16 +231,11 @@ describe('pricingkit drift and plan --rules with Play offers', () => {
         { product: annual, kind: 'play.offer', key: 'annual-half-price', pricing: { type: 'percentOfCurrent', percent: '50', snap: 'nearest' }, territories: ['US'], syncWithBase: true },
       ])
     );
-    const inSync = await run(['drift', '--rules', 'rules.json'], { env, cwd: tmp.dir });
-    expect(inSync.code).toBe(0);
-    expect(inSync.stdout).toMatch(/In sync: 2 offers/);
-    expect(inSync.stdout).toMatch(/com\.example\.pro\/annual\s+play\.offer\s+annual-half-off\s+inSync/);
+    const inStep = await run(['plan', '--rules', 'rules.json', '--out', 'before.json'], { env, cwd: tmp.dir });
+    expect(inStep.code).toBe(0);
+    expect(inStep.stdout).toMatch(/annual-half-price\s+in step with its rule/);
 
     store.setBasePrice('annual', 'US', '69.99');
-    const drift = await run(['drift', '--rules', 'rules.json'], { env, cwd: tmp.dir });
-    expect(drift.code).toBe(2);
-    expect(drift.stdout).toMatch(/DRIFT: 2 offers: 1 in sync, 1 drifted/);
-    expect(drift.stdout).toMatch(/US\s+mismatch\s+29\.99 USD\s+34\.99 USD/);
 
     const sync = await run(['plan', '--rules', 'rules.json', '--out', 'sync.json'], { env, cwd: tmp.dir });
     expect(sync.code).toBe(2);
@@ -249,22 +244,7 @@ describe('pricingkit drift and plan --rules with Play offers', () => {
     const plan = parseChangeSet(readFileSync(join(tmp.dir, 'sync.json'), 'utf8'));
     expect(plan.ops).toMatchObject([{ kind: 'updateOfferPrices', target: { offer: { key: 'annual-half-price' } } }]);
     expect((await run(['apply', 'sync.json', '--confirm', changeSetHash(plan)], { env, cwd: tmp.dir })).code).toBe(0);
-    expect((await run(['drift', '--rules', 'rules.json'], { env, cwd: tmp.dir })).code).toBe(0);
+    expect((await run(['plan', '--rules', 'rules.json', '--out', 'after.json'], { env, cwd: tmp.dir })).code).toBe(0);
   });
 
-  it('drift for one Play offer: --relative-discount or --percent, with exit codes 0, 2 and 1', async () => {
-    store.seed('annual', retentionOfferResource());
-    const args = ['drift', '--package-name', PKG, '--subscription', PRODUCT, '--base-plan', 'annual', '--offer', 'annual-half-off'];
-    const ok = await run([...args, '--relative-discount', '0.5', '--json'], { env, cwd: tmp.dir });
-    expect(ok.code).toBe(0);
-    expect(JSON.parse(ok.stdout)).toMatchObject({ kind: 'pricingkit.playOfferDrift', inSync: true, followsBase: true, offer: { key: 'annual-half-off' } });
-    const off = await run([...args, '--relative-discount', '0.4'], { env, cwd: tmp.dir });
-    expect(off.code).toBe(2);
-    expect(off.stdout).toMatch(/DRIFT/);
-    expect((await run(args, { env, cwd: tmp.dir })).stderr).toMatch(/Give one of --percent/);
-    expect((await run([...args, '--percent', '50', '--snap', 'floor'], { env, cwd: tmp.dir })).stderr).toMatch(/--snap doesn't apply on Google Play/);
-    const missing = await run(['drift', '--package-name', PKG, '--subscription', PRODUCT, '--base-plan', 'annual', '--offer', 'nope', '--relative-discount', '0.5', '--json'], { env, cwd: tmp.dir });
-    expect(missing.code).toBe(1);
-    expect(JSON.parse(missing.stdout).error.code).toBe('NOT_FOUND');
-  });
 });

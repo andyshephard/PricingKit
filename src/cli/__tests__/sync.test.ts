@@ -1,4 +1,4 @@
-// pricingkit plan --rules, drift --rules, diff of a sync plan and apply,
+// pricingkit plan --rules, diff of a sync plan and apply,
 // end to end against the in-memory offer store. The App Store client is
 // mocked: nothing leaves the process.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -41,7 +41,7 @@ beforeEach(async () => {
     .addSubscription(A, 'ONE_YEAR', { USA: '49.99', GBR: '44.99' }, { USA: ['24.99', '27.99', '49.99', '54.99'], GBR: ['22.99', '24.99', '44.99', '49.99'] })
     .addSubscription(B, 'ONE_YEAR', { USA: '39.99' }, { USA: ['19.99', '20.99', '39.99'] });
   store.seedPromo(A, 'example_annual_50', {}, { USA: '24.99', GBR: '22.99' }); // in step
-  store.seedPromo(B, 'example_annual_alt_50', {}, { USA: '20.99' }); // drifted: the rule gives 19.99
+  store.seedPromo(B, 'example_annual_alt_50', {}, { USA: '20.99' }); // out of step: the rule gives 19.99
   appleApiRequest.mockReset();
   appleApiRequest.mockImplementation(store.handle);
   env = await fakeAppleEnv();
@@ -50,61 +50,22 @@ beforeEach(async () => {
 });
 afterEach(() => tmp.cleanup());
 
-describe('pricingkit drift --rules', () => {
-  it('checks every offer in the file, prints one report and exits 2 on drift', async () => {
-    const r = await run(['drift', '--rules', 'rules.json'], { env, cwd: tmp.dir });
-    expect(r.code).toBe(2);
-    expect(r.stdout).toMatch(/DRIFT: 2 offers: 1 in sync, 1 drifted, 0 not found, 0 not checkable/);
-    expect(r.stdout).toMatch(/9600000002\s+apple\.promo\s+example_annual_alt_50\s+drifted/);
-    expect(r.stdout).not.toMatch(/Not checked/);
-    const json = await run(['drift', '--rules', 'rules.json', '--json'], { env, cwd: tmp.dir });
-    const report = JSON.parse(json.stdout);
-    expect(report).toMatchObject({ kind: 'pricingkit.rulesDrift', inSync: false, summary: { offers: 2, inSync: 1, drifted: 1 } });
-    expect(report.offers[1].report.kind).toBe('pricingkit.offerDrift');
-    expect(store.writes()).toEqual([]);
-  });
-
-  it('exits 0 when every offer is in sync, 2 when one is missing, 1 when one only can’t be checked', async () => {
-    writeJson('ok.json', rulesFile([promoRules[0]]));
-    expect((await run(['drift', '--rules', 'ok.json'], { env, cwd: tmp.dir })).code).toBe(0);
-
-    writeJson('missing.json', rulesFile([promoRules[0], { ...promoRules[0], key: 'nope' }]));
-    const missing = await run(['drift', '--rules', 'missing.json'], { env, cwd: tmp.dir });
-    expect(missing.code).toBe(2);
-    expect(missing.stdout).toMatch(/nope\s+notFound/);
-
-    store.seedIntro(A, 'USA', { offerMode: 'FREE_TRIAL', duration: 'ONE_WEEK' }, null);
-    writeJson('trial.json', rulesFile([promoRules[0], { product: subA, kind: 'apple.intro', key: 'intro:FREE_TRIAL:ONE_WEEK:1::', pricing: half, syncWithBase: false }]));
-    const trial = await run(['drift', '--rules', 'trial.json'], { env, cwd: tmp.dir });
-    expect(trial.code).toBe(1);
-    expect(trial.stdout).toMatch(/^NOT CHECKED: 2 offers/m);
-    expect(trial.stdout).toMatch(/^ERRORS: 1 offer could not be checked:\n  9600000001 apple\.intro "intro:FREE_TRIAL:ONE_WEEK:1::": .*free trial/m);
-
-    // Drift and an error: exit 2 for the drift, and the error is still printed up front
-    writeJson('both.json', rulesFile([promoRules[1], { product: subA, kind: 'apple.intro', key: 'intro:FREE_TRIAL:ONE_WEEK:1::', pricing: half, syncWithBase: false }]));
-    const both = await run(['drift', '--rules', 'both.json'], { env, cwd: tmp.dir });
-    expect(both.code).toBe(2);
-    expect(both.stdout).toMatch(/^DRIFT: 2 offers: 0 in sync, 1 drifted, 0 not found, 1 not checkable\nERRORS: 1 offer could not be checked \(the exit code reports the drift; fix these too\):/m);
-  });
-
-  it('refuses single-offer flags with --rules, an invalid rules file, and Play rules', async () => {
-    const mixed = await run(['drift', '--rules', 'rules.json', '--percent', '50'], { env, cwd: tmp.dir });
-    expect(mixed.code).toBe(1);
-    expect(mixed.stderr).toMatch(/drop --percent/);
+describe('pricingkit plan --rules: rules files', () => {
+  it('refuses an invalid rules file, Play rules in an App Store file and another app', async () => {
     writeJson('bad.json', { ...rulesFile(promoRules), schemaVersion: 2 });
-    const bad = await run(['drift', '--rules', 'bad.json', '--json'], { env, cwd: tmp.dir });
+    const bad = await run(['plan', '--rules', 'bad.json', '--out', 'x.json', '--json'], { env, cwd: tmp.dir });
     expect(bad.code).toBe(1);
     expect(JSON.parse(bad.stdout).error.code).toBe('INVALID_RULES');
     writeJson('play.json', { ...rulesFile(promoRules), app: { packageName: BUNDLE } });
-    expect((await run(['drift', '--rules', 'play.json'], { env, cwd: tmp.dir })).stderr).toMatch(/a Google Play app \(packageName\) has play\.offer rules only/);
-    const other = await run(['drift', '--rules', 'rules.json', '--bundle-id', 'com.example.other'], { env, cwd: tmp.dir });
+    expect((await run(['plan', '--rules', 'play.json', '--out', 'x.json'], { env, cwd: tmp.dir })).stderr).toMatch(/a Google Play app \(packageName\) has play\.offer rules only/);
+    const other = await run(['plan', '--rules', 'rules.json', '--out', 'x.json', '--bundle-id', 'com.example.other'], { env, cwd: tmp.dir });
     expect(other.stderr).toMatch(/not the app in the rules file/);
     expect(appleApiRequest).not.toHaveBeenCalled();
   });
 });
 
 describe('pricingkit plan --rules (on demand)', () => {
-  it('writes an offer-only plan that re-prices the drifted offer, and apply applies it', async () => {
+  it('writes an offer-only plan that re-prices the out-of-step offer, and apply applies it', async () => {
     const r = await run(['plan', '--rules', 'rules.json', '--out', 'sync.json'], { env, cwd: tmp.dir });
     expect(r.code).toBe(2);
     expect(r.stdout).toMatch(/example_annual_alt_50\s+op-0001: re-price 1 territories \(against current base prices\)/);
@@ -115,7 +76,8 @@ describe('pricingkit plan --rules (on demand)', () => {
 
     const applied = await run(['apply', 'sync.json', '--confirm', changeSetHash(plan)], { env, cwd: tmp.dir });
     expect(applied.code).toBe(0);
-    expect((await run(['drift', '--rules', 'rules.json'], { env, cwd: tmp.dir })).code).toBe(0);
+    // Planned again: nothing left to change
+    expect((await run(['plan', '--rules', 'rules.json', '--out', 'again.json'], { env, cwd: tmp.dir })).code).toBe(0);
   });
 
   it('lists offers the store cannot re-price as manual actions, in plan and diff', async () => {
@@ -174,7 +136,7 @@ describe('pricingkit plan --spec <base> --rules', () => {
     // from the new base prices, only in the next round
     expect(store.writes()).toEqual(['POST /subscriptionPrices', 'POST /subscriptionPrices', `PATCH /subscriptionPromotionalOffers/${store.offers[1].id}`, `PATCH /subscriptionPromotionalOffers/${store.offers[0].id}`]);
     expect(allowed.stdout).toMatch(/not yet confirmed on a test app/);
-    expect((await run(['drift', '--rules', 'rules.json'], { env, cwd: tmp.dir })).code).toBe(0);
+    expect((await run(['plan', '--rules', 'rules.json', '--out', 'again.json'], { env, cwd: tmp.dir })).code).toBe(0);
   });
 
   it('holds offers over base prices scheduled for later, unless --scheduled-base now', async () => {

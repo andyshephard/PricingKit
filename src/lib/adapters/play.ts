@@ -4,8 +4,8 @@
 // which changes only the regions named; everything else is sent back as fetched.
 //
 // Phase 3 adds subscription offers: reading them per base plan, planning
-// them from offer specs, keeping them in step with a rules file (sync and
-// drift), and applying Play offer ops (create, patch, activate, deactivate,
+// them from offer specs, keeping them in step with a rules file (sync), and
+// applying Play offer ops (create, patch, activate, deactivate,
 // delete) for the executor.
 
 import {
@@ -36,7 +36,6 @@ import {
   type TerritoryPriceState,
   changedPlayRegions,
   changedPlayOfferFields,
-  checkPlayRulesDrift,
   findPlayRuleOffer,
   isPlayOfferOp,
   isPlayDuration,
@@ -63,7 +62,6 @@ import {
   type PlayPhasePricing,
   type PlayRuleProduct,
   type PlayRuleSnaps,
-  type RulesDriftReport,
   type StoreOffer,
 } from '@/lib/pricing';
 import type { BasePlan, Money, RegionalBasePlanConfig, ServiceAccountCredentials, Subscription } from '@/lib/google-play/types';
@@ -506,17 +504,17 @@ export class PlayAdapter implements PlatformAdapter {
   }
 
   // -------------------------------------------------------------------------
-  // Sync and drift from a rules file (reads only)
+  // Sync from a rules file (reads only)
 
   /**
-   * What sync and drift need for each base plan a rules file names, each read
-   * once: ownership, billing period, base prices (or the state a base plan
-   * was made against, from `states`) and the base plan's offers. For 'sync',
-   * base plans without a syncWithBase rule aren't read. Reads only.
+   * What sync needs for each base plan a rules file names with a
+   * syncWithBase rule, each read once: ownership, billing period, base prices
+   * (or the state a base plan was made against, from `states`) and the base
+   * plan's offers. Reads only.
    */
-  async readRuleProducts(rules: OfferRules, options: { states?: ProductPriceState[]; purpose?: 'sync' | 'drift' } = {}): Promise<PlayRuleProduct[]> {
+  async readRuleProducts(rules: OfferRules, options: { states?: ProductPriceState[] } = {}): Promise<PlayRuleProduct[]> {
     this.verifyApp(rules.app);
-    const active = options.purpose === 'sync' ? rules.offers.filter((r) => r.syncWithBase) : rules.offers;
+    const active = rules.offers.filter((r) => r.syncWithBase);
     const out: PlayRuleProduct[] = [];
     for (const product of ruleProducts({ offers: active })) {
       await this.verifyProduct(product);
@@ -541,9 +539,9 @@ export class PlayAdapter implements PlatformAdapter {
    * base price by themselves. Reads only.
    */
   async planOfferSync(input: { rules: OfferRules; base?: ChangeSet; states?: ProductPriceState[]; id?: string; createdAt?: string; description?: string }): Promise<OfferSyncPlan> {
-    const products = await this.readRuleProducts(input.rules, { purpose: 'sync', ...(input.states ? { states: input.states } : {}) });
+    const products = await this.readRuleProducts(input.rules, input.states ? { states: input.states } : {});
     const projected = projectedPlayBases(products, input.base);
-    const snaps = await this.snapRules(playRuleTargets(input.rules.offers, products, 'sync', projected));
+    const snaps = await this.snapRules(playRuleTargets(input.rules.offers, products, projected));
     const needsPatch = input.rules.offers.some((r) => r.syncWithBase && products.some((p) => productKey(p.product) === productKey(r.product) && findPlayRuleOffer(r, p.offers).length === 1));
     const regionsVersion = needsPatch ? await this.fetchRegionsVersion() : undefined;
     if (needsPatch && !regionsVersion) {
@@ -560,13 +558,6 @@ export class PlayAdapter implements PlatformAdapter {
       createdAt: input.createdAt ?? new Date().toISOString(),
       ...(input.description ? { description: input.description } : {}),
     });
-  }
-
-  /** Check every Play offer in a rules file against its rule; one pricingkit.rulesDrift report. Reads only. */
-  async checkRulesDrift(rules: OfferRules): Promise<RulesDriftReport> {
-    const products = await this.readRuleProducts(rules, { purpose: 'drift' });
-    const snaps = await this.snapRules(playRuleTargets(rules.offers, products, 'drift'));
-    return checkPlayRulesDrift({ app: rules.app, rules: rules.offers, products, snaps });
   }
 
   // -------------------------------------------------------------------------

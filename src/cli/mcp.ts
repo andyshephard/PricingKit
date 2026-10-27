@@ -1,8 +1,8 @@
 // pricingkit mcp: a Model Context Protocol server over stdio, so an agent can
-// read offers, check drift, make plans and summarise them with the same
+// read offers, make plans and summarise them with the same
 // commands a person runs. Agents can plan; humans apply.
 //
-// - Tools: offers, drift, plan, diff (each runs the CLI command in-process
+// - Tools: offers, plan, diff (each runs the CLI command in-process
 //   with --json) and apply_command, which only reads a plan file and returns
 //   the exact `pricingkit apply` command a person must run. Nothing here can
 //   write to a store: there is no apply tool, and the CLI's apply command is
@@ -76,43 +76,6 @@ export const TOOLS: Tool[] = [
     },
     paths: [],
     argv: (a) => ['offers', ...appFlags(a), '--subscription', String(a.subscription), ...opt('--base-plan', a.basePlan), ...opt('--kind', a.kind)],
-  },
-  {
-    name: 'drift',
-    description:
-      'Check offers against their rules: every offer in a rules file (rules), or one offer (app, subscription, offer and percent or relativeDiscount). Read-only. exitCode 2 = drift found, 0 = in sync, 1 = error.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        rules: str('Path of a pricingkit.offerRules file (JSON or YAML), relative to the working directory'),
-        ...APP_PROPS,
-        subscription: str('Subscription (single-offer check)'),
-        basePlan: str('Google Play base plan ID (single-offer check)'),
-        kind: str('App Store offer kind (single-offer check)', { enum: ['apple.intro', 'apple.promo', 'apple.offerCode', 'apple.winBack'] }),
-        offer: str('Offer key or ID (single-offer check)'),
-        percent: str('Percent of each territory price, e.g. "50"'),
-        relativeDiscount: str('Google Play: relative discount fraction, e.g. "0.5"'),
-        basis: str('perPeriod or totalOverDuration', { enum: ['perPeriod', 'totalOverDuration'] }),
-        threshold: str('Deviation threshold, 0..1'),
-        territories: str('Comma-separated territories to check, e.g. "GB,US"'),
-      },
-      additionalProperties: false,
-    },
-    paths: [read('rules', SPEC_EXT)],
-    argv: (a) => [
-      'drift',
-      ...opt('--rules', a.rules),
-      ...appFlags(a),
-      ...opt('--subscription', a.subscription),
-      ...opt('--base-plan', a.basePlan),
-      ...opt('--kind', a.kind),
-      ...opt('--offer', a.offer),
-      ...opt('--percent', a.percent),
-      ...opt('--relative-discount', a.relativeDiscount),
-      ...opt('--basis', a.basis),
-      ...opt('--threshold', a.threshold),
-      ...opt('--territories', a.territories),
-    ],
   },
   {
     name: 'plan',
@@ -365,7 +328,7 @@ export class McpServer {
             protocolVersion: PROTOCOL_VERSIONS.includes(wanted) ? wanted : PROTOCOL_VERSIONS[0],
             capabilities: { tools: { listChanged: false } },
             serverInfo: { name: 'pricingkit', version: packageJson.version },
-            instructions: 'Read store prices and offers, check drift and make plans. Applying a plan is for a person: apply_command returns the command to run.',
+            instructions: 'Read store prices and offers and make plans. Applying a plan is for a person: apply_command returns the command to run.',
           },
         });
       }

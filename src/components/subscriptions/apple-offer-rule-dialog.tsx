@@ -27,7 +27,7 @@ const DURATIONS: Array<[string, string]> = [
   ['P1Y', '1 year'],
 ];
 
-export type OfferRuleDialogTarget = { kind: 'create' } | { kind: 'update'; offer: StoreOffer; rule?: OfferRuleInput };
+export type OfferRuleDialogTarget = { kind: 'create' } | { kind: 'update'; offer: StoreOffer };
 
 function RuleFields({ rule, onChange, idPrefix }: { rule: OfferRuleInput; onChange: (rule: OfferRuleInput) => void; idPrefix: string }) {
   return (
@@ -104,8 +104,8 @@ function PreviewTable({ rows, changed }: { rows: OfferPreviewRow[]; changed: Set
 }
 
 /**
- * Create a promotional offer from a percent-of-current rule, or move an
- * existing one back to its rule: preview every territory, then apply behind
+ * Create a promotional offer from a percent-of-current rule, or re-price an
+ * existing one to a rule: preview every territory, then apply behind
  * a confirm dialog, then show the run with its log to download.
  */
 export function AppleOfferRuleDialog({
@@ -126,7 +126,7 @@ export function AppleOfferRuleDialog({
   const [duration, setDuration] = useState('P1Y');
   const [periods, setPeriods] = useState('1');
   const [rule, setRule] = useState<OfferRuleInput>(
-    target.kind === 'update' ? target.rule ?? { percent: '50', basis: defaultOfferBasis(target.offer.mode), snap: 'nearest' } : { percent: '50', basis: 'totalOverDuration', snap: 'nearest' }
+    target.kind === 'update' ? { percent: '50', basis: defaultOfferBasis(target.offer.mode), snap: 'nearest' } : { percent: '50', basis: 'totalOverDuration', snap: 'nearest' }
   );
   const [confirming, setConfirming] = useState(false);
   const plan = usePlanAppleOffer(subscriptionId);

@@ -62,7 +62,7 @@ describe('MCP protocol', () => {
     expect((await call('nope')).error).toMatchObject({ code: -32601 });
 
     const list = (await call('tools/list')).result as { tools: Array<{ name: string; inputSchema: { type: string; additionalProperties: boolean; properties: Record<string, unknown>; required?: string[] } }> };
-    expect(list.tools.map((t) => t.name)).toEqual(['offers', 'drift', 'plan', 'diff', 'apply_command']);
+    expect(list.tools.map((t) => t.name)).toEqual(['offers', 'plan', 'diff', 'apply_command']);
     for (const t of list.tools) {
       expect(t.inputSchema).toMatchObject({ type: 'object', additionalProperties: false });
       for (const key of t.inputSchema.required ?? []) expect(t.inputSchema.properties).toHaveProperty(key);
@@ -77,9 +77,7 @@ describe('MCP protocol', () => {
 });
 
 describe('MCP tools', () => {
-  it('drift and offers run the read-only commands', async () => {
-    const drift = await tool('drift', { rules: 'rules.json' });
-    expect(drift.structuredContent).toMatchObject({ exitCode: 0, result: { kind: 'pricingkit.rulesDrift', inSync: true } });
+  it('offers runs the read-only command', async () => {
     const offers = await tool('offers', { bundleId: BUNDLE, subscription: A, kind: 'apple.promo' });
     expect(offers.structuredContent).toMatchObject({ exitCode: 0, result: { kind: 'pricingkit.offers' } });
     expect(store.writes()).toEqual([]);
@@ -139,7 +137,7 @@ describe('MCP tools', () => {
     const cases: Array<[string, Record<string, unknown>, RegExp]> = [
       ['plan', { spec: 'base.json' }, /out is required/],
       ['plan', { spec: 'base.json', out: 'p.json', confirm: 'x' }, /Unknown argument "confirm"/],
-      ['drift', { rules: '--help' }, /can't be empty or start with "-"/],
+      ['plan', { rules: '--help', out: 'p.json' }, /can't be empty or start with "-"/],
       ['offers', { bundleId: BUNDLE, subscription: A, kind: 'apple.everything' }, /kind must be one of/],
       ['offers', { bundleId: BUNDLE, subscription: 9900000001 }, /subscription must be a string/],
       ['plan', { spec: '../outside.json', out: 'p.json' }, /spec must be a file inside the working directory/],
@@ -226,9 +224,9 @@ describe('MCP tools', () => {
   });
 
   it('reports CLI errors as tool errors, redacted, with the exit code', async () => {
-    const r = await tool('drift', { rules: 'missing.json' });
+    const r = await tool('diff', { plan: 'missing.json' });
     expect(r.isError).toBe(true);
-    expect(r.structuredContent).toMatchObject({ exitCode: 1, result: { error: { message: expect.stringMatching(/Can't read rules file missing\.json/) } } });
+    expect(r.structuredContent).toMatchObject({ exitCode: 1, result: { error: { message: expect.stringMatching(/missing\.json/) } } });
     expect(JSON.stringify(r)).not.toContain(env.ASC_PRIVATE_KEY.split('\n')[1]);
   });
 });
@@ -248,7 +246,7 @@ describe('MCP notifications and output files', () => {
     expect(logged.join('')).toMatch(/refused a plan call sent as a notification/);
     expect(appleApiRequest).not.toHaveBeenCalled();
     // A read-only tool sent as a notification runs; nothing is answered
-    expect(await server.handle({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'drift', arguments: { rules: 'rules.json' } } })).toBeUndefined();
+    expect(await server.handle({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'offers', arguments: { bundleId: BUNDLE, subscription: A } } })).toBeUndefined();
     expect(appleApiRequest).toHaveBeenCalled();
   });
 
