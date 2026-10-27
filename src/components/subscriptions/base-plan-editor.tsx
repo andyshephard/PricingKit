@@ -162,7 +162,7 @@ function BasePlanPricingSection({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Globe className="h-4 w-4 text-muted-foreground" />
           <span className="text-sm font-medium">Regional Pricing</span>
@@ -170,7 +170,7 @@ function BasePlanPricingSection({
             {sortedConfigs.length} regions
           </Badge>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="outline"
             size="sm"

@@ -133,7 +133,7 @@ export default function GoogleSubscriptionDetailPage({
                     {basePlans.length} base plan{basePlans.length === 1 ? '' : 's'} · {getTotalRegions()} regions
                   </span>
                 </div>
-                <div className="p-4 sm:p-5">
+                <div className="p-3 sm:p-5">
                   <BasePlanEditor
                     subscription={subscription}
                     bulkPricingPlanId={strategyPlanId}

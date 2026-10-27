@@ -182,7 +182,7 @@ export default function AppleSubscriptionDetailPage({
                   </h2>
                   <span className="text-[13px] text-muted-foreground">{getTotalTerritories()} territories</span>
                 </div>
-                <div className="p-4 sm:p-5">
+                <div className="p-3 sm:p-5">
                   <AppleSubscriptionPricingEditor
                     subscription={subscription}
                     bulkPricingOpen={strategyOpen}

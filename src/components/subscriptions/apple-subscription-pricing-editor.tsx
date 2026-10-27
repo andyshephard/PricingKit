@@ -397,7 +397,7 @@ export function AppleSubscriptionPricingEditor({
       {/* Pending Changes Banner */}
       {hasChanges && (
         <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Badge variant="outline" className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
                 {pendingChanges.size} pending change{pendingChanges.size !== 1 ? 's' : ''}
@@ -460,7 +460,7 @@ export function AppleSubscriptionPricingEditor({
           </AccordionTrigger>
           <AccordionContent className="pt-4 pb-6">
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
                   <Globe className="h-4 w-4 text-muted-foreground" />
                   <span className="text-sm font-medium">Regional Pricing</span>
@@ -468,7 +468,7 @@ export function AppleSubscriptionPricingEditor({
                     {sortedPrices.length} regions
                   </Badge>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
                     variant="outline"
                     size="sm"

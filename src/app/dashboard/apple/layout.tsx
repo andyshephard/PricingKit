@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title: { default: 'App Store overview · PricingKit', template: '%s · App Store · PricingKit' },
+  title: { default: 'App Store overview', template: '%s · App Store · PricingKit' },
   robots: { index: false, follow: false },
 };
 
