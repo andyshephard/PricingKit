@@ -191,6 +191,11 @@ export const percentOfCurrentRuleSchema = z
   .refine((r) => !isDecimalString(r.percent) || (compareDecimal(r.percent, '0') > 0 && compareDecimal(r.percent, '100') < 0), {
     message: 'percent must be above 0 and below 100',
     path: ['percent'],
+  })
+  // Targets are exact fractions of each price; four places is plenty and keeps them small
+  .refine((r) => !isDecimalString(r.percent) || (r.percent.split('.')[1]?.length ?? 0) <= 4, {
+    message: 'percent may have at most 4 decimal places',
+    path: ['percent'],
   });
 
 const pricingSchema = z.discriminatedUnion('type', [

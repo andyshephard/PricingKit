@@ -9,6 +9,7 @@ import {
   isDecimalString,
   multiplyDecimal,
   normalizeDecimal,
+  subtractDecimal,
   type Decimal,
 } from './decimal';
 import type { ProductPriceState } from './model';
@@ -41,6 +42,7 @@ export type OfferFlagCode =
   | 'CURRENCY_MISMATCH'
   | 'NO_PRICE_POINT'
   | 'NOT_BELOW_CURRENT'
+  | 'SPAN_NOT_COMPARABLE'
   | 'DEVIATION_ABOVE_THRESHOLD';
 
 export interface OfferFlag {
@@ -58,7 +60,11 @@ export interface OfferPreviewRow {
   /** The territory's current base price */
   currentPrice: Decimal | null;
   currentPricePointId?: string;
-  /** The base price over the time one offer charge covers (current x duration ratio); the offer must stay below it */
+  /**
+   * The base price over the time one offer charge covers (current x duration
+   * ratio); the offer must stay below it. null when the spans can't be
+   * compared exactly (weeks vs months), which is flagged SPAN_NOT_COMPARABLE.
+   */
   fullPriceEquivalent: Decimal | null;
   /** Unsnapped target */
   exactTarget: Decimal | null;
@@ -100,11 +106,43 @@ export interface OfferDerivation {
   summary: { territories: number; ok: number; errors: number; warnings: number };
 }
 
+/** Most fraction digits a percent may have ("12.3456"), so targets stay exact fractions of the price */
+export const MAX_PERCENT_SCALE = 4;
+
 export class OfferRuleError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'OfferRuleError';
   }
+}
+
+/**
+ * Refuse an offer whose price can't be derived from a percent-of-current
+ * rule (free trial, unknown mode or duration, weeks against months, bad
+ * percent) before anything else is read. Returns the exact multiplier.
+ */
+export function assertDerivableOffer(
+  rule: PercentOfCurrentRule,
+  offer: { mode: OfferMode | null; duration: OfferDuration | null },
+  billingPeriod: BillingPeriod
+): { numerator: number; denominator: number } {
+  if (offer.mode === null) throw new OfferRuleError('The offer mode is unknown; its price rule cannot be checked');
+  if (offer.duration === null) throw new OfferRuleError('The offer duration is unknown; its price rule cannot be checked');
+  if (offer.mode === 'FREE_TRIAL') throw new OfferRuleError('A free trial has no price to derive');
+  if (
+    !isDecimalString(rule.percent) ||
+    compareDecimal(rule.percent, '0') <= 0 ||
+    compareDecimal(rule.percent, '100') >= 0 ||
+    (normalizeDecimal(rule.percent).split('.')[1]?.length ?? 0) > MAX_PERCENT_SCALE
+  ) {
+    throw new OfferRuleError(`percent must be above 0 and below 100, with at most ${MAX_PERCENT_SCALE} decimals (got ${JSON.stringify(rule.percent)})`);
+  }
+  return offerMultiplier(rule, offer.duration, billingPeriod);
+}
+
+/** The basis a rule defaults to: a pay-up-front offer is priced for its whole duration */
+export function defaultOfferBasis(mode: OfferMode | null): PercentOfCurrentRule['basis'] {
+  return mode === 'PAY_UP_FRONT' ? 'totalOverDuration' : 'perPeriod';
 }
 
 /**
@@ -153,15 +191,14 @@ function emptyRow(territory: string, currency: string): OfferPreviewRow {
  */
 export function deriveOfferPrices(input: OfferDerivationInput): OfferDerivation {
   const { rule, offer, billingPeriod, base, ladders } = input;
-  if (offer.mode === 'FREE_TRIAL') throw new OfferRuleError('A free trial has no price to derive');
-  if (!isDecimalString(rule.percent) || compareDecimal(rule.percent, '0') <= 0 || compareDecimal(rule.percent, '100') >= 0) {
-    throw new OfferRuleError(`percent must be above 0 and below 100 (got ${JSON.stringify(rule.percent)})`);
-  }
+  const multiplier = assertDerivableOffer(rule, offer, billingPeriod);
   const threshold = normalizeDecimal(input.deviationThreshold ?? DEFAULT_OFFER_DEVIATION_THRESHOLD);
-  const multiplier = offerMultiplier(rule, offer.duration, billingPeriod);
-  // The time one offer charge covers, compared with the billing period, for the "below current" check
-  const spanRatio = durationRatio(offer.duration, billingPeriod) ?? { numerator: 1, denominator: 1 };
+  // The time one offer charge covers, compared with the billing period, for the "below current" check.
+  // Weeks against months have no exact ratio: the check is skipped and flagged, never assumed 1:1.
+  const spanRatio = durationRatio(offer.duration, billingPeriod);
   const percent = normalizeDecimal(rule.percent);
+  // target = current x percent x numerator / (100 x denominator), kept as the exact fraction N / D
+  const D = String(100 * multiplier.denominator);
 
   const territories = input.territories === undefined || input.territories === 'all' ? Object.keys(base.territories).sort() : [...new Set(input.territories)].sort();
 
@@ -185,13 +222,12 @@ export function deriveOfferPrices(input: OfferDerivationInput): OfferDerivation 
     row.currency = state.current.currency;
     row.currentPrice = current;
     if (state.current.pricePointId) row.currentPricePointId = state.current.pricePointId;
-    row.fullPriceEquivalent = divideDecimal(multiplyDecimal(current, String(spanRatio.numerator)), String(spanRatio.denominator), TARGET_SCALE);
-    // current x percent x numerator / (100 x denominator): one division, so the target is exact whenever it terminates
-    row.exactTarget = divideDecimal(
-      multiplyDecimal(multiplyDecimal(current, percent), String(multiplier.numerator)),
-      String(100 * multiplier.denominator),
-      TARGET_SCALE
-    );
+    if (spanRatio) {
+      row.fullPriceEquivalent = divideDecimal(multiplyDecimal(current, String(spanRatio.numerator)), String(spanRatio.denominator), TARGET_SCALE);
+    }
+    const N = multiplyDecimal(multiplyDecimal(current, percent), String(multiplier.numerator));
+    // Shown rounded to 6 places; snapping and deviation use the exact fraction N / D
+    row.exactTarget = divideDecimal(N, D, TARGET_SCALE);
 
     const ladder = ladders[territory];
     if (!ladder || ladder.points.length === 0) {
@@ -202,21 +238,31 @@ export function deriveOfferPrices(input: OfferDerivationInput): OfferDerivation 
       row.flags.push(flag('CURRENCY_MISMATCH', 'error', `${territory} price points are in ${ladder.currency}, the base price is in ${row.currency}`));
       return row;
     }
+    // Snap in units of 1/D so the comparison with the target is exact (no rounded midpoints)
     const points = ladder.points
       .filter((p) => isDecimalString(p.customerPrice))
-      .map((p) => ({ ...p, customerPrice: normalizeDecimal(p.customerPrice) }));
-    const snapped = snapToPricePoints(row.exactTarget, points, rule.snap);
+      .map((p) => {
+        const customerPrice = normalizeDecimal(p.customerPrice);
+        return { original: { ...p, customerPrice }, id: p.id, customerPrice: multiplyDecimal(customerPrice, D) };
+      });
+    const snapped = snapToPricePoints(N, points, rule.snap);
     if (!snapped) {
       row.flags.push(flag('NO_PRICE_POINT', 'error', `No ${rule.snap} price point for ${row.exactTarget} ${row.currency}`));
       return row;
     }
-    row.snappedPrice = snapped.point.customerPrice;
-    if (snapped.point.id) row.pricePointId = snapped.point.id;
-    if (snapped.point.proceeds && isDecimalString(snapped.point.proceeds)) row.proceeds = normalizeDecimal(snapped.point.proceeds);
-    row.deviation = snapped.deviation;
-    row.deviationRatio = snapped.deviationRatio;
+    const point = snapped.point.original;
+    row.snappedPrice = point.customerPrice;
+    if (point.id) row.pricePointId = point.id;
+    if (point.proceeds && isDecimalString(point.proceeds)) row.proceeds = normalizeDecimal(point.proceeds);
+    const scaledDeviation = subtractDecimal(snapped.point.customerPrice, N);
+    row.deviation = divideDecimal(scaledDeviation, D, TARGET_SCALE);
+    row.deviationRatio = snapped.deviationRatio; // |point x D - N| / N, exact up to its 4 places
 
-    if (compareDecimal(row.snappedPrice, row.fullPriceEquivalent) >= 0) {
+    if (!spanRatio) {
+      row.flags.push(
+        flag('SPAN_NOT_COMPARABLE', 'warning', `Can't compare a ${offer.duration} offer with the ${billingPeriod} price over the same span; check it is below the current price by hand`)
+      );
+    } else if (compareDecimal(multiplyDecimal(row.snappedPrice, String(spanRatio.denominator)), multiplyDecimal(current, String(spanRatio.numerator))) >= 0) {
       row.flags.push(
         flag('NOT_BELOW_CURRENT', 'error', `${row.snappedPrice} ${row.currency} is not below the current price over the same time (${row.fullPriceEquivalent})`)
       );
@@ -360,6 +406,11 @@ export function checkOfferDrift(input: OfferDriftInput): OfferDriftReport {
   for (const territory of offerTerritories) {
     if (covered.has(territory)) continue;
     const actual = offer.prices[territory];
+    const unreadable = offer.territoryProblems?.[territory];
+    if (unreadable) {
+      entries.push({ territory, status: 'unreadable', reason: `${unreadable} (a territory the rule does not cover)` });
+      continue;
+    }
     entries.push({
       territory,
       status: 'extra',
@@ -387,7 +438,7 @@ export function checkOfferDrift(input: OfferDriftInput): OfferDriftReport {
     rule: derivation.rule,
     billingPeriod: input.billingPeriod,
     deviationThreshold: derivation.deviationThreshold,
-    inSync: entries.every((e) => e.status === 'match') && !(offer.problems?.length),
+    inSync: entries.length > 0 && entries.every((e) => e.status === 'match') && !(offer.problems?.length),
     summary,
     territories: entries,
     ...(offer.problems?.length ? { problems: [...offer.problems] } : {}),

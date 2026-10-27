@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   checkOfferDrift,
+  defaultOfferBasis,
   deriveOfferPrices,
   offerMultiplier,
   OfferRuleError,
@@ -150,6 +151,51 @@ describe('deriveOfferPrices snapping', () => {
   });
 });
 
+describe('deriveOfferPrices exactness and spans', () => {
+  it('snaps against the exact fraction, not a target rounded onto a midpoint', () => {
+    // 1 x 0.04% / 12 = 0.0000333... rounds to 0.000033, the midpoint of the two points;
+    // the exact target is above it, so nearest is the upper point
+    const result = deriveOfferPrices(
+      input({
+        rule: { ...half, percent: '0.04', basis: 'totalOverDuration' },
+        offer: { mode: 'PAY_AS_YOU_GO', duration: 'P1M' },
+        billingPeriod: 'P1Y',
+        base: base(territory('US', 'USD', '1')),
+        ladders: { US: ladder('US', 'USD', ['0.000032', '0.000034']) },
+        deviationThreshold: '1',
+      })
+    );
+    expect(result.rows[0]).toMatchObject({ exactTarget: '0.000033', snappedPrice: '0.000034', deviation: '0.000001' });
+  });
+
+  it('refuses a percent with more than 4 decimal places', () => {
+    expect(() => deriveOfferPrices(input({ rule: { ...half, percent: '33.33333' } }))).toThrow(/at most 4 decimals/);
+    expect(deriveOfferPrices(input({ rule: { ...half, percent: '33.3333' } })).rows).toHaveLength(2);
+  });
+
+  it('weekly subscription, 1-month pay-up-front offer: skips the below-current check with a warning instead of assuming 1:1', () => {
+    const result = deriveOfferPrices(
+      input({
+        offer: { mode: 'PAY_UP_FRONT', duration: 'P1M' },
+        billingPeriod: 'P1W',
+        base: base(territory('US', 'USD', '2.99')),
+        // 50% of a weekly price for a whole month; a 1:1 comparison would wrongly pass or fail it
+        ladders: { US: ladder('US', 'USD', ['1.49', '1.99']) },
+      })
+    );
+    const row = result.rows[0];
+    expect(row).toMatchObject({ snappedPrice: '1.49', fullPriceEquivalent: null, ok: true });
+    expect(row.flags).toEqual([expect.objectContaining({ code: 'SPAN_NOT_COMPARABLE', severity: 'warning' })]);
+    expect(row.flags.map((f) => f.code)).not.toContain('NOT_BELOW_CURRENT');
+  });
+
+  it('defaults the basis to totalOverDuration for pay up front only', () => {
+    expect(defaultOfferBasis('PAY_UP_FRONT')).toBe('totalOverDuration');
+    expect(defaultOfferBasis('PAY_AS_YOU_GO')).toBe('perPeriod');
+    expect(defaultOfferBasis(null)).toBe('perPeriod');
+  });
+});
+
 describe('deriveOfferPrices validity flags', () => {
   it('flags a territory without a base price, an unreadable one and one missing from the base', () => {
     const result = deriveOfferPrices(
@@ -291,6 +337,29 @@ describe('checkOfferDrift', () => {
       ['GB', 'extra'],
       ['US', 'match'],
     ]);
+  });
+
+  it('is never in sync when nothing was compared', () => {
+    const report = checkOfferDrift({ rule: half, billingPeriod: 'P1Y', base: base(), ladders: {}, offer: offer({}) });
+    expect(report.territories).toEqual([]);
+    expect(report.inSync).toBe(false);
+  });
+
+  it('reports an unreadable price outside the rule territories as unreadable, not extra', () => {
+    const report = checkOfferDrift({
+      rule: half,
+      billingPeriod: 'P1Y',
+      base: state,
+      ladders,
+      territories: ['US'],
+      offer: offer({ US: { currency: 'USD', amount: '29.99', pricePointId: 'pp-US-29.99' } }, { territoryProblems: { CA: 'price p3 in CA has no currency' } }),
+    });
+    expect(report.territories.find((t) => t.territory === 'CA')).toEqual({
+      territory: 'CA',
+      status: 'unreadable',
+      reason: 'price p3 in CA has no currency (a territory the rule does not cover)',
+    });
+    expect(report.summary.extra).toBe(0);
   });
 
   it('refuses an offer whose mode or duration was unreadable', () => {

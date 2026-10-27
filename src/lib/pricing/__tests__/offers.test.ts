@@ -127,5 +127,7 @@ describe('parsePercentOfCurrentRule', () => {
   it('validates a rule on its own', () => {
     expect(parsePercentOfCurrentRule({ type: 'percentOfCurrent', percent: '33.5', basis: 'totalOverDuration', snap: 'floor' }).percent).toBe('33.5');
     expect(() => parsePercentOfCurrentRule({ type: 'percentOfCurrent', percent: '-5', basis: 'perPeriod', snap: 'floor' })).toThrow(InvalidOfferSpecError);
+    expect(() => parsePercentOfCurrentRule({ type: 'percentOfCurrent', percent: '12.34567', basis: 'perPeriod', snap: 'floor' })).toThrow(/at most 4 decimal places/);
+    expect(parsePercentOfCurrentRule({ type: 'percentOfCurrent', percent: '12.34560', basis: 'perPeriod', snap: 'floor' }).percent).toBe('12.3456');
   });
 });
