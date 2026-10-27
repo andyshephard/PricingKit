@@ -14,3 +14,6 @@ export * from './changeset';
 export * from './diff';
 export * from './inverse';
 export * from './state';
+export * from './adapter';
+export * from './run';
+export * from './executor';

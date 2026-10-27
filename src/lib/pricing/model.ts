@@ -55,6 +55,12 @@ export interface TerritoryPriceState {
   scheduled?: PriceValue | null;
   /** Store availability state, when the store reports one */
   availability?: string;
+  /**
+   * Store-internal handles an adapter needs to act on this state (e.g. the
+   * Apple subscriptionPrice ID of the scheduled price, to delete it). State
+   * only: never copied into plans.
+   */
+  refs?: { scheduledPriceId?: string };
 }
 
 /** Everything the core needs to know about one product's prices right now. */

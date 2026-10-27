@@ -1,0 +1,70 @@
+// What the executor needs from a store. Implementations live outside the core
+// (src/lib/adapters) because they do network I/O; the core only knows this shape.
+
+import type { BasePriceOp } from './changeset';
+import type { InverseResult } from './inverse';
+import type { Platform, ProductPriceState, ProductRef, TerritoryPriceState } from './model';
+import type { SnapMode } from './snap';
+
+export interface ResolveTarget {
+  currency: string;
+  /** Unsnapped target amount (Decimal string) */
+  amount: string;
+}
+
+export interface ResolvedPrice {
+  currency: string;
+  /** Snapped amount the store will accept */
+  amount: string;
+  pricePointId?: string;
+  proceeds?: string;
+  /** The amount that was asked for */
+  target: string;
+  /** amount - target */
+  deviation: string;
+  /** |deviation| / target, 4 decimal places */
+  deviationRatio: string;
+}
+
+export interface ResolveResult {
+  resolved: Record<string, ResolvedPrice>;
+  /** Territory -> reason it could not be resolved */
+  unresolved: Record<string, string>;
+}
+
+/** What the executor tells an adapter when it applies an op */
+export interface ApplyContext {
+  /** Freshly fetched state of the op's territory (undefined if the store has none) */
+  territoryState: TerritoryPriceState | undefined;
+}
+
+/** JSON-safe description of what the store did, stored in the run log */
+export type OpResponse = Record<string, unknown>;
+
+export interface PlatformAdapter {
+  readonly platform: Platform;
+  /** Read one product's current prices */
+  fetchState(product: ProductRef): Promise<ProductPriceState>;
+  /** Snap target amounts to prices the store accepts, per territory */
+  resolvePricePoints(
+    product: ProductRef,
+    targets: Record<string, ResolveTarget>,
+    options?: { mode?: SnapMode }
+  ): Promise<ResolveResult>;
+  /** Apply one op. The executor has already checked the territory is at op.before. */
+  apply(op: BasePriceOp, context: ApplyContext): Promise<OpResponse>;
+  /**
+   * Optional: apply several ops on one product in one store write (e.g. one
+   * Google PATCH). Ops sharing a batchKey are passed together. Must return one
+   * outcome per op, in order; an op's error doesn't have to fail the others.
+   */
+  applyMany?(ops: BasePriceOp[], contexts: ApplyContext[]): Promise<Array<{ response?: OpResponse; error?: unknown }>>;
+  batchKey?(op: BasePriceOp): string | undefined;
+  /** The op that undoes `op`, from its before snapshot */
+  inverse(op: BasePriceOp): InverseResult;
+}
+
+/** Read-only view of a request budget, so the executor can stop before a run runs dry */
+export interface BudgetView {
+  readonly remaining: number;
+}

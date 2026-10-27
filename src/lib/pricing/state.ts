@@ -27,6 +27,7 @@ const territoryStateSchema = z
     current: priceValueSchema.nullable(),
     scheduled: priceValueSchema.nullable().optional(),
     availability: z.string().optional(),
+    refs: z.object({ scheduledPriceId: z.string().optional() }).strict().optional(),
   })
   .strict();
 
