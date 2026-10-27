@@ -14,6 +14,7 @@ Free, open-source regional pricing tool for the App Store and Google Play. Set P
 - **Plan, diff, apply (library)** - Build a reviewable JSON plan of price changes, apply it idempotently within a request budget, resume a partial run and undo it from its log (see [Plans](#plans-plan-diff-apply))
 - **Google Play offers** - List, plan, preview, apply, resume and undo Play subscription offers: phases (free, relative or absolute discount, fixed price), eligibility (new customers, upgrades, developer-determined), offer tags and regions (see [Google Play offers](#google-play-subscription-offers))
 - **Offers in step with base prices** - A checked-in rules file says which offers follow which rule (App Store: "X% of each territory's price"; Google Play: also Play's own discounts and fixed prices); one command checks them all for drift, and sync plans re-price them against new base prices (see [sync](#keeping-offers-in-step-with-base-prices-sync))
+- **Headless** - A `pricingkit` CLI (JSON or YAML specs, `--json` output, exit codes for CI), GitHub Actions templates for plan-on-PR and apply-on-merge with approval, and an MCP server so agents can plan while people apply (see [Command line](#command-line-pricingkit))
 - **Currency conversion** - Automatic exchange rate lookups; regions without a rate are flagged and never priced
 - **Multiple pricing strategies** - PPP (World Bank), Big Mac Index or Netflix Index for regional pricing
 - **Public Index Checker** - Compare regional prices across strategies at `/index-checker` (no auth required)
@@ -93,7 +94,7 @@ CI runs all three on every pull request. See [CONTRIBUTING.md](CONTRIBUTING.md) 
 bin/pricingkit.mjs        # CLI launcher (runs src/cli through tsx)
 examples/github-actions/  # Example workflows to copy (not run in this repo)
 src/
-├── cli/                  # pricingkit CLI: export, plan, diff, offers, drift, apply (offer plans, --confirm)
+├── cli/                  # pricingkit CLI: export, plan, diff, offers, offer, drift, apply (--confirm), undo, mcp
 ├── app/
 │   ├── api/              # API routes (Google & Apple endpoints)
 │   ├── dashboard/        # Dashboard pages
@@ -397,13 +398,10 @@ offer op lists the base ops of its product it depends on (`dependsOn`):
 - `pricingkit diff` shows base prices and offers in separate groups, in the order they are
   applied, and lists the manual actions.
 
-**Applying.** `pricingkit apply` applies offer plans only: base-price writes through the CLI wait
-until the Apple base-price behaviour is confirmed on a test app. So `apply` applies a
-`plan --rules` plan, but refuses a plan that also changes base prices. Until that changes, ship a
-base price change and its offers like this: change the base prices in the web app (or apply the
-base-price plan with the library), then run `pricingkit plan --rules offer-rules.json`, review it
-with `pricingkit diff` and apply it. The library (`applyChangeSet`) applies combined plans, in the
-order above.
+**Applying.** `pricingkit apply` applies a `plan --rules` plan like any offer plan. A combined
+plan (`--spec` with `--rules`) also changes base prices, so it needs `--allow-base-prices` as well
+(see [base prices from the CLI](#base-prices-from-the-cli)); it is applied in the order above. The
+library (`applyChangeSet`) applies combined plans the same way.
 
 ```ts
 import { parseOfferRules } from '@/lib/pricing';
@@ -428,15 +426,20 @@ Only `apply` writes to a store, and only with `--confirm <plan hash>`.
 
 | Command | What it does |
 | --- | --- |
-| `export` | Current (and scheduled) prices of an App Store subscription or a Google Play base plan, as a `pricingkit.state` snapshot. `--out <file>` also writes it. |
+| `export` | Current (and scheduled) prices of an App Store subscription or a Google Play base plan, as a `pricingkit.state` snapshot. `--in-app <product id>` exports an App Store in-app purchase (manual and automatic prices, scheduled ones and the price schedule's base territory) or a Google Play one-time product (its first purchase option) instead. `--out <file>` also writes it. |
 | `plan --spec <file>` | With an offer plan spec (`pricingkit.offerPlanSpec`), plans creating or re-pricing App Store offers and prints the plan hash. Otherwise: reads a pricing spec, snaps its targets to real store prices and writes the plan (`pricingkit.changeset`). A dry run: it only reads. The default file, `pricingkit-plan.json` (gitignored), is never replaced unless you pass `--force`; `--out <file>` names the file and replaces it. `--state-out <file>` saves the prices it planned against. |
 | `diff <plan.json>` | Human-readable summary of a plan: changes per product and territory with before, after and percent change, skipped territories by reason, warnings. No store requests. |
 | `offers` | An App Store subscription's introductory, promotional, offer code and win-back offers with each territory's price (`--kind` filters); or a Google Play subscription's offers (`--package-name`, `--base-plan` for one base plan) with state, eligibility, tags and each phase's price per region. |
-| `apply <plan.json> --confirm <hash>` | Applies an offer plan, App Store or Google Play (the app named in the plan). `--confirm` must be the plan's hash (shown by `plan` and `diff`). Saves the run log after every step (`--run-out`, default `<plan>.run.json` next to the plan file, never overwritten) and continues one with `--resume <run.json>`. Deleting offers needs `--force-delete`. |
+| `offer deactivate\|activate\|delete` | Plans one lifecycle change of an existing offer and writes it as a plan file (default `pricingkit-plan.json`, never replaced without `--force`; or `--out`). App Store: `--bundle-id --subscription --kind --offer <key>`; deactivating an introductory or win-back offer sets its end date (`--end-date`). Google Play: `--package-name --subscription --base-plan --offer <offer id>`. What the store doesn't allow (deactivating a promotional offer, deleting an offer code or an active Play offer) is refused with the reason. Reads only; prints the `apply` command. |
+| `apply <plan.json> --confirm <hash>` | Applies a plan, App Store or Google Play (the app named in the plan). `--confirm` must be the plan's hash (shown by `plan` and `diff`). Saves the run log before and after every write (`--run-out`, default `<plan>.run.json` next to the plan file, never overwritten) and continues one with `--resume <run.json>`. Deleting offers needs `--force-delete`; a plan that changes base prices needs `--allow-base-prices` (see [base prices from the CLI](#base-prices-from-the-cli)). |
 | `undo <plan.json> <run.json>` | Writes the plan that undoes a run (`--out`, default `<plan>.undo.json` next to the plan file, replaced only with `--force`) and prints its summary, hash and anything that can't be reversed. Offline: no credentials, no store requests. Apply it with `apply --confirm`, plus `--force-delete` when it deletes offers. |
 | `drift` | Checks an App Store offer against "`--percent` of each territory's current price" (`--basis perPeriod\|totalOverDuration`, `--snap nearest\|floor\|ceil`, `--threshold`) and prints a `pricingkit.offerDrift` report. `--territories GB,US` checks only those territories: the offer's others are listed in `outOfScope` and don't count against it. On Google Play (`--package-name --subscription --base-plan --offer`): `--percent <n>` or `--relative-discount <0..1>`, printing a `pricingkit.playOfferDrift` report. |
 | `drift --rules <rules.json>` | Checks every offer in an offer rules file and prints one `pricingkit.rulesDrift` report. See [sync](#keeping-offers-in-step-with-base-prices-sync). |
 | `plan --rules <rules.json> [--spec <spec.json>]` | Plans keeping `syncWithBase` offers in step: against current base prices, or with `--spec`, against the prices that base-price plan sets (one plan, base ops first). `--scheduled-base hold\|now` (default `hold`). Offers the store can't re-price are listed as manual actions. |
+| `mcp` | Runs an [MCP server](#agents-pricingkit-mcp) over stdio for agents: read and plan tools, and a tool that returns the `apply` command for a person to run. |
+
+Spec and rules files may be JSON or YAML (a `.yaml` / `.yml` name); plans, run logs and state
+files are always JSON.
 
 ```bash
 export ASC_KEY_ID=... ASC_ISSUER_ID=... ASC_PRIVATE_KEY_PATH=~/keys/AuthKey_XXXX.p8
@@ -448,8 +451,50 @@ npx pricingkit offers --bundle-id com.example.app --subscription 1234567890
 npx pricingkit drift --bundle-id com.example.app --subscription 1234567890 \
   --kind apple.promo --offer example_half --percent 50 --json
 npx pricingkit drift --rules offer-rules.json
-npx pricingkit plan --spec pricing.json --rules offer-rules.json --out plan.json
+npx pricingkit plan --spec pricing.yaml --rules offer-rules.yaml --out plan.json
+npx pricingkit apply plan.json --confirm <hash from diff> --allow-base-prices
+npx pricingkit export --bundle-id com.example.app --in-app com.example.app.coins
+npx pricingkit offer deactivate --bundle-id com.example.app --subscription 1234567890 \
+  --kind apple.offerCode --offer SPRING50 --out end-spring.json
 ```
+
+### Base prices from the CLI
+
+`pricingkit apply --allow-base-prices` applies plans that change base prices (from a
+`pricingkit.spec`, a combined `plan --spec --rules`, or the undo plan of such a run), with the
+same safety model as offers: `--confirm` with the plan hash, checked before anything is read; the
+run log saved before and after every write; `--resume`; `undo` (whose plan needs the same flag);
+the subscription checked to belong to the plan's app (`APP_MISMATCH`); the
+`PRICINGKIT_EXPECT_*` pins; and, in a combined plan, offers applied only once the base prices they
+were derived from are in place. Without the flag, a plan with base-price ops is refused before any
+store request.
+
+**Before relying on it for the App Store, try it on a test app.** Two App Store Connect behaviours
+it relies on are not yet confirmed against a real account: that an immediate price change replaces
+the territory's older price entries, and that a second scheduled price can be created before the
+old one is deleted (PricingKit creates the new scheduled price first and deletes the old one only
+once it exists). The executor re-reads every territory before writing and refuses anything
+ambiguous (for example two future prices), so the failure mode is a refused or unverified op,
+not a silent wrong price; but run a small plan on a test app first. Google Play base plans and
+one-time products don't have this caveat.
+
+### Agents: `pricingkit mcp`
+
+`pricingkit mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio,
+for agents that should read prices and plan changes but never apply them. Add it to your MCP
+client's configuration as a command (`npx pricingkit mcp`, started in the folder holding your
+spec and rules files, with the credentials in its environment). Tools:
+
+| Tool | What it does |
+| --- | --- |
+| `offers` | Lists a subscription's offers (as `pricingkit offers --json`). |
+| `drift` | Checks offers against a rules file or one rule (as `pricingkit drift --json`). |
+| `plan` | Makes a plan from a spec and/or rules file and writes it to `out` (a dry run). |
+| `diff` | Summarises a plan file, with its hash. Offline. |
+| `apply_command` | Returns the exact `pricingkit apply <plan> --confirm <hash>` command (with `--allow-base-prices` / `--force-delete` when needed) for a person to review and run. It applies nothing. |
+
+There is no apply tool. Arguments are typed and can't start with `-`, and file paths must stay
+inside the server's working directory.
 
 **Shared options.** `--json` prints machine-readable JSON on stdout: the document itself
 (`pricingkit.state`, `pricingkit.changeset`, `pricingkit.planSummary`, `pricingkit.offers` or
@@ -502,7 +547,7 @@ prints as text: use `ASC_PRIVATE_KEY` instead. To turn the hex back into text yo
 through `xxd -r -p`. Note that `add-generic-password -w <value>` puts the key on that command's
 argument list for a moment; run it on a machine you trust.
 
-**Pricing spec** (`pricingkit.spec`, version 1, JSON). `plan` reads the products' current prices,
+**Pricing spec** (`pricingkit.spec`, version 1, JSON or YAML). `plan` reads the products' current prices,
 turns the targets into per-territory amounts and snaps them: on the App Store to each territory's
 own price points (`snap`, default `nearest`), on Google Play through Play's price conversion (a
 read-only call). The spec never names price point IDs.
@@ -533,6 +578,16 @@ read-only call). The spec never names price point IDs.
 - `targets.type: "percentOfCurrent"`: each territory's current price times `percent` / 100
   (`"110"` is a 10% rise; above 0, at most 1000, up to 4 decimals), for `"all"` priced
   territories or a list.
+- `targets.type: "strategy"`: one base price spread to every territory by a price-parity
+  strategy, with the same maths as the web app's bulk pricing:
+  `{ "type": "strategy", "strategy": "ppp", "base": { "territory": "US", "amount": "9.99" }, "rounding": "nearest-99" }`.
+  `strategy` is `ppp` (World Bank PPP), `bigmac`, `netflix` or `direct` (plain currency
+  conversion); `base.currency` defaults to the base territory's current currency; `rounding` is
+  `none` (App Store default: snapping picks the price point), `nearest-99` (Google Play default)
+  or `round-up`; `territories` defaults to every priced territory. The built-in indexes and
+  fallback exchange rates make the plan reproducible offline; `exchangeRates`
+  (`{ "EUR": "0.92" }`, units per US dollar) overrides rates. Each territory is priced in the
+  currency it uses now; one with no price yet, or no exchange rate, is skipped with the reason.
 - Optional per product: `snap` (App Store), `startDate` (App Store: schedule instead of changing
   now), `allowNewTerritories` (default `false`: never price a territory that has no price),
   `preserveCurrentPrice` (App Store, default `true`).
@@ -541,9 +596,29 @@ read-only call). The spec never names price point IDs.
   products (`{ "platform": "google", "type": "inapp", "productId" }`). All products must belong to
   the spec's `app`.
 
-**In CI.** [`examples/github-actions/drift.yml`](examples/github-actions/drift.yml) is a weekly
-scheduled drift check using repository secrets: it opens (or comments on) an issue and fails the
-job when an offer drifts. It is an example to copy into your own repository; it does not run here.
+The same spec in YAML (`pricing.yaml`); numbers keep the digits you write, so `4.10` stays
+`4.10` and an ID with a leading zero keeps it:
+
+```yaml
+kind: pricingkit.spec
+schemaVersion: 1
+app: { bundleId: com.example.app }
+products:
+  - product: { platform: apple, type: subscription, id: "1234567890" }
+    targets: { type: strategy, strategy: ppp, base: { territory: US, amount: 9.99 } }
+```
+
+**In CI.** Examples to copy into your own repository (they don't run here; actions are pinned
+by commit SHA, with least-privilege permissions):
+
+- [`drift.yml`](examples/github-actions/drift.yml): a weekly drift check that opens (or comments
+  on) an issue and fails the job when an offer drifts.
+- [`plan-on-pr.yml`](examples/github-actions/plan-on-pr.yml): on a pull request that changes the
+  pricing files, comments the committed plan's `diff` and hash and a fresh read-only plan against
+  current prices.
+- [`apply-on-merge.yml`](examples/github-actions/apply-on-merge.yml): on merge to main, waits for a
+  required reviewer of a protected environment, applies the committed plan with its hash, uploads
+  the run log as an artifact and, on failure, says how to resume.
 
 ## Environment Variables
 
