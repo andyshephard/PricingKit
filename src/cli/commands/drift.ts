@@ -13,7 +13,8 @@ import {
   type RulesDriftReport,
 } from '@/lib/pricing';
 import { appSelection, stringFlag, type AppSelection } from '../args';
-import { appleAdapter, playAdapter, readInputFile, type CommandContext, type CommandResult } from '../context';
+import { appleAdapter, playAdapter, type CommandContext, type CommandResult } from '../context';
+import { readSpecText } from '../spec-file';
 import { CliError, EXIT_CHANGES, EXIT_ERROR, EXIT_OK, UsageError, type ExitCode } from '../errors';
 import { describeCounts, money, table } from '../format';
 import { productFromFlags } from './export';
@@ -242,7 +243,7 @@ async function rulesDriftCommand(ctx: CommandContext, rulesPath: string): Promis
   if (extra.length > 0) throw new UsageError(`--rules checks the offers and rules in the file; drop ${extra.map((f) => `--${f}`).join(', ')}`);
   let rules: OfferRules;
   try {
-    rules = parseOfferRules(await readInputFile(ctx, rulesPath, 'rules file'));
+    rules = parseOfferRules(await readSpecText(ctx, rulesPath, 'rules file'));
   } catch (error) {
     if (error instanceof CliError) throw error;
     if (error instanceof InvalidOfferRulesError) throw new CliError(error.message, 'INVALID_RULES');

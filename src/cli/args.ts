@@ -200,6 +200,9 @@ Credentials come only from environment variables:
 Optional pins: PRICINGKIT_EXPECT_BUNDLE_ID / PRICINGKIT_EXPECT_PACKAGE refuse any other app
 (from a flag, spec, rules file or plan) before anything is read.
 
+Spec and rules files are JSON, or YAML when named .yaml or .yml (numbers keep
+the digits written; tags and several documents per file are refused).
+
 Run "pricingkit help <command>" for a command's options.`;
 
 export const COMMAND_HELP: Record<CommandName, string> = {

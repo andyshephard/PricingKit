@@ -65,8 +65,9 @@ function resolveLocal(from: string, spec: string): string | undefined {
   return undefined;
 }
 
-// The CLI may reach the store clients and adapters, but not the web app or cookie sessions
-const CLI_ALLOWED_PACKAGES = new Set(['zod']);
+// The CLI may reach the store clients and adapters, but not the web app or cookie sessions.
+// yaml: YAML spec and rules files (src/cli/spec-file.ts); no dependencies of its own.
+const CLI_ALLOWED_PACKAGES = new Set(['zod', 'yaml']);
 const CLI_FORBIDDEN_PATHS = ['app/', 'components/', 'hooks/', 'store/', 'middleware/', 'lib/session.ts'];
 
 interface Boundary {

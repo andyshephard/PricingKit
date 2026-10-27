@@ -28,7 +28,8 @@ import {
   type ProductRef,
 } from '@/lib/pricing';
 import { appSelection, stringFlag } from '../args';
-import { appleAdapter, playAdapter, readInputFile, readOnly, writeOutputFile, type CommandContext, type CommandResult, type PriceReader } from '../context';
+import { appleAdapter, playAdapter, readOnly, writeOutputFile, type CommandContext, type CommandResult, type PriceReader } from '../context';
+import { readSpecText } from '../spec-file';
 import { CliError, EXIT_CHANGES, EXIT_ERROR, EXIT_OK, UsageError } from '../errors';
 import { BASE_PRICE_NOTE } from './apply';
 import { formatPlanSummary, summarizeChangeSet } from './diff';
@@ -106,7 +107,7 @@ export async function planCommand(ctx: CommandContext): Promise<CommandResult> {
 
   if (rulesPath) return planSyncCommand(ctx, rulesPath, specPath, out, stateOut);
 
-  const specText = await readInputFile(ctx, specPath!, 'spec file');
+  const specText = await readSpecText(ctx, specPath!, 'spec file');
   if (specKind(specText) === OFFER_PLAN_SPEC_KIND) return planOffersCommand(ctx, specText, out);
 
   let spec: PricingSpec;
@@ -307,7 +308,7 @@ async function planSyncCommand(ctx: CommandContext, rulesPath: string, specPath:
 
   let rules: OfferRules;
   try {
-    rules = parseOfferRules(await readInputFile(ctx, rulesPath, 'rules file'));
+    rules = parseOfferRules(await readSpecText(ctx, rulesPath, 'rules file'));
   } catch (error) {
     if (error instanceof CliError) throw error;
     if (error instanceof InvalidOfferRulesError) throw new CliError(error.message, 'INVALID_RULES');
@@ -322,7 +323,7 @@ async function planSyncCommand(ctx: CommandContext, rulesPath: string, specPath:
 
   let spec: PricingSpec | undefined;
   if (specPath) {
-    const specText = await readInputFile(ctx, specPath, 'spec file');
+    const specText = await readSpecText(ctx, specPath, 'spec file');
     if (specKind(specText) === OFFER_PLAN_SPEC_KIND) {
       throw new UsageError('--rules goes with a base-price spec (pricingkit.spec), or on its own; an offer plan spec creates offers and is planned without --rules');
     }
