@@ -49,18 +49,29 @@ CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm test`, `npm run typecheck` a
 /src/lib/
   /google-play/         # Google Play Developer API integration
   /apple-connect/       # Apple App Store Connect API (JWT auth, price tiers)
+  /pricing/             # Framework-free core (see "Pricing core" below)
+    strategies.ts       # PricingStrategy + calculateRegionalPrice (was google-play/currency.ts)
+    rounding.ts         # applyRounding, roundDownToPriceEnding, currencyScale
+    /indexes/           # PPP, Big Mac, Netflix indexes + FALLBACK_EXCHANGE_RATES
+    decimal.ts, snap.ts # String-backed Decimal money; snapping to price points
+    model.ts, changeset.ts, diff.ts, inverse.ts, state.ts   # Plan files
+    executor.ts, run.ts, adapter.ts, concurrency.ts         # Apply, run log, undo
+  /adapters/            # AppleAdapter, PlayAdapter (store I/O for the executor)
   /exchange-rates/      # Open Exchange Rates API client (memory cache + best-effort disk cache)
   /world-bank/          # Live World Bank PPP data (in-memory cache)
-  /conversion-indexes/  # PPP, Big Mac, Netflix indexes + FALLBACK_EXCHANGE_RATES
   /export/              # Pure transforms: store state -> versioned PriceExport, CSV
   /utils/api-error.ts   # ApiError + toApiError / getErrorStatus / isRetryableStatus
   /utils/retry.ts       # Backoff and Retry-After helpers shared by both store clients
   /utils/request-budget.ts  # RequestBudget: per-run request cap (default 3600/hour)
   /utils/rate-limit.ts  # executeWithRateLimit for bulk/batch loops
+  /utils/attempt-limiter.ts  # In-memory per-client limiter (anonymous OER key tests)
+  /apple-connect/pagination.ts  # appleListPages / appleListAll: the one links.next loop
   encryption.ts         # AES-256-GCM cookie encryption, MissingEncryptionKeyError
-  session.ts            # Session cookie names, hasAuthenticatedSession()
+  session.ts            # Session cookie names and lifetime, hasAuthenticatedSession()
   token-cache.ts        # LRU cache for Apple JWTs / Google access tokens
 
+/src/middleware/auth.ts # The only place routes get credentials: getGoogleAuthFromCookies,
+                        # getAppleAuthFromCookies, getAppleSessionFromCookies
 /src/hooks/             # React Query hooks for products/subscriptions
 /src/store/             # Zustand stores (auth-store, selection-store)
 /src/components/ui/     # shadcn/ui components
@@ -84,6 +95,8 @@ CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm test`, `npm run typecheck` a
 - Both clients throw subclasses of `ApiError` (`AppleApiError`, `GooglePlayApiError`) shaped `{ status, code?, platform, retryable, details? }`. Normalise unknown errors with `toApiError()`; never `String(err)` (it yields `[object Object]`).
 - `appleApiRequest` and `googlePlayFetch` retry 429, 5xx and network errors with jittered exponential backoff (default 4 attempts) and honour `Retry-After` up to 60s, failing fast above that. Apple POSTs (creates) retry only 429, and their other failures are `retryable: false`, because a create that timed out or got a 5xx may already exist. Apple's `X-Rate-Limit` header is tracked: a 429 is not retried when it reports 0 requests remaining. Later requests are only stopped when the caller passes a `RequestBudget` (no route does yet).
 - For long loops, pass a `RequestBudget` via the `budget` option. Once spent it throws `ApiError(429, 'BUDGET_EXCEEDED')` before sending. Budgets hold no module-level state, so create one per run or user.
+- Every store helper in `lib/apple-connect` and `lib/google-play` takes an optional trailing `ctx: RequestContext` (`{ budget }`) and passes it to every request it makes, including pagination and the app lookup. New helpers must do the same. The bulk routes (Apple subscription PATCH, price-points/batch, clear-scheduled, Apple IAP PATCH, `/api/bulk`) create one `RequestBudget` per request.
+- No unbounded `Promise.all` over store requests: use `mapWithConcurrency` (`lib/pricing/concurrency.ts`). Apple list reads use `appleListPages`/`appleListAll`; never hand-roll a `links.next` loop (it must keep the cursor).
 - Apple routes map the `ApiError` status through `appleErrorResponse` (401/403/404/409/429/5xx) instead of a blanket 404/500. The Google subscription base-plan PATCH and the Google region DELETEs (product and base plan) pass Google's 400/409/412 through. Public endpoints return generic messages and log the raw error server-side. Other Google detail-route errors still become a 500 carrying the upstream message.
 
 ### Store write rules
@@ -97,33 +110,43 @@ CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm test`, `npm run typecheck` a
 - RESTful: `GET/PATCH/DELETE /api/products/[sku]`
 - Platform-specific: `/api/products` (Google) vs `/api/apple/products` (Apple)
 - Error codes: 401 (auth), 403 (permission), 404 (not found), 422 (e.g. Apple IAP update without a base territory price), 429 (rate limit)
-- Public, no auth: Index Checker page at `/index-checker`, `GET /api/ppp` and `GET /api/exchange-rates`. Their `?refresh=true` (bypasses caches, spends upstream quota) needs a valid Google or Apple session and returns 401 otherwise.
+- Routes get credentials only from `@/middleware/auth`; never define a cookie helper in a route file or import one from another route (`src/app/api/__tests__/auth-helpers.test.ts`).
+- Public, no auth: Index Checker page at `/index-checker`, `GET /api/ppp` and `GET /api/exchange-rates`. Their `?refresh=true` (bypasses caches, spends upstream quota) needs a valid Google or Apple session and returns 401 otherwise. Saving an Open Exchange Rates key (`POST /api/settings/exchange-rates`) tests it upstream; without a session that is limited to 5 tests per client per 10 minutes.
 
 ### Currency & Pricing
-- **Pricing strategies:** `'direct' | 'ppp' | 'bigmac' | 'netflix' | 'custom'` — defined in `/lib/google-play/currency.ts` (`PricingStrategy` type + `calculateRegionalPrice` switch). `custom` is kept for API compatibility but hidden in the bulk modals until per-territory multipliers exist.
+- **Pricing strategies:** `'direct' | 'ppp' | 'bigmac' | 'netflix' | 'custom'` — defined in `/lib/pricing/strategies.ts` (`PricingStrategy` type + `calculateRegionalPrice` switch). Import from `@/lib/pricing`. `custom` is kept for API compatibility but hidden in the bulk modals until per-territory multipliers exist.
 - **Multiplier convention:** all indexes clamp to `[0.1, 2.0]` (live World Bank PPP included), normalized to base region (not US directly)
 - **Missing exchange rates:** `getExchangeRate` never falls back to 1.0. A region without a rate gets `error: 'MISSING_EXCHANGE_RATE'` and a zero price; `filterApplicablePrices()` drops it and the UI shows "No exchange rate". Never apply a flagged price.
 - **Rounding:** `calculateNewPrice` `round` rounds down to the nearest price ending at or below the current price; zero-decimal currencies (JPY, KRW, ...) get whole-number results.
 - **Canonical territories:** `getSupportedAppleTerritories()` in `/lib/apple-connect/territories.ts` — use for coverage checks when adding new indexes
 - **Exchange rates:** Open Exchange Rates API with caching (see above)
-- **PPP multipliers:** Static `PRICING_INDEX` in `/lib/conversion-indexes/ppp.ts`; partial fallback to `FALLBACK_EXCHANGE_RATES` with UI banner when API fails
+- **PPP multipliers:** Static `PRICING_INDEX` in `/lib/pricing/indexes/ppp.ts`; partial fallback to `FALLBACK_EXCHANGE_RATES` with UI banner when API fails
 - **Apple price tiers:** Large mapping file (`price-tier-data.ts`, 400K+ lines)
 
 ### Price export
 - `/lib/export` turns fetched store state into a `PriceExport` (`schemaVersion: 1`, see `types.ts`). Amounts are canonical decimal strings built without floating point; CSV is RFC 4180 with formula-injection guarding. Bump `PRICE_EXPORT_SCHEMA_VERSION` on any breaking change.
 - `GET /api/export?platform=google|apple&type=inapp|subscription&id=...&basePlanId=...&format=json|csv` (`basePlanId` required for Google subscriptions). UI: `ExportPricesButton` on product and subscription detail pages.
 
+### Pricing core (`src/lib/pricing`)
+- **Framework-free.** No `next`, `react`, web-app, adapter or network imports, directly or transitively. `src/lib/pricing/__tests__/core-boundary.test.ts` walks the import graph; an ESLint rule blocks direct imports. Only `zod` is allowed as a package. Store I/O belongs in `src/lib/adapters`.
+- **Money is Decimal strings** (`decimal.ts`), compared and computed on BigInt-scaled integers. `decimalFromNumber()` is the only float-to-Decimal boundary (strategy output). Never put a JS number amount in a plan, run or state file.
+- **Plans** (`changeset.ts`): `ChangeSet` (`kind: pricingkit.changeset`, `schemaVersion: 1`) of `BasePriceOp`s (`setPrice`, `schedulePrice`, `deleteScheduled`, `removePrice`), each with `before`, `after` and `idempotencyKey` (`computeIdempotencyKey`). `parseChangeSet` enforces one op per product/territory/slot, Apple ops naming a price point, and matching keys. Offer, availability and cohort kinds are reserved and refused until their phase. Bump `CHANGESET_SCHEMA_VERSION` on breaking changes.
+- **Executor** (`executor.ts`): reads each product once, then skips ops already at `after`, applies ops at `before`, and fails anything else with `STATE_CHANGED` without sending. Resume by passing the saved `ApplyRun`; undo with `buildUndoChangeSet`. Adapters (`adapter.ts`) implement `fetchState`, `resolvePricePoints`, `apply`, optional `applyMany`/`batchKey`, and `inverse`.
+- **Apple adapter**: subscriptions only in Phase 1. Snaps to each territory's live price points (`listSubscriptionPricePointsByTerritory`, limit 8000, territory from the relationship). A scheduled price is replaced create-first, delete-after. **Play adapter**: base plans and one-time products; snapping via `convertRegionPrices`; one PATCH per product.
+
 ### Adding a new pricing strategy
 Touchpoints (all required, in order):
-1. `/lib/conversion-indexes/<name>.ts` — data + `getXMultiplier()` + `DEFAULT_X_MULTIPLIER`
-2. `/lib/google-play/currency.ts` — add to `PricingStrategy` union, `multiplierSource`, switch case in `calculateRegionalPrice`
+1. `/lib/pricing/indexes/<name>.ts` — data + `getXMultiplier()` + `DEFAULT_X_MULTIPLIER`
+2. `/lib/pricing/strategies.ts` — add to `PricingStrategy` union, `multiplierSource`, switch case in `calculateRegionalPrice`
 3. `/app/api/ppp/route.ts` — surface multiplier in static + dynamic data shapes
 4. UI: `/components/products/bulk-pricing-modal.tsx`, `/components/subscriptions/bulk-pricing-modal.tsx`, `/components/subscriptions/apple-subscription-bulk-pricing-modal.tsx`, `/app/index-checker/page.tsx`
-5. Tests: data module + new case in `currency.test.ts`
+5. Tests: data module + new case in `src/lib/pricing/__tests__/strategies.test.ts`
 
 ## Testing
 - Tests live in `src/**/__tests__/*.test.ts`, the only pattern `vitest.config.ts` includes.
 - Never call a live store API or read real credentials. Mock `fetch` with `vi.stubGlobal('fetch', ...)` or mock store modules with `vi.mock`. Tests that need a signing key generate a throwaway one with Web Crypto.
+- Reset mocks in a block-bodied `beforeEach(() => { mock.mockReset(); })`. vitest runs a function returned from `beforeEach` as a teardown, so `beforeEach(() => mock.mockReset())` calls the mock again after each test.
+- Plan and executor tests use the in-memory `FakeStore` (`src/lib/pricing/__tests__/fixtures`); adapter tests use `src/lib/adapters/__tests__/fake-apple.ts` or a mocked `googlePlayFetch`.
 - See `CONTRIBUTING.md` for the full conventions.
 
 ## Environment Variables

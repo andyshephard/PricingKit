@@ -21,7 +21,7 @@ export interface TerritoryPricePoint {
  * Territories per request when reading several ladders at once. App Store
  * Connect documents filter[territory] as a list; the comma-separated form is
  * the API's usual encoding for list filters (not confirmed for this endpoint
- * in Apple's docs, see docs/plan-files.md). Each ladder has up to ~800
+ * in Apple's docs). Each ladder has up to ~800
  * points, so 10 territories fit in one 8000-point page.
  */
 export const TERRITORIES_PER_LADDER_REQUEST = 10;

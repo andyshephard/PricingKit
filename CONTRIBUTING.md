@@ -65,6 +65,12 @@ Run a single file with `npm test -- src/lib/google-play/__tests__/currency.test.
   - If a test needs to sign a JWT, generate a throwaway key with `crypto.subtle.generateKey`
     in the test. Use placeholder identifiers such as `com.example.app`, never real app,
     bundle or product IDs.
+- **Resetting mocks.** Use a block body: `beforeEach(() => { mock.mockReset(); })`. vitest runs
+  a function returned from `beforeEach` as a teardown, so the arrow-expression form calls the mock
+  again after each test.
+- **Plans and the executor.** Test against the in-memory `FakeStore` in
+  `src/lib/pricing/__tests__/fixtures/` or the fake App Store Connect in
+  `src/lib/adapters/__tests__/fake-apple.ts`, never a real store.
 - **Timers.** Retry and backoff code waits between attempts. Use `vi.useFakeTimers()` and/or
   pass a small `retry` option (e.g. `{ retry: { maxAttempts: 2 } }`) so tests stay fast.
 - **What to cover.** Pricing maths (`currency.ts`, conversion indexes), anything that builds a
@@ -86,6 +92,9 @@ Run a single file with `npm test -- src/lib/google-play/__tests__/currency.test.
 - Code must work both self-hosted (single user, Node or Workers) and on a shared hosted
   instance: no per-user state in module-level variables unless it is keyed by the
   credential, and nothing written to disk that the app relies on.
+- Keep `src/lib/pricing` framework-free: no Next.js, React, web-app or network imports (a test
+  checks the whole import graph). Amounts there are decimal strings, never JS numbers.
+- Store helpers take an optional `RequestContext` (`{ budget }`) and pass it to every request.
 - To add a pricing strategy, follow the touchpoint list in `CLAUDE.md`.
 
 ## Pull requests

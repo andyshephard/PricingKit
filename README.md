@@ -11,6 +11,7 @@ Free, open-source regional pricing tool for the App Store and Google Play. Set P
 - **Subscription management** - Manage subscription base plan pricing
 - **Bulk updates** - Update prices across multiple products/regions at once, with skipped items and regions reported
 - **Price export** - Download a product's or subscription's current prices as CSV or JSON before you change them
+- **Plan, diff, apply (library)** - Build a reviewable JSON plan of price changes, apply it idempotently within a request budget, resume a partial run and undo it from its log (see [Plans](#plans-plan-diff-apply))
 - **Currency conversion** - Automatic exchange rate lookups; regions without a rate are flagged and never priced
 - **Multiple pricing strategies** - PPP (World Bank), Big Mac Index or Netflix Index for regional pricing
 - **Public Index Checker** - Compare regional prices across strategies at `/index-checker` (no auth required)
@@ -104,12 +105,61 @@ src/
 │   ├── apple-connect/    # Apple App Store Connect API integration
 │   ├── exchange-rates/   # Currency conversion
 │   ├── world-bank/       # Live World Bank PPP data
-│   ├── conversion-indexes/ # PPP, Big Mac, Netflix indexes + exchange rate fallbacks
+│   ├── pricing/          # Framework-free core: strategies, indexes, Decimal money, snapping, plans, executor
+│   ├── adapters/         # Apple and Google Play adapters for the plan executor
 │   ├── export/           # Price export (JSON/CSV) transforms
 │   └── utils/            # ApiError, retry/backoff, request budget, rate limiting
 ├── hooks/                # React Query hooks
 └── store/                # Zustand stores
 ```
+
+## Plans: plan, diff, apply
+
+`src/lib/pricing` is a framework-free TypeScript core (no Next.js or React; a test checks the
+whole import graph) that the web app, and later a CLI, share. It turns price changes into files
+you can review and commit:
+
+| File | `kind` | What it holds |
+| --- | --- | --- |
+| Plan | `pricingkit.changeset` | Every change a run will make. Each op names a product and territory, the price it expects to find (`before`), the price it sets (`after`) and an idempotency key. Amounts are decimal strings, never floats. |
+| Run log | `pricingkit.applyRun` | Per-op status (`pending`, `ok`, `skipped`, `failed`), attempts, the store's response and the price observed before writing. |
+| State | `pricingkit.state` | Current prices of one or more products. Phase 0 price exports (`schemaVersion: 1`) import as state. |
+
+```ts
+import { buildChangeSet, applyChangeSet, buildUndoChangeSet, serializeChangeSet } from '@/lib/pricing';
+import { AppleAdapter } from '@/lib/adapters';
+import { RequestBudget } from '@/lib/utils/request-budget';
+
+const budget = new RequestBudget();                       // 3600 requests/hour by default
+const apple = new AppleAdapter({ credentials, budget });
+const product = { platform: 'apple', type: 'subscription', id: '1234567890' } as const;
+
+const state = await apple.fetchState(product);
+const { resolved } = await apple.resolvePricePoints(product, {
+  GB: { currency: 'GBP', amount: '26.10' },               // snapped to a live price point
+});
+const plan = buildChangeSet({ app: { bundleId: 'com.example.app' }, products: [{ state, targets: resolved }] });
+await writeFile('plan.json', serializeChangeSet(plan));   // review, commit
+
+const run = await applyChangeSet(plan, { adapter: apple, budget, onUpdate: saveRunLog });
+const undo = buildUndoChangeSet(plan, run);               // itself a plan to review and apply
+```
+
+- **Idempotent.** Before writing, the executor reads each product and compares every territory
+  with its op: already at `after` is skipped, at `before` is applied, anything else fails with
+  `STATE_CHANGED` and nothing is sent. Applying a plan twice changes nothing the second time.
+- **Resumable.** Pass a saved run back as `run` and only pending or failed ops are retried. An op
+  whose write failed but took effect anyway is detected and not sent again.
+- **Budgeted.** Every request is charged to the `RequestBudget` (Apple's `X-Rate-Limit` feeds it
+  too). The run stops before the budget runs dry and leaves the rest pending.
+- **Undoable.** The undo plan reverses every op the run applied, newest first, from the `before`
+  snapshots. Apple can't remove a territory's current price, so an op that added one is listed as
+  not reversible.
+- **Safe with scheduled prices.** An Apple scheduled price is only deleted after its replacement
+  exists.
+
+Phase 1 covers base prices: Apple subscriptions, Google Play base plans and one-time products.
+Apple in-app purchases and offers come later; their op kinds are reserved in the format.
 
 ## Environment Variables
 

@@ -12,9 +12,14 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 2. **Node 22 or later** is now declared in `package.json` `engines`; `.nvmrc` pins the version CI uses (22.23.3).
 3. **Scripts calling `?refresh=true`** on `/api/ppp` or `/api/exchange-rates` must now send a valid Google or Apple session cookie, or they get `401`. Plain reads without `refresh` are still public.
 4. **Clients of `/api/bulk`** should read the per-result `success`, `error` and `skippedRegions` fields. The top-level `success` is now `false` when nothing was written. A subscription item sent without a `basePlanId` now produces one result per base plan (each carrying its `basePlanId`), so `total` and `results` count base plans for subscriptions, not request items.
-5. Nothing else needs configuring. There is no database, no session file and no new environment variable.
+5. **Forks importing the pricing maths** should change `@/lib/google-play/currency` to `@/lib/pricing` and `@/lib/conversion-indexes/*` to `@/lib/pricing/indexes/*`. The functions are unchanged.
+6. Nothing else needs configuring. There is no database, no session file and no new environment variable.
 
 ### Added
+
+- **Plans you can review, apply, resume and undo** (library, `src/lib/pricing` and `src/lib/adapters`; no UI yet). A plan is a JSON file (`pricingkit.changeset`) listing every price change with the price expected before and the price set after. Applying it checks each territory first: one already at its target is skipped, one that changed since the plan was made is reported and left alone, so applying a plan twice changes nothing the second time. Each run keeps a JSON log (`pricingkit.applyRun`) that can be resumed after a partial failure and turned into an undo plan. Covers base prices of Apple subscriptions and Google Play base plans and one-time products. Current prices can be saved as JSON (`pricingkit.state`); Phase 0 price exports import as state.
+- **Snapping to real store prices.** The Apple adapter snaps each territory's target to that territory's live subscription price points. The Google Play adapter snaps through Play's own `convertRegionPrices`, allowing for each region's tax.
+- The pricing maths is now a framework-free core with exact decimal money; a test keeps Next.js, React and network code out of it.
 
 - **Price export.** Product and subscription detail pages (Google and Apple) have an "Export prices" menu that downloads the current prices as CSV or JSON. Google subscriptions export per base plan; Apple subscriptions include scheduled prices. Backed by the read-only `GET /api/export` endpoint, which never writes to a store. The JSON format is versioned (`schemaVersion: 1`). An Apple in-app purchase export fails, rather than guessing, if its base territory can't be read.
 - **Retries with backoff** for Google Play and App Store Connect calls. 429, 5xx and network errors are retried up to 4 attempts with jittered exponential backoff, honouring `Retry-After` up to 60 seconds. App Store Connect creates (POST) are retried only on 429: after a 5xx, timeout or network error the create may already exist, so it is reported instead of being sent again. Apple's hourly `X-Rate-Limit` is tracked: a 429 is not retried when it reports 0 requests remaining; callers that pass a `RequestBudget` stop sending entirely.
@@ -23,6 +28,12 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 - `SECURITY.md` with private vulnerability reporting and the credential-handling model.
 
 ### Changed
+
+- **Bulk Apple routes and `/api/bulk` run within a request budget.** Each run gets its own budget (3,600 requests by default, Apple's hourly allowance per key) that also tracks Apple's `X-Rate-Limit`. Every request a run sends, including reads and pagination, is counted, and the run stops before sending once either limit is reached. The Apple price-point resolver now stops with an error when the budget is spent instead of marking every remaining territory as skipped.
+- **Fewer and gentler Apple reads.** The Apple products list reads base prices 4 at a time instead of all at once, and subscription price points are read 8,000 per request (one request per territory instead of about four). Apple in-app purchase price updates by price point are sent one territory at a time.
+- **Apple in-app purchase list no longer assumes USA.** A product whose price schedule names no base territory is listed without a price and flagged (`priceUnavailableReason: "BASE_TERRITORY_UNKNOWN"`) instead of showing its US price.
+- When Apple refuses a subscription price with 409 and the territory already has a scheduled price, the error now names that scheduled price for immediate changes too. Nothing is deleted on a 409.
+- **Testing an Open Exchange Rates key without signing in is rate limited** to 5 tests per client per 10 minutes (429 with `Retry-After`). Signed-in users are not limited.
 
 - **Google Play region edits no longer launch or re-enable regions.** Editing prices on a subscription base plan or one-time product changes only the regions you edited. Previously every save turned on new-subscriber availability for all regions, auto-filled every unconfigured region with a price converted from the US price, and required a US price. Other regions, availability settings and other base plans are now sent back exactly as Google returned them, and the product keeps its own `regionsVersion`. If Google needs something more (for example a USD/EUR price), you see Google's error instead of PricingKit guessing prices.
 - **Untouched one-time product regions are kept as they are.** Regions with no price are no longer rewritten to a USD 0 price on save.
@@ -41,6 +52,8 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 - The site and README now describe credential handling accurately: credentials are sent to the PricingKit server you use, encrypted into an HttpOnly cookie, and not stored server-side.
 
 ### Fixed
+
+- The Apple products list and app price reader dropped the cursor from Apple's next-page link, so an app with more than one page of in-app purchases or prices re-read the first page instead of moving on. All Apple list reads now share one pagination helper that follows the next link exactly, and stop with an error rather than return a silently truncated list.
 
 - The bulk update button on the Google subscriptions list page failed every selected subscription, because it sends no base plan. It now updates each subscription's base plans.
 - Deleting a Google one-time product region price reported success without changing anything. It now removes the region. Deleting a base plan region removes exactly that region instead of re-filling the others.
