@@ -23,7 +23,7 @@ import {
   type ProductRef,
   type ResolveResult,
   type ResolveTarget,
-  type SnapMode,
+  type ResolveOptions,
   type TerritoryPriceState,
   appleSubscriptionPeriodToIso,
   assertDerivableOffer,
@@ -309,11 +309,7 @@ export class AppleAdapter implements PlatformAdapter {
    * for this subscription. Reads the ladders of several territories per
    * request (limit 8000), never a static tier table.
    */
-  async resolvePricePoints(
-    product: ProductRef,
-    targets: Record<string, ResolveTarget>,
-    options: { mode?: SnapMode } = {}
-  ): Promise<ResolveResult> {
+  async resolvePricePoints(product: ProductRef, targets: Record<string, ResolveTarget>, options: ResolveOptions = {}): Promise<ResolveResult> {
     const id = subscriptionId(product);
     const result: ResolveResult = { resolved: {}, unresolved: {} };
     const alpha3ByAlpha2 = new Map<string, string>();
@@ -338,20 +334,24 @@ export class AppleAdapter implements PlatformAdapter {
         result.unresolved[territory] = `${territory} is priced in ${currency}, target is ${target.currency}`;
         continue;
       }
-      const snapped = snapToPricePoints(
-        normalizeDecimal(target.amount),
-        ladder.map((p) => ({ ...p, customerPrice: normalizeDecimal(p.customerPrice) })),
-        options.mode ?? 'nearest'
-      );
+      // Proceeds targets snap on each price point's proceeds (what the developer receives), not its customer price
+      const byProceeds = options.measure === 'proceeds';
+      const candidates = byProceeds
+        ? ladder.filter((p) => isDecimalString(p.proceeds)).map((p) => ({ ...p, customerPrice: normalizeDecimal(p.proceeds), price: normalizeDecimal(p.customerPrice) }))
+        : ladder.map((p) => ({ ...p, customerPrice: normalizeDecimal(p.customerPrice), price: normalizeDecimal(p.customerPrice) }));
+      const snapped = snapToPricePoints(normalizeDecimal(target.amount), candidates, options.mode ?? 'nearest');
       if (!snapped) {
-        result.unresolved[territory] = `No ${options.mode ?? 'nearest'} price point for ${target.amount} ${target.currency}`;
+        result.unresolved[territory] = byProceeds
+          ? `No ${options.mode ?? 'nearest'} price point with proceeds of ${target.amount} ${target.currency}`
+          : `No ${options.mode ?? 'nearest'} price point for ${target.amount} ${target.currency}`;
         continue;
       }
       result.resolved[territory] = {
         currency: target.currency,
-        amount: snapped.point.customerPrice,
+        amount: snapped.point.price,
         pricePointId: snapped.point.id,
         ...(isDecimalString(snapped.point.proceeds) ? { proceeds: normalizeDecimal(snapped.point.proceeds) } : {}),
+        ...(byProceeds ? { measure: 'proceeds' as const } : {}),
         target: normalizeDecimal(target.amount),
         deviation: snapped.deviation,
         deviationRatio: snapped.deviationRatio,

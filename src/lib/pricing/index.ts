@@ -26,3 +26,7 @@ export * from './play-offers';
 export * from './play-offer-plan';
 export * from './play-offer-sync';
 export * from './spec';
+export * from './freshness';
+export * from './price-increase';
+export * from './price-notes';
+export * from './multipliers';

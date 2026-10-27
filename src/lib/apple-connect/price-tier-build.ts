@@ -125,12 +125,17 @@ export function serializeTierData(data: TierData): string {
   return JSON.stringify(data);
 }
 
-/** Replace the generated date in price-tier-data.ts (its header comment and PRICE_TIER_DATA_GENERATED_AT) */
+/**
+ * Replace the generated date in a module: the "// Generated:" header of
+ * price-tier-data.ts or PRICE_TIER_DATA_GENERATED_AT in price-tier-meta.ts.
+ * Throws if the text has neither.
+ */
 export function updateTierModuleDate(moduleText: string, generatedAt: Date): string {
   const iso = generatedAt.toISOString();
-  const updated = moduleText
-    .replace(/^\/\/ Generated: .*$/m, `// Generated: ${iso}`)
-    .replace(/export const PRICE_TIER_DATA_GENERATED_AT = '[^']*';/, `export const PRICE_TIER_DATA_GENERATED_AT = '${iso.slice(0, 10)}';`);
-  if (updated === moduleText && !moduleText.includes(iso)) throw new TierBuildError(['price-tier-data.ts has no "// Generated:" line or PRICE_TIER_DATA_GENERATED_AT to update']);
-  return updated;
+  const header = /^\/\/ Generated: .*$/m;
+  const constant = /export const PRICE_TIER_DATA_GENERATED_AT = '[^']*';/;
+  if (!header.test(moduleText) && !constant.test(moduleText)) {
+    throw new TierBuildError(['the module has no "// Generated:" line or PRICE_TIER_DATA_GENERATED_AT to update']);
+  }
+  return moduleText.replace(header, `// Generated: ${iso}`).replace(constant, `export const PRICE_TIER_DATA_GENERATED_AT = '${iso.slice(0, 10)}';`);
 }

@@ -2,7 +2,7 @@
 /**
  * Regenerate the static Apple price tier data
  * (src/lib/apple-connect/price-tier-data.json and the generated date in
- * price-tier-data.ts) from the live App Store Connect API.
+ * price-tier-data.ts and price-tier-meta.ts) from the live App Store Connect API.
  *
  * READ-ONLY: it lists territories and one in-app purchase's price points.
  * It needs real App Store Connect credentials, so it is never run in CI or
@@ -40,7 +40,7 @@ import { toApiError } from '../src/lib/utils/api-error';
 
 const ROOT = resolve(__dirname, '..');
 const DEFAULT_JSON = join(ROOT, 'src/lib/apple-connect/price-tier-data.json');
-const MODULE = join(ROOT, 'src/lib/apple-connect/price-tier-data.ts');
+const MODULES = [join(ROOT, 'src/lib/apple-connect/price-tier-data.ts'), join(ROOT, 'src/lib/apple-connect/price-tier-meta.ts')];
 
 function parseArgs(argv: string[]) {
   const out: { iap?: string; prefer: Record<string, string>; out?: string; dryRun: boolean; budget: number } = { prefer: {}, dryRun: false, budget: 2000 };
@@ -110,8 +110,10 @@ async function main(): Promise<number> {
   const generatedAt = new Date();
   const jsonPath = args.out ? resolve(args.out) : DEFAULT_JSON;
   await writeAtomic(jsonPath, serializeTierData(data));
-  if (!args.out) await writeAtomic(MODULE, updateTierModuleDate(await readFile(MODULE, 'utf8'), generatedAt));
-  process.stderr.write(`Wrote ${jsonPath}${args.out ? '' : ` and the generated date in ${MODULE}`}. Review the diff before committing.\n`);
+  if (!args.out) {
+    for (const file of MODULES) await writeAtomic(file, updateTierModuleDate(await readFile(file, 'utf8'), generatedAt));
+  }
+  process.stderr.write(`Wrote ${jsonPath}${args.out ? '' : ` and the generated date in ${MODULES.join(', ')}`}. Review the diff before committing.\n`);
   return 0;
 }
 

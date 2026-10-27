@@ -141,7 +141,8 @@ describe('specTargets', () => {
         rounding: 'nearest-99',
         exchangeRates: { EUR: '0.92' },
       });
-      expect(problems(spec([{ product: appleSub, targets: ppp({ strategy: 'custom' }) }]))).toEqual([expect.stringMatching(/^products\.0\.targets\.strategy/)]);
+      // custom needs its multiplier table
+      expect(problems(spec([{ product: appleSub, targets: ppp({ strategy: 'custom' }) }]))).toEqual([expect.stringMatching(/^products\.0\.targets\.multipliers: the custom strategy needs "multipliers"/)]);
       expect(problems(spec([{ product: appleSub, targets: ppp({ rounding: 'nearest-tier' }) }]))).toEqual([expect.stringMatching(/^products\.0\.targets\.rounding/)]);
       expect(problems(spec([{ product: appleSub, targets: ppp({ base: { territory: 'GB', amount: '0' } }) }]))).toEqual([expect.stringMatching(/above 0/)]);
       expect(problems(spec([{ product: appleSub, targets: ppp({ base: { territory: 'GBR', amount: '1' } }) }]))).toEqual([expect.stringMatching(/alpha-2/)]);

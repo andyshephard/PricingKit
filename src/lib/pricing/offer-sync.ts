@@ -591,6 +591,9 @@ export function planOfferSync(input: PlanOfferSyncInput): OfferSyncPlan {
     ...(allSkipped.length > 0 ? { skipped: allSkipped } : {}),
     ...(allWarnings.length > 0 ? { warnings: allWarnings } : {}),
     ...(manualActions.length > 0 ? { manualActions } : {}),
+    // The base plan's planner notes (existing subscribers, proceeds, reference data) carry over
+    ...(base?.priceChanges?.length ? { priceChanges: base.priceChanges } : {}),
+    ...(base?.dataFreshness?.length ? { dataFreshness: base.dataFreshness } : {}),
   };
   const problems = checkChangeSetRules(changeSet);
   if (problems.length > 0) throw new ChangeSetValidationError(problems);

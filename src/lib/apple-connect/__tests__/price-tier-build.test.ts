@@ -66,11 +66,10 @@ describe('price tier regeneration', () => {
     await expect(buildPriceTierData(source(LADDERS), { prefer: { EUR: 'XXX' } })).rejects.toThrow(/no such territory/);
   });
 
-  it('updates the generated date in price-tier-data.ts', () => {
-    const text = readFileSync(join(__dirname, '../price-tier-data.ts'), 'utf8');
-    const updated = updateTierModuleDate(text, new Date('2031-04-05T06:07:08.000Z'));
-    expect(updated).toContain('// Generated: 2031-04-05T06:07:08.000Z');
-    expect(updated).toContain("export const PRICE_TIER_DATA_GENERATED_AT = '2031-04-05';");
+  it('updates the generated date in price-tier-data.ts and price-tier-meta.ts', () => {
+    const when = new Date('2031-04-05T06:07:08.000Z');
+    expect(updateTierModuleDate(readFileSync(join(__dirname, '../price-tier-data.ts'), 'utf8'), when)).toContain('// Generated: 2031-04-05T06:07:08.000Z');
+    expect(updateTierModuleDate(readFileSync(join(__dirname, '../price-tier-meta.ts'), 'utf8'), when)).toContain("export const PRICE_TIER_DATA_GENERATED_AT = '2031-04-05';");
     expect(() => updateTierModuleDate('nothing here', new Date())).toThrow(TierBuildError);
   });
 

@@ -12,6 +12,10 @@ import {
   decimalToMoney,
   deviationRatio,
   divideDecimal,
+  compareDecimal,
+  roundDecimal,
+  DEFAULT_PLAY_COMMISSION,
+  type ResolveOptions,
   invertOp,
   isDecimalString,
   moneyToDecimal,
@@ -211,14 +215,26 @@ export class PlayAdapter implements PlatformAdapter {
   /**
    * Snap targets to prices Play would produce itself, with
    * monetization.convertRegionPrices. That endpoint takes a tax-exclusive
-   * price and returns tax-inclusive regional prices, so: one call learns each
-   * region's tax share, then each target is converted back to tax-exclusive
-   * and run through Play once more. Requests: 1 + one per distinct target.
+   * price and returns tax-inclusive regional prices (with the tax amount), so:
+   * - customer price targets: one call learns each region's tax share, then
+   *   each target is converted back to tax-exclusive and run through Play once
+   *   more. Requests: 1 + one per distinct target.
+   * - proceeds targets (options.measure "proceeds"): the tax-exclusive price
+   *   that leaves `target` after the service fee is target / (1 - commission);
+   *   it goes through Play once. Requests: one per distinct target.
+   * Every resolved price carries Play's tax and the estimated proceeds,
+   * (price - tax) x (1 - commission), commission defaulting to 15%.
    * Play has no price ladder, so snap modes don't apply.
    */
-  async resolvePricePoints(product: ProductRef, targets: Record<string, ResolveTarget>): Promise<ResolveResult> {
+  async resolvePricePoints(product: ProductRef, targets: Record<string, ResolveTarget>, options: ResolveOptions = {}): Promise<ResolveResult> {
     if (product.platform !== 'google') throw new ApiError('Not a Google Play product', { status: 400, platform: 'google', retryable: false });
     const result: ResolveResult = { resolved: {}, unresolved: {} };
+    const commission = options.commission ?? DEFAULT_PLAY_COMMISSION;
+    if (!isDecimalString(commission) || compareDecimal(commission, '0') < 0 || compareDecimal(commission, '1') >= 0) {
+      throw new ApiError(`Invalid commission ${JSON.stringify(commission)}: a fraction from 0 up to (not including) 1`, { status: 400, platform: 'google', retryable: false });
+    }
+    const keep = subtractDecimal('1', commission);
+    const byProceeds = options.measure === 'proceeds';
     const entries = Object.entries(targets).filter(([territory, target]) => {
       if (isDecimalString(target.amount)) return true;
       result.unresolved[territory] = `Invalid amount ${JSON.stringify(target.amount)}`;
@@ -229,42 +245,59 @@ export class PlayAdapter implements PlatformAdapter {
     const convert = (currency: string, amount: string) =>
       convertRegionPrices(this.credentials, this.packageName, toMoney(currency, amount), this.ctx);
 
-    // 1. Tax share per region, from any one conversion
-    const [, firstTarget] = entries[0];
-    const probe = await convert(firstTarget.currency, normalizeDecimal(firstTarget.amount));
+    // 1. Customer price targets: tax share per region, from any one conversion
+    let probe: ConvertRegionPricesResponse | undefined;
+    if (!byProceeds) {
+      const [, firstTarget] = entries[0];
+      probe = await convert(firstTarget.currency, normalizeDecimal(firstTarget.amount));
+    }
 
     // 2. Convert each distinct tax-exclusive target
     const cache = new Map<string, Promise<ConvertRegionPricesResponse>>();
     for (const [territory, target] of entries) {
-      const probed = probe.convertedRegionPrices?.[territory];
-      const gross = moneyDecimal(probed?.price);
-      const tax = moneyDecimal(probed?.taxAmount) ?? '0';
-      if (!probed || gross === undefined) {
-        result.unresolved[territory] = `Play returned no converted price for ${territory}`;
-        continue;
-      }
-      if (probed.price.currencyCode !== target.currency) {
-        result.unresolved[territory] = `${territory} is priced in ${probed.price.currencyCode}, target is ${target.currency}`;
-        continue;
-      }
       const amount = normalizeDecimal(target.amount);
-      const net = subtractDecimal(gross, tax);
-      // The tax-exclusive input that should come back as `amount`: amount * net / gross
-      const exclusive = isZeroDecimal(gross) ? amount : divideDecimal(multiplyDecimal(amount, net), gross, currencyScale(target.currency));
+      let exclusive: string;
+      if (byProceeds) {
+        exclusive = divideDecimal(amount, keep, currencyScale(target.currency));
+      } else {
+        const probed = probe!.convertedRegionPrices?.[territory];
+        const gross = moneyDecimal(probed?.price);
+        const tax = moneyDecimal(probed?.taxAmount) ?? '0';
+        if (!probed || gross === undefined) {
+          result.unresolved[territory] = `Play returned no converted price for ${territory}`;
+          continue;
+        }
+        if (probed.price.currencyCode !== target.currency) {
+          result.unresolved[territory] = `${territory} is priced in ${probed.price.currencyCode}, target is ${target.currency}`;
+          continue;
+        }
+        const net = subtractDecimal(gross, tax);
+        // The tax-exclusive input that should come back as `amount`: amount * net / gross
+        exclusive = isZeroDecimal(gross) ? amount : divideDecimal(multiplyDecimal(amount, net), gross, currencyScale(target.currency));
+      }
       const key = `${target.currency} ${exclusive}`;
       if (!cache.has(key)) cache.set(key, convert(target.currency, exclusive));
       const converted = (await cache.get(key)!).convertedRegionPrices?.[territory];
       const snapped = moneyDecimal(converted?.price);
       if (!converted || snapped === undefined || converted.price.currencyCode !== target.currency) {
-        result.unresolved[territory] = `Play returned no usable price for ${territory}`;
+        result.unresolved[territory] = converted && converted.price?.currencyCode !== target.currency
+          ? `${territory} is priced in ${converted.price?.currencyCode}, target is ${target.currency}`
+          : `Play returned no usable price for ${territory}`;
         continue;
       }
+      const tax = moneyDecimal(converted.taxAmount) ?? '0';
+      const proceeds = roundDecimal(multiplyDecimal(subtractDecimal(snapped, tax), keep), currencyScale(target.currency));
+      const measured = byProceeds ? proceeds : snapped;
       result.resolved[territory] = {
         currency: target.currency,
         amount: snapped,
+        tax,
+        proceeds,
+        proceedsEstimated: true,
+        ...(byProceeds ? { measure: 'proceeds' as const } : {}),
         target: amount,
-        deviation: subtractDecimal(snapped, amount),
-        deviationRatio: deviationRatio(amount, snapped),
+        deviation: subtractDecimal(measured, amount),
+        deviationRatio: deviationRatio(amount, measured),
       };
     }
     return result;

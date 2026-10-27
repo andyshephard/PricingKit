@@ -7,8 +7,7 @@
 
 import rawData from './price-tier-data.json';
 
-/** When price-tier-data.json was generated (YYYY-MM-DD); updated by the script */
-export const PRICE_TIER_DATA_GENERATED_AT = '2026-02-02';
+export { PRICE_TIER_DATA_GENERATED_AT } from './price-tier-meta';
 
 export interface TierData {
   price: number;

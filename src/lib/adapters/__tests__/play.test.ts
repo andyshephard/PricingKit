@@ -130,6 +130,37 @@ describe('PlayAdapter', () => {
     expect(result.unresolved).toEqual({});
   });
 
+  it('reports Play\'s tax and estimated proceeds with every snapped price', async () => {
+    const result = await adapter().resolvePricePoints(plan, { GB: { currency: 'GBP', amount: '21.10' } });
+    const gb = result.resolved.GB;
+    expect(gb.proceedsEstimated).toBe(true);
+    expect(Number(gb.tax)).toBeGreaterThan(0);
+    // (price - tax) x (1 - 15%), to the penny
+    expect(gb.proceeds).toBe(((Number(gb.amount) - Number(gb.tax)) * 0.85).toFixed(2));
+    expect(gb.measure).toBeUndefined();
+  });
+
+  it('proceeds targets: target / (1 - commission) goes to Play as the tax-exclusive price, no probe', async () => {
+    const result = await adapter().resolvePricePoints(plan, { GB: { currency: 'GBP', amount: '15' }, US: { currency: 'USD', amount: '17' } }, { measure: 'proceeds', commission: '0.15' });
+    const converts = calls.filter((c) => c.path.endsWith('convertRegionPrices'));
+    expect(converts).toHaveLength(2);
+    // 15 / 0.85 = 17.65 GBP; 17 / 0.85 = 20 USD
+    expect(converts.map((c) => (c.body as { price: unknown }).price)).toEqual([
+      { currencyCode: 'GBP', units: '17', nanos: 650000000 },
+      { currencyCode: 'USD', units: '20' },
+    ]);
+    for (const territory of ['GB', 'US']) {
+      const r = result.resolved[territory];
+      expect(r).toMatchObject({ measure: 'proceeds', proceedsEstimated: true });
+      expect(r.deviation).toBe((Number(r.proceeds) - Number(r.target)).toFixed(2).replace(/\.?0+$/, '') || '0');
+    }
+    // 30% commission asks for a higher price
+    calls.length = 0;
+    const higher = await adapter().resolvePricePoints(plan, { US: { currency: 'USD', amount: '17' } }, { measure: 'proceeds', commission: '0.3' });
+    expect(Number(higher.resolved.US.amount)).toBeGreaterThan(Number(result.resolved.US.amount));
+    await expect(adapter().resolvePricePoints(plan, { US: { currency: 'USD', amount: '17' } }, { commission: '1' })).rejects.toThrow(/Invalid commission/);
+  });
+
   it('writes every region of one product in a single PATCH and leaves the rest as fetched', async () => {
     const state = await adapter().fetchState(plan);
     const changeSet = buildChangeSet({

@@ -14,15 +14,45 @@ export interface ResolveTarget {
   amount: string;
 }
 
+/**
+ * What a resolve target means:
+ * customerPrice (default) - the price the customer pays
+ * proceeds                - what the developer receives, net of tax and the store's commission
+ *                           (Apple: each price point's proceeds; Google Play: Play's tax-exclusive
+ *                           price minus an assumed commission, see `commission`)
+ */
+export type TargetMeasure = 'customerPrice' | 'proceeds';
+
+export interface ResolveOptions {
+  mode?: SnapMode;
+  measure?: TargetMeasure;
+  /**
+   * Google Play: the service fee assumed when estimating proceeds, as a fraction
+   * ("0.15"). Play reports tax but not the fee; 15% is Play's rate for
+   * subscriptions (and for the first US$1M a year in the 15% tier), 30% the rate above it.
+   */
+  commission?: string;
+}
+
+/** Default Google Play service fee assumed for proceeds (15%) */
+export const DEFAULT_PLAY_COMMISSION = '0.15';
+
 export interface ResolvedPrice {
   currency: string;
   /** Snapped amount the store will accept */
   amount: string;
   pricePointId?: string;
+  /** Apple: the price point's proceeds. Google Play: estimated, (amount - tax) x (1 - commission). */
   proceeds?: string;
-  /** The amount that was asked for */
+  /** Google Play: the tax included in `amount`, as Play's price conversion reports it */
+  tax?: string;
+  /** Set when proceeds were estimated rather than reported by the store */
+  proceedsEstimated?: boolean;
+  /** What target / deviation are measured in (default customerPrice) */
+  measure?: TargetMeasure;
+  /** The amount that was asked for (customer price, or proceeds for measure "proceeds") */
   target: string;
-  /** amount - target */
+  /** amount - target (or proceeds - target) */
   deviation: string;
   /** |deviation| / target, 4 decimal places */
   deviationRatio: string;
@@ -52,11 +82,7 @@ export interface PlatformAdapter {
   /** Read one product's current prices */
   fetchState(product: ProductRef): Promise<ProductPriceState>;
   /** Snap target amounts to prices the store accepts, per territory */
-  resolvePricePoints(
-    product: ProductRef,
-    targets: Record<string, ResolveTarget>,
-    options?: { mode?: SnapMode }
-  ): Promise<ResolveResult>;
+  resolvePricePoints(product: ProductRef, targets: Record<string, ResolveTarget>, options?: ResolveOptions): Promise<ResolveResult>;
   /** Apply one op. The executor has already checked the territory is at op.before. */
   apply(op: BasePriceOp, context: ApplyContext): Promise<OpResponse>;
   /**

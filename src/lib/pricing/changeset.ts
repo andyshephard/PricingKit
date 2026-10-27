@@ -11,6 +11,9 @@ import { canonicalJson, fnv1a64, priceValueSchema, productRefSchema, appRefSchem
 import { checkOfferOpRules, describeOfferOp, isOfferOp, isOfferOpKind, offerOpSchema, offerTargetKey, type OfferOp, type OfferOpKind } from './offer-ops';
 import { OFFER_KINDS, type OfferKind } from './offers';
 import type { PlayOfferOp } from './play-offers';
+import type { PriceChangeNote } from './price-notes';
+import { PLAY_MIGRATION_CLASSES, PRICE_CHANGE_CLASSES } from './price-increase';
+import { REFERENCE_DATA_IDS, type FreshnessEntry } from './freshness';
 import {
   describePrice,
   productKey,
@@ -113,7 +116,9 @@ export interface PlanSkip {
     | 'INVALID_TARGET'
     | 'AMBIGUOUS_STATE'
     /** Play percentOfCurrent: Play's price is further from the target than the deviation threshold */
-    | 'DEVIATION_ABOVE_THRESHOLD';
+    | 'DEVIATION_ABOVE_THRESHOLD'
+    /** Strategy targets: the reference data (e.g. PPP) is older than the spec allows and can't be adjusted */
+    | 'STALE_REFERENCE_DATA';
   detail?: string;
 }
 
@@ -161,6 +166,14 @@ export interface ChangeSet {
   warnings?: Array<{ opId: string; message: string }>;
   /** Planner notes only (sync plans): offers that need a person, with the reason. The executor ignores them. */
   manualActions?: ManualAction[];
+  /**
+   * Planner notes only (base-price plans): per op, what existing subscribers
+   * see (decrease, increase within the no-consent limits, needs consent, new
+   * subscribers only), and proceeds and tax. The executor ignores them.
+   */
+  priceChanges?: PriceChangeNote[];
+  /** Planner notes only: the reference data the plan's targets were derived from, and how old it is */
+  dataFreshness?: FreshnessEntry[];
 }
 
 export function opSlot(kind: BasePriceOpKind): PriceSlot {
@@ -230,7 +243,7 @@ const skipSchema = z
     product: productRefSchema,
     territory: z.string(),
     offerKey: z.string().optional(),
-    reason: z.enum(['OFFER_CONFLICT', 'ALREADY_AT_TARGET', 'NOT_CONFIGURED', 'CURRENCY_MISMATCH', 'UNRESOLVED_PRICE_POINT', 'NO_TARGET', 'INVALID_TARGET', 'AMBIGUOUS_STATE', 'DEVIATION_ABOVE_THRESHOLD']),
+    reason: z.enum(['OFFER_CONFLICT', 'ALREADY_AT_TARGET', 'NOT_CONFIGURED', 'CURRENCY_MISMATCH', 'UNRESOLVED_PRICE_POINT', 'NO_TARGET', 'INVALID_TARGET', 'AMBIGUOUS_STATE', 'DEVIATION_ABOVE_THRESHOLD', 'STALE_REFERENCE_DATA']),
     detail: z.string().optional(),
   })
   .strict();
@@ -257,6 +270,43 @@ export const changeSetSchema = z
             code: z.enum(MANUAL_ACTION_CODES),
             message: z.string(),
             territories: z.array(territorySchema).optional(),
+          })
+          .strict()
+      )
+      .optional(),
+    priceChanges: z
+      .array(
+        z
+          .object({
+            opId: z.string(),
+            territory: territorySchema,
+            classification: z.enum(PRICE_CHANGE_CLASSES),
+            direction: z.enum(['increase', 'decrease', 'none', 'new']),
+            percent: z.string().optional(),
+            reasons: z.array(z.string()),
+            assumptions: z.array(z.string()).optional(),
+            ifMigrated: z.enum(PLAY_MIGRATION_CLASSES).optional(),
+            proceeds: z
+              .object({ before: z.string().optional(), after: z.string().optional(), estimated: z.boolean().optional(), commission: z.string().optional() })
+              .strict()
+              .optional(),
+            tax: z.string().optional(),
+            target: z.object({ measure: z.enum(['customerPrice', 'proceeds']), amount: z.string() }).strict().optional(),
+          })
+          .strict()
+      )
+      .optional(),
+    dataFreshness: z
+      .array(
+        z
+          .object({
+            id: z.enum(REFERENCE_DATA_IDS),
+            label: z.string(),
+            asOf: z.string().optional(),
+            ageDays: z.number().optional(),
+            maxAgeDays: z.number(),
+            stale: z.boolean(),
+            message: z.string(),
           })
           .strict()
       )

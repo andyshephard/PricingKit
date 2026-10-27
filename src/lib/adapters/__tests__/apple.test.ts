@@ -111,6 +111,14 @@ describe('AppleAdapter.resolvePricePoints', () => {
     });
   });
 
+  it('proceeds targets snap on each price point\'s proceeds and report the customer price', async () => {
+    // The fake's proceeds are 70% of the customer price: 24.99 -> 17.49, 29.99 -> 20.99
+    const result = await new AppleAdapter({ credentials }).resolvePricePoints(product, { US: { currency: 'USD', amount: '17.5' } }, { measure: 'proceeds' });
+    expect(result.resolved.US).toMatchObject({ amount: '24.99', proceeds: '17.49', measure: 'proceeds', target: '17.5', deviation: '-0.01', pricePointId: server.point('US', '24.99') });
+    const ceil = await new AppleAdapter({ credentials }).resolvePricePoints(product, { US: { currency: 'USD', amount: '17.5' } }, { measure: 'proceeds', mode: 'ceil' });
+    expect(Number(ceil.resolved.US.proceeds)).toBeGreaterThanOrEqual(17.5);
+  });
+
   it('supports floor and reports what it cannot resolve', async () => {
     const result = await new AppleAdapter({ credentials }).resolvePricePoints(
       product,
