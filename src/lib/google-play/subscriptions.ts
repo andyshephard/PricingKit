@@ -3,8 +3,8 @@ import { convertRegionPrices } from './pricing';
 import { ApiError } from '../utils/api-error';
 import { assertExpectedPrices } from './expected-prices';
 import type { RequestContext } from '../utils/request-budget';
+import type { TokenSource } from '../token-source';
 import type {
-  ServiceAccountCredentials,
   Subscription,
   BasePlan,
   RegionalBasePlanConfig,
@@ -42,11 +42,11 @@ export interface RegionsVersionOptions {
  * Undefined when Play reports none.
  */
 export async function fetchCurrentRegionsVersion(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   packageName: string,
   ctx: RequestContext = {}
 ): Promise<string | undefined> {
-  const response = await convertRegionPrices(credentials, packageName, { currencyCode: 'USD', units: '1' }, ctx);
+  const response = await convertRegionPrices(tokens, packageName, { currencyCode: 'USD', units: '1' }, ctx);
   const version = response?.regionVersion?.version;
   return typeof version === 'string' && version ? version : undefined;
 }
@@ -58,13 +58,13 @@ export async function fetchCurrentRegionsVersion(
  * hard-coded guess: if Play reports none, the edit is refused.
  */
 async function resolveRegionsVersion(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   packageName: string,
   subscription: GoogleApiSubscription,
   options: RegionsVersionOptions,
   ctx: RequestContext
 ): Promise<string> {
-  const version = options.regionsVersion ?? subscription.regionsVersion?.version ?? (await fetchCurrentRegionsVersion(credentials, packageName, ctx));
+  const version = options.regionsVersion ?? subscription.regionsVersion?.version ?? (await fetchCurrentRegionsVersion(tokens, packageName, ctx));
   if (!version) {
     throw new ApiError('Google Play reported no regions version, which a base plan price edit needs; nothing was changed', {
       status: 422,
@@ -77,7 +77,7 @@ async function resolveRegionsVersion(
 }
 
 async function patchBasePlanRegionalConfigs(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   packageName: string,
   productId: string,
   subscription: GoogleApiSubscription,
@@ -86,7 +86,7 @@ async function patchBasePlanRegionalConfigs(
   ctx: RequestContext = {},
   options: RegionsVersionOptions = {}
 ): Promise<GoogleApiSubscription> {
-  const regionsVersion = await resolveRegionsVersion(credentials, packageName, subscription, options, ctx);
+  const regionsVersion = await resolveRegionsVersion(tokens, packageName, subscription, options, ctx);
   // Only the target base plan's regionalConfigs change. Every other field
   // (including otherRegionsConfig) and every other base plan is sent back
   // exactly as fetched, because updateMask=basePlans replaces the whole list.
@@ -101,7 +101,7 @@ async function patchBasePlanRegionalConfigs(
   };
 
   return googlePlayFetch<GoogleApiSubscription>(
-    credentials,
+    tokens,
     `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/subscriptions/${encodeURIComponent(productId)}`,
     {
       budget: ctx.budget,
@@ -116,7 +116,7 @@ async function patchBasePlanRegionalConfigs(
 }
 
 export async function listSubscriptions(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   packageName: string,
   ctx: RequestContext = {}
 ): Promise<Subscription[]> {
@@ -125,7 +125,7 @@ export async function listSubscriptions(
 
   do {
     const response = await googlePlayFetch<SubscriptionListResponse>(
-      credentials,
+      tokens,
       `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/subscriptions`,
       {
         budget: ctx.budget,
@@ -147,14 +147,14 @@ export async function listSubscriptions(
 }
 
 export async function getSubscription(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   packageName: string,
   productId: string,
   ctx: RequestContext = {}
 ): Promise<Subscription | null> {
   try {
     const subscription = await googlePlayFetch<GoogleApiSubscription>(
-      credentials,
+      tokens,
       `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/subscriptions/${encodeURIComponent(productId)}`,
       { budget: ctx.budget }
     );
@@ -169,13 +169,13 @@ export async function getSubscription(
 }
 
 export async function getBasePlan(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   packageName: string,
   productId: string,
   basePlanId: string,
   ctx: RequestContext = {}
 ): Promise<BasePlan | null> {
-  const subscription = await getSubscription(credentials, packageName, productId, ctx);
+  const subscription = await getSubscription(tokens, packageName, productId, ctx);
   if (!subscription) {
     return null;
   }
@@ -183,7 +183,7 @@ export async function getBasePlan(
 }
 
 export async function updateBasePlanPrices(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   packageName: string,
   productId: string,
   basePlanId: string,
@@ -191,7 +191,7 @@ export async function updateBasePlanPrices(
   ctx: RequestContext = {},
   options: RegionsVersionOptions = {}
 ): Promise<BasePlan> {
-  const subscription = await getSubscription(credentials, packageName, productId, ctx);
+  const subscription = await getSubscription(tokens, packageName, productId, ctx);
   if (!subscription) {
     throw new Error(`Subscription ${productId} not found`);
   }
@@ -235,7 +235,7 @@ export async function updateBasePlanPrices(
   }
 
   const response = await patchBasePlanRegionalConfigs(
-    credentials,
+    tokens,
     packageName,
     productId,
     subscription,
@@ -249,7 +249,7 @@ export async function updateBasePlanPrices(
 }
 
 export async function deleteBasePlanRegionPrice(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   packageName: string,
   productId: string,
   basePlanId: string,
@@ -257,7 +257,7 @@ export async function deleteBasePlanRegionPrice(
   ctx: RequestContext = {},
   options: RegionsVersionOptions = {}
 ): Promise<BasePlan> {
-  const subscription = await getSubscription(credentials, packageName, productId, ctx);
+  const subscription = await getSubscription(tokens, packageName, productId, ctx);
   if (!subscription) {
     throw new Error(`Subscription ${productId} not found`);
   }
@@ -282,7 +282,7 @@ export async function deleteBasePlanRegionPrice(
   const filteredConfigs = existingConfigs.filter(config => config.regionCode !== regionCode);
 
   const response = await patchBasePlanRegionalConfigs(
-    credentials,
+    tokens,
     packageName,
     productId,
     subscription,

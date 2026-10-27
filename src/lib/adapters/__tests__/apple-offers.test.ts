@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
+import { appleKeyConnection } from '@/lib/token-source';
 
 const appleApiRequest = vi.fn();
 vi.mock('@/lib/apple-connect/client', async (importOriginal) => {
@@ -24,6 +25,7 @@ const credentials: AppleConnectCredentials = {
   issuerId: '00000000-0000-0000-0000-000000000000',
   bundleId: 'com.example.app',
 };
+const connection = appleKeyConnection(credentials);
 const product: ProductRef = { platform: 'apple', type: 'subscription', id: OFFER_SUB_ID, productId: 'com.example.app.pro.annual' };
 const SUB = `/subscriptions/${OFFER_SUB_ID}`;
 
@@ -189,7 +191,7 @@ beforeEach(() => {
 
 describe('AppleAdapter.fetchOffers', () => {
   it('reads all four offer kinds with GETs only', async () => {
-    const offers = await new AppleAdapter({ credentials }).fetchOffers(product);
+    const offers = await new AppleAdapter(connection).fetchOffers(product);
     expect(offers.map((o) => `${o.kind}:${o.key}`)).toEqual([
       'apple.intro:intro:PAY_UP_FRONT:ONE_MONTH:1:2030-01-01:',
       'apple.intro:intro:FREE_TRIAL:ONE_WEEK:1::',
@@ -202,7 +204,7 @@ describe('AppleAdapter.fetchOffers', () => {
   });
 
   it('groups introductory offers by terms and reports one without a territory', async () => {
-    const [paid, trial] = await new AppleAdapter({ credentials }).fetchOffers(product);
+    const [paid, trial] = await new AppleAdapter(connection).fetchOffers(product);
     expect(paid).toMatchObject({
       mode: 'PAY_UP_FRONT',
       duration: 'P1M',
@@ -229,7 +231,7 @@ describe('AppleAdapter.fetchOffers', () => {
   });
 
   it('reads promotional offers across pages, and each offer price list across pages', async () => {
-    const offers = await new AppleAdapter({ credentials }).fetchOffers(product);
+    const offers = await new AppleAdapter(connection).fetchOffers(product);
     const promo = offers.find((o) => o.key === 'example_half')!;
     expect(promo).toMatchObject({
       kind: 'apple.promo',
@@ -261,7 +263,7 @@ describe('AppleAdapter.fetchOffers', () => {
   });
 
   it('reports every price it cannot read instead of guessing a territory, price or currency', async () => {
-    const offers = await new AppleAdapter({ credentials }).fetchOffers(product);
+    const offers = await new AppleAdapter(connection).fetchOffers(product);
     const broken = offers.find((o) => o.key === 'example_broken')!;
     expect(broken.mode).toBe('PAY_AS_YOU_GO');
     expect(broken.prices).toEqual({ US: { currency: 'USD', amount: '2.99', pricePointId: 'pp-usa-299', proceeds: '2.54' } });
@@ -275,7 +277,7 @@ describe('AppleAdapter.fetchOffers', () => {
   });
 
   it('reads offer codes and win-back offers with their eligibility and prices', async () => {
-    const offers = await new AppleAdapter({ credentials }).fetchOffers(product);
+    const offers = await new AppleAdapter(connection).fetchOffers(product);
     expect(offers.find((o) => o.kind === 'apple.offerCode')).toMatchObject({
       storeId: 'code-1',
       mode: 'PAY_AS_YOU_GO',
@@ -305,14 +307,14 @@ describe('AppleAdapter.fetchOffers', () => {
 
   it('reports an unknown mode or duration on the offer', async () => {
     server.on(`${SUB}/promotionalOffers`, page([promoOffer('promo-1', 'example_half', 'Half', 'PAY_LATER', 'FOREVER')]));
-    const offers = await new AppleAdapter({ credentials }).fetchOffers(product);
+    const offers = await new AppleAdapter(connection).fetchOffers(product);
     const promo = offers.find((o) => o.key === 'example_half')!;
     expect(promo).toMatchObject({ mode: null, duration: null });
     expect(promo.problems).toEqual(['unknown offer mode "PAY_LATER"', 'unknown offer duration "FOREVER"']);
   });
 
   it('refuses in-app purchases', async () => {
-    await expect(new AppleAdapter({ credentials }).fetchOffers({ platform: 'apple', type: 'inapp', id: '1' })).rejects.toMatchObject({
+    await expect(new AppleAdapter(connection).fetchOffers({ platform: 'apple', type: 'inapp', id: '1' })).rejects.toMatchObject({
       code: 'UNSUPPORTED_OPERATION',
     });
   });
@@ -321,7 +323,7 @@ describe('AppleAdapter.fetchOffers', () => {
 describe('Offer reads and the request budget', () => {
   it('charges every request, pagination included, to the run budget', async () => {
     const budget = new RequestBudget({ limit: 100 });
-    await new AppleAdapter({ credentials, budget }).fetchOffers(product);
+    await new AppleAdapter({ ...connection, budget }).fetchOffers(product);
     // intro 1 + promo list 2 + promo-1 prices 2 + promo-2 prices 1 + codes 1 + code prices 1 + win-back 1 + win-back prices 1
     expect(server.calls).toHaveLength(10);
     expect(budget.used).toBe(10);
@@ -329,15 +331,15 @@ describe('Offer reads and the request budget', () => {
 
   it('stops with BUDGET_EXCEEDED instead of returning a partial list', async () => {
     const budget = new RequestBudget({ limit: 4 });
-    await expect(new AppleAdapter({ credentials, budget }).fetchOffers(product)).rejects.toMatchObject({ status: 429, code: 'BUDGET_EXCEEDED' });
+    await expect(new AppleAdapter({ ...connection, budget }).fetchOffers(product)).rejects.toMatchObject({ status: 429, code: 'BUDGET_EXCEEDED' });
     expect(server.calls).toHaveLength(4);
   });
 
   it('fetchOffer reads only the chosen offer prices', async () => {
-    const offer = await new AppleAdapter({ credentials }).fetchOffer(product, 'apple.promo', 'example_half');
+    const offer = await new AppleAdapter(connection).fetchOffer(product, 'apple.promo', 'example_half');
     expect(offer?.storeId).toBe('promo-1');
     expect(server.calls.some((c) => c.endpoint.startsWith('/subscriptionPromotionalOffers/promo-2'))).toBe(false);
-    expect(await new AppleAdapter({ credentials }).fetchOffer(product, 'apple.promo', 'nope')).toBeNull();
+    expect(await new AppleAdapter(connection).fetchOffer(product, 'apple.promo', 'nope')).toBeNull();
   });
 });
 
@@ -385,7 +387,7 @@ describe('AppleAdapter.previewOffer', () => {
     server.on(SUB, { data: { type: 'subscriptions', id: OFFER_SUB_ID, attributes: { productId: 'com.example.app.pro.weekly', subscriptionPeriod: 'ONE_WEEK' } } });
     // A 1-year pay-up-front offer: totalOverDuration has no exact ratio to a week
     await expect(
-      new AppleAdapter({ credentials }).previewOffer(product, { rule: { ...half, basis: 'totalOverDuration' }, mode: 'PAY_UP_FRONT', duration: 'P1Y' })
+      new AppleAdapter(connection).previewOffer(product, { rule: { ...half, basis: 'totalOverDuration' }, mode: 'PAY_UP_FRONT', duration: 'P1Y' })
     ).rejects.toThrow(
       /no exact duration ratio/
     );
@@ -396,14 +398,14 @@ describe('AppleAdapter.previewOffer', () => {
   it('previewOffer refuses a free trial before reading prices or price points', async () => {
     seedBase(server);
     await expect(
-      new AppleAdapter({ credentials }).previewOffer(product, { rule: { ...half, basis: 'perPeriod' }, mode: 'FREE_TRIAL', duration: 'P1W' })
+      new AppleAdapter(connection).previewOffer(product, { rule: { ...half, basis: 'perPeriod' }, mode: 'FREE_TRIAL', duration: 'P1W' })
     ).rejects.toThrow(/free trial/);
     expect(priceReads()).toEqual([]);
   });
 
   it('previewOffer derives every territory from live reads', async () => {
     seedBase(server);
-    const preview = await new AppleAdapter({ credentials }).previewOffer(product, {
+    const preview = await new AppleAdapter(connection).previewOffer(product, {
       rule: { ...half, basis: 'totalOverDuration' },
       mode: 'PAY_UP_FRONT',
       duration: 'P1Y',

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AppleConnectCredentials } from '../types';
+import { appleKeyConnection } from '../../token-source';
 
 const appleApiRequest = vi.fn();
 vi.mock('../client', async (importOriginal) => {
@@ -19,6 +20,7 @@ const credentials: AppleConnectCredentials = {
   issuerId: '00000000-0000-0000-0000-000000000000',
   bundleId: 'com.example.test',
 };
+const connection = appleKeyConnection(credentials);
 
 beforeEach(() => {
   appleApiRequest.mockReset();
@@ -39,7 +41,7 @@ describe('listInAppPurchases without a base territory', () => {
       throw new Error(`unexpected request ${endpoint}`);
     });
 
-    const [product] = await listInAppPurchases(credentials);
+    const [product] = await listInAppPurchases(connection);
     expect(product.priceUnavailableReason).toBe('BASE_TERRITORY_UNKNOWN');
     expect(product.prices).toEqual({});
     expect(product.baseTerritory).toBeUndefined();

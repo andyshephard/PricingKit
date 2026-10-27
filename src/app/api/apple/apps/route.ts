@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { appleApiRequest, AppleApiError } from '@/lib/apple-connect/client';
 import type { AppleApiListResponse } from '@/lib/apple-connect/types';
 import { getAppleSessionFromCookies } from '@/middleware/auth';
+import { appleKeyConnection } from '@/lib/token-source';
 
 interface AppleAppListItem {
   id: string;
@@ -28,7 +29,7 @@ export async function GET() {
 
   try {
     const response = await appleApiRequest<AppleApiListResponse<AppleAppListItem>>(
-      credentials,
+      appleKeyConnection(credentials),
       '/apps',
       {
         queryParams: {

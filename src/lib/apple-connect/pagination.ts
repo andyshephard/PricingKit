@@ -4,7 +4,7 @@
 // query parameter (including the cursor). The first request uses the caller's
 // queryParams; every later request follows `links.next` exactly.
 
-import type { AppleApiListResponse, AppleConnectCredentials, AppleIncludedItem } from './types';
+import type { AppleApiListResponse, AppleConnection, AppleIncludedItem } from './types';
 import { appleApiRequest, type AppleApiRequestOptions } from './client';
 import { ApiError } from '../utils/api-error';
 
@@ -31,7 +31,7 @@ export function appleNextLinkToEndpoint(next: string): { endpoint: string; apiVe
 
 /** Yield every page of an Apple list endpoint, following links.next. */
 export async function* appleListPages<T>(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   path: string,
   options: AppleListOptions = {}
 ): AsyncGenerator<AppleApiListResponse<T>> {
@@ -55,7 +55,7 @@ export async function* appleListPages<T>(
 
     const { endpoint, apiVersion } = first ? { endpoint: next, apiVersion: undefined } : appleNextLinkToEndpoint(next);
     const response: AppleApiListResponse<T> = await appleApiRequest<AppleApiListResponse<T>>(
-      credentials,
+      connection,
       endpoint,
       {
         ...requestOptions,
@@ -71,13 +71,13 @@ export async function* appleListPages<T>(
 
 /** Read every page and merge `data` and `included`. */
 export async function appleListAll<T>(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   path: string,
   options: AppleListOptions = {}
 ): Promise<{ data: T[]; included: AppleIncludedItem[] }> {
   const data: T[] = [];
   const included: AppleIncludedItem[] = [];
-  for await (const page of appleListPages<T>(credentials, path, options)) {
+  for await (const page of appleListPages<T>(connection, path, options)) {
     data.push(...(page.data ?? []));
     if (page.included) included.push(...page.included);
   }

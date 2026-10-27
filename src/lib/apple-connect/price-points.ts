@@ -2,7 +2,7 @@
 // prices Apple actually accepts. Territories come from the `territory`
 // relationship, never from decoding Apple's base64 IDs.
 
-import type { AppleConnectCredentials, AppleSubscriptionPricePoint, AppleTerritory } from './types';
+import type { AppleConnection, AppleSubscriptionPricePoint, AppleTerritory } from './types';
 import { appleListAll, appleListPages } from './pagination';
 import { alpha3ToAlpha2 } from './territories';
 import { APPLE_PRICE_POINT_PAGE_LIMIT } from './subscriptions';
@@ -55,7 +55,7 @@ function collect(
  * territories per request.
  */
 export async function listSubscriptionPricePointsByTerritory(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   subscriptionId: string,
   territories: string[],
   ctx: RequestContext = {},
@@ -68,7 +68,7 @@ export async function listSubscriptionPricePointsByTerritory(
   try {
     for (let i = 0; i < unique.length; i += perRequest) {
       const chunk = unique.slice(i, i + perRequest);
-      for await (const page of appleListPages<AppleSubscriptionPricePoint>(credentials, `/subscriptions/${encodeURIComponent(subscriptionId)}/pricePoints`, {
+      for await (const page of appleListPages<AppleSubscriptionPricePoint>(connection, `/subscriptions/${encodeURIComponent(subscriptionId)}/pricePoints`, {
         queryParams: {
           'filter[territory]': chunk.join(','),
           include: 'territory',
@@ -100,7 +100,7 @@ export async function listSubscriptionPricePointsByTerritory(
  * price) need the full ladders from listSubscriptionPricePointsByTerritory.
  */
 export async function getSubscriptionPricePointEqualizations(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   pricePointId: string,
   options: { territories?: string[] } = {},
   ctx: RequestContext = {}
@@ -109,7 +109,7 @@ export async function getSubscriptionPricePointEqualizations(
   const currencies = new Map<string, string>();
   try {
     for await (const page of appleListPages<AppleSubscriptionPricePoint>(
-      credentials,
+      connection,
       `/subscriptionPricePoints/${encodeURIComponent(pricePointId)}/equalizations`,
       {
         queryParams: {
@@ -160,13 +160,13 @@ interface StrictPriceData {
  * of several future prices. Anything missing is reported on the entry.
  */
 export async function listSubscriptionPriceEntries(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   subscriptionId: string,
   ctx: RequestContext = {}
 ): Promise<SubscriptionPriceEntry[]> {
   let result: { data: StrictPriceData[]; included: unknown[] };
   try {
-    result = await appleListAll<StrictPriceData>(credentials, `/subscriptions/${encodeURIComponent(subscriptionId)}/prices`, {
+    result = await appleListAll<StrictPriceData>(connection, `/subscriptions/${encodeURIComponent(subscriptionId)}/prices`, {
       queryParams: {
         include: 'territory,subscriptionPricePoint',
         limit: '200',

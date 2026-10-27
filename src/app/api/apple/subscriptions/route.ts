@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getAppleAuthFromCookies } from '@/middleware/auth';
+import { appleKeyConnection } from '@/lib/token-source';
 import {
   listSubscriptionGroups,
 } from '@/lib/apple-connect';
@@ -14,8 +15,9 @@ export async function GET() {
         { status: 401 }
       );
     }
+    const connection = appleKeyConnection(auth.credentials);
 
-    const subscriptionGroups = await listSubscriptionGroups(auth.credentials);
+    const subscriptionGroups = await listSubscriptionGroups(connection);
 
     // For list view, we return subscriptions without prices.
     // Prices should be fetched when viewing individual subscription.

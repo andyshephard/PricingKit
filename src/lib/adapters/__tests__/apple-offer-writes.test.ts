@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
+import { appleKeyConnection } from '@/lib/token-source';
 
 const appleApiRequest = vi.fn();
 vi.mock('@/lib/apple-connect/client', async (importOriginal) => {
@@ -39,6 +40,7 @@ const credentials: AppleConnectCredentials = {
   issuerId: '00000000-0000-0000-0000-000000000000',
   bundleId: 'com.example.app',
 };
+const connection = appleKeyConnection(credentials);
 const app = { bundleId: 'com.example.app' };
 const ANNUAL = '9100000001';
 const ANNUAL_ALT = '9100000002';
@@ -60,7 +62,7 @@ beforeEach(() => {
   appleApiRequest.mockImplementation(store.handle);
 });
 
-const adapter = (budget?: RequestBudget) => new AppleAdapter({ credentials, budget: budget ?? new RequestBudget(), now: () => NOW });
+const adapter = (budget?: RequestBudget) => new AppleAdapter({ ...connection, budget: budget ?? new RequestBudget(), now: () => NOW });
 
 /** 50% of each territory's own annual price, 1 year, paid up front */
 const halfOffAnnual = (product: ProductRef, code: string): OfferSpec => ({
@@ -437,7 +439,7 @@ describe('one API key, two apps', () => {
   const STAGING_SUB = '9100000009';
   const stagingCredentials = { ...credentials, bundleId: 'com.example.app.staging' };
   const stagingApp = { bundleId: 'com.example.app.staging' };
-  const staging = () => new AppleAdapter({ credentials: stagingCredentials, budget: new RequestBudget(), now: () => NOW });
+  const staging = () => new AppleAdapter({ ...appleKeyConnection(stagingCredentials), budget: new RequestBudget(), now: () => NOW });
 
   beforeEach(() => {
     store.apps.set('com.example.app.staging', { id: 'app-2', groups: ['group-2'] });

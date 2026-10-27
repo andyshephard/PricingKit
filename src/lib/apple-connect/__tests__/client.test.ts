@@ -8,12 +8,14 @@ import {
   getAppleRateLimitInfo,
   parseAppleRateLimitHeader,
 } from '../client';
-import type { AppleConnectCredentials } from '../types';
+import type { AppleConnectCredentials, AppleConnection } from '../types';
+import { appleKeyConnection } from '../../token-source';
 import { ApiError } from '@/lib/utils/api-error';
 import { RequestBudget } from '@/lib/utils/request-budget';
 import { executeWithRateLimit } from '@/lib/utils/rate-limit';
 
 let credentials: AppleConnectCredentials;
+let connection: AppleConnection;
 
 // Throwaway P-256 key generated per run; no real credentials involved
 async function generateTestCredentials(): Promise<AppleConnectCredentials> {
@@ -114,6 +116,7 @@ async function finish(promise: Promise<unknown>): Promise<void> {
 
 beforeAll(async () => {
   credentials = await generateTestCredentials();
+  connection = appleKeyConnection(credentials);
 });
 
 beforeEach(() => {
@@ -156,7 +159,7 @@ describe('appleApiRequest retries', () => {
 
     // Sign the JWT up front so timing only covers the API calls
     await generateJWT(credentials);
-    const promise = appleApiRequest(credentials, '/apps');
+    const promise = appleApiRequest(connection, '/apps');
     await untilCalls(calls, 1);
     await advance(4_900);
     expect(calls).toHaveLength(1);
@@ -174,7 +177,7 @@ describe('appleApiRequest retries', () => {
     ]);
 
     await generateJWT(credentials);
-    const promise = appleApiRequest(credentials, '/apps');
+    const promise = appleApiRequest(connection, '/apps');
     // Math.random = 0.5 -> delays of exactly 1000ms then 2000ms
     await untilCalls(calls, 1);
     await advance(999);
@@ -197,7 +200,7 @@ describe('appleApiRequest retries', () => {
       jsonResponse(200, { data: { id: '1' } }),
     ]);
 
-    const promise = appleApiRequest(credentials, '/apps/1');
+    const promise = appleApiRequest(connection, '/apps/1');
     // Math.random = 0.5 -> backoff of exactly 1000ms then 2000ms
     await expectBackoff(calls, 1_000);
     await expectBackoff(calls, 2_000);
@@ -211,7 +214,7 @@ describe('appleApiRequest retries', () => {
       jsonResponse(409, appleError(409, 'ENTITY_ERROR', 'Already exists')),
     ]);
 
-    const promise = appleApiRequest(credentials, '/x', { method: 'POST', body: {} });
+    const promise = appleApiRequest(connection, '/x', { method: 'POST', body: {} });
     const assertion = expect(promise).rejects.toSatisfy((err: unknown) => {
       expect(err).toBeInstanceOf(AppleApiError);
       expect(err).toBeInstanceOf(ApiError);
@@ -235,7 +238,7 @@ describe('appleApiRequest retries', () => {
       jsonResponse(500, appleError(500, 'INTERNAL', 'oops')),
     ]);
 
-    const promise = appleApiRequest(credentials, '/apps', { retry: { maxAttempts: 3 } });
+    const promise = appleApiRequest(connection, '/apps', { retry: { maxAttempts: 3 } });
     // Still retryable so an outer policy (executeWithRateLimit) keeps working
     const assertion = expect(promise).rejects.toMatchObject({ statusCode: 500, retryable: true });
     await expectBackoff(calls, 1_000);
@@ -251,7 +254,7 @@ describe('appleApiRequest retries', () => {
       jsonResponse(429, appleError(429, 'RATE_LIMIT_EXCEEDED', 'Too many'), { 'Retry-After': '3600' }),
     ]);
 
-    const promise = appleApiRequest(credentials, '/apps');
+    const promise = appleApiRequest(connection, '/apps');
     const assertion = expect(promise).rejects.toMatchObject({ statusCode: 429, retryable: false });
     await settle(promise);
     await assertion;
@@ -265,7 +268,7 @@ describe('appleApiRequest retries', () => {
       }),
     ]);
 
-    const promise = appleApiRequest(credentials, '/apps');
+    const promise = appleApiRequest(connection, '/apps');
     const assertion = expect(promise).rejects.toMatchObject({ statusCode: 429, retryable: false });
     await settle(promise);
     await assertion;
@@ -280,7 +283,7 @@ describe('appleApiRequest POST (create) retries', () => {
       jsonResponse(201, { data: { id: 'dup' } }),
     ]);
 
-    const promise = appleApiRequest(credentials, '/subscriptionPrices', { method: 'POST', body: {} });
+    const promise = appleApiRequest(connection, '/subscriptionPrices', { method: 'POST', body: {} });
     const assertion = expect(promise).rejects.toMatchObject({ statusCode: status, retryable: false });
     await finish(promise);
     await assertion;
@@ -298,7 +301,7 @@ describe('appleApiRequest POST (create) retries', () => {
       jsonResponse(201, { data: { id: 'dup' } }),
     ]);
 
-    const promise = appleApiRequest(credentials, '/subscriptionPrices', { method: 'POST', body: {} });
+    const promise = appleApiRequest(connection, '/subscriptionPrices', { method: 'POST', body: {} });
     const assertion = expect(promise).rejects.toMatchObject({ retryable: false });
     await finish(promise);
     await assertion;
@@ -312,7 +315,7 @@ describe('appleApiRequest POST (create) retries', () => {
     ]);
 
     await generateJWT(credentials);
-    const promise = appleApiRequest(credentials, '/subscriptionPrices', { method: 'POST', body: {} });
+    const promise = appleApiRequest(connection, '/subscriptionPrices', { method: 'POST', body: {} });
     await expectBackoff(calls, 1_000);
     await finish(promise);
     await expect(promise).resolves.toEqual({ data: { id: 'created' } });
@@ -326,7 +329,7 @@ describe('appleApiRequest POST (create) retries', () => {
     ]);
 
     const promise = executeWithRateLimit(
-      [() => appleApiRequest(credentials, '/subscriptionPrices', { method: 'POST', body: {} })],
+      [() => appleApiRequest(connection, '/subscriptionPrices', { method: 'POST', body: {} })],
       { concurrency: 1, maxRetries: 3, retryDelay: 100 }
     );
     const assertion = expect(promise).rejects.toMatchObject({
@@ -344,7 +347,7 @@ describe('appleApiRequest POST (create) retries', () => {
       jsonResponse(204, null),
     ]);
 
-    const promise = appleApiRequest(credentials, '/subscriptionPrices/1', { method: 'DELETE' });
+    const promise = appleApiRequest(connection, '/subscriptionPrices/1', { method: 'DELETE' });
     await expectBackoff(calls, 1_000);
     await finish(promise);
     await expect(promise).resolves.toEqual({});
@@ -363,7 +366,7 @@ describe('appleApiRequest inside executeWithRateLimit', () => {
     );
 
     const promise = executeWithRateLimit(
-      [() => appleApiRequest(credentials, '/apps', { retry: { maxAttempts: 2 } })],
+      [() => appleApiRequest(connection, '/apps', { retry: { maxAttempts: 2 } })],
       { concurrency: 1, maxRetries: 2, retryDelay: 100 }
     );
     const assertion = expect(promise).rejects.toMatchObject({
@@ -390,7 +393,7 @@ describe('appleApiRequest inside executeWithRateLimit', () => {
       jsonResponse(200, { data: [] }),
     ]);
 
-    const inner = appleApiRequest(credentials, '/apps', { retry: { maxAttempts: 2 } });
+    const inner = appleApiRequest(connection, '/apps', { retry: { maxAttempts: 2 } });
     const innerAssertion = expect(inner).rejects.toMatchObject({
       status: 503,
       code: 'NETWORK_ERROR',
@@ -402,7 +405,7 @@ describe('appleApiRequest inside executeWithRateLimit', () => {
     expect(calls).toHaveLength(2);
 
     const promise = executeWithRateLimit(
-      [() => appleApiRequest(credentials, '/apps', { retry: { maxAttempts: 2 } })],
+      [() => appleApiRequest(connection, '/apps', { retry: { maxAttempts: 2 } })],
       { concurrency: 1, maxRetries: 1, retryDelay: 100 }
     );
     await settle(promise);
@@ -418,7 +421,7 @@ describe('appleApiRequest inside executeWithRateLimit', () => {
     ]);
 
     const promise = executeWithRateLimit(
-      [() => appleApiRequest(credentials, '/apps')],
+      [() => appleApiRequest(connection, '/apps')],
       { concurrency: 1, maxRetries: 5, retryDelay: 100 }
     );
     const assertion = expect(promise).rejects.toMatchObject({
@@ -438,7 +441,7 @@ describe('appleApiRequest inside executeWithRateLimit', () => {
     ]);
 
     const promise = executeWithRateLimit(
-      [() => appleApiRequest(credentials, '/apps')],
+      [() => appleApiRequest(connection, '/apps')],
       { concurrency: 1, maxRetries: 5, retryDelay: 100 }
     );
     const assertion = expect(promise).rejects.toMatchObject({
@@ -459,20 +462,20 @@ describe('appleApiRequest rate-limit tracking and budget', () => {
     const budget = new RequestBudget();
     const onRateLimit = vi.fn();
 
-    await appleApiRequest(credentials, '/apps', { budget, onRateLimit });
+    await appleApiRequest(connection, '/apps', { budget, onRateLimit });
 
     expect(onRateLimit).toHaveBeenCalledWith({ limit: 3600, remaining: 123 });
     expect(budget.upstreamRemainingCount).toBe(123);
     expect(budget.used).toBe(1);
-    expect(getAppleRateLimitInfo(credentials)).toMatchObject({ limit: 3600, remaining: 123 });
+    expect(getAppleRateLimitInfo(connection)).toMatchObject({ limit: 3600, remaining: 123 });
   });
 
   it('throws BUDGET_EXCEEDED before fetch once the budget is spent', async () => {
     const { fetchMock } = mockFetch([jsonResponse(200, { data: [] })]);
     const budget = new RequestBudget({ limit: 1 });
 
-    await appleApiRequest(credentials, '/apps', { budget });
-    await expect(appleApiRequest(credentials, '/apps', { budget })).rejects.toMatchObject({
+    await appleApiRequest(connection, '/apps', { budget });
+    await expect(appleApiRequest(connection, '/apps', { budget })).rejects.toMatchObject({
       status: 429,
       code: 'BUDGET_EXCEEDED',
       platform: 'apple',
@@ -487,8 +490,8 @@ describe('appleApiRequest rate-limit tracking and budget', () => {
     ]);
     const budget = new RequestBudget();
 
-    await appleApiRequest(credentials, '/apps', { budget });
-    await expect(appleApiRequest(credentials, '/apps', { budget })).rejects.toMatchObject({
+    await appleApiRequest(connection, '/apps', { budget });
+    await expect(appleApiRequest(connection, '/apps', { budget })).rejects.toMatchObject({
       code: 'BUDGET_EXCEEDED',
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -501,7 +504,7 @@ describe('appleApiRequest rate-limit tracking and budget', () => {
     ]);
     const budget = new RequestBudget({ limit: 1 });
 
-    const promise = appleApiRequest(credentials, '/apps', { budget });
+    const promise = appleApiRequest(connection, '/apps', { budget });
     const assertion = expect(promise).rejects.toMatchObject({ code: 'BUDGET_EXCEEDED' });
     await expectBackoff(fetchMock.mock.calls, 1_000);
     await finish(promise);
@@ -521,19 +524,19 @@ describe('getAppIdForBundleId', () => {
       }),
     ]);
 
-    await expect(getAppIdForBundleId(credentials)).resolves.toBe('2');
+    await expect(getAppIdForBundleId(connection)).resolves.toBe('2');
   });
 
   it('returns null when no app has the bundle ID', async () => {
     mockFetch([jsonResponse(200, { data: [] })]);
 
-    await expect(getAppIdForBundleId(credentials)).resolves.toBeNull();
+    await expect(getAppIdForBundleId(connection)).resolves.toBeNull();
   });
 
   it('throws an ApiError on an API failure instead of returning null', async () => {
     mockFetch([jsonResponse(403, appleError(403, 'FORBIDDEN_ERROR', 'Not allowed'))]);
 
-    const promise = getAppIdForBundleId(credentials);
+    const promise = getAppIdForBundleId(connection);
     const assertion = expect(promise).rejects.toSatisfy((err: unknown) => {
       expect(err).toBeInstanceOf(ApiError);
       expect((err as ApiError).status).toBe(403);

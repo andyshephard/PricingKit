@@ -5,6 +5,7 @@ import {
   testAppleConnection,
 } from '@/lib/apple-connect/client';
 import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
+import { appleKeyConnection } from '@/lib/token-source';
 import {
   MissingEncryptionKeyError,
   canStoreSessions,
@@ -70,7 +71,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const testResult = await testAppleConnection(credentials);
+    const testResult = await testAppleConnection(appleKeyConnection(credentials));
     if (!testResult.success) {
       return NextResponse.json(
         { error: testResult.error },

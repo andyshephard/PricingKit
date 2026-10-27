@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getAppleAuthFromCookies, getGoogleAuthFromCookies } from '@/middleware/auth';
+import { appleKeyConnection, GoogleKeyTokenSource } from '@/lib/token-source';
 import { APP_MISMATCH, assertSubscriptionInApp } from '@/lib/apple-connect/ownership';
 import { getInAppProductRaw } from '@/lib/google-play/products';
 import { getSubscription as getGoogleSubscription } from '@/lib/google-play/subscriptions';
@@ -91,11 +92,12 @@ async function buildGoogleExport(query: ExportQuery): Promise<PriceExport | Resp
   if (!auth) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
   }
+  const tokens = new GoogleKeyTokenSource(auth.credentials);
 
   if (query.type === 'inapp') {
     let product;
     try {
-      product = await getInAppProductRaw(auth.credentials, auth.packageName, query.id);
+      product = await getInAppProductRaw(tokens, auth.packageName, query.id);
     } catch (error) {
       if (errorStatus(error) === 404) throw new ExportHttpError(404, 'Product not found');
       throw error;
@@ -107,7 +109,7 @@ async function buildGoogleExport(query: ExportQuery): Promise<PriceExport | Resp
     return data;
   }
 
-  const subscription = await getGoogleSubscription(auth.credentials, auth.packageName, query.id);
+  const subscription = await getGoogleSubscription(tokens, auth.packageName, query.id);
   if (!subscription) throw new ExportHttpError(404, 'Subscription not found');
   const basePlan = subscription.basePlans?.find((bp) => bp.basePlanId === query.basePlanId);
   if (!basePlan) throw new ExportHttpError(404, 'Base plan not found');
@@ -132,11 +134,11 @@ const APPLE_BASE_TERRITORY_ERROR =
 // The base territory is part of the export, so a failed lookup fails the
 // whole export rather than guessing (it used to fall back to USA silently).
 async function getAppleBaseTerritory(
-  credentials: Parameters<typeof getBaseTerritoryForProduct>[0],
+  connection: Parameters<typeof getBaseTerritoryForProduct>[0],
   inAppPurchaseId: string
 ): Promise<string | null> {
   try {
-    return await getBaseTerritoryForProduct(credentials, inAppPurchaseId);
+    return await getBaseTerritoryForProduct(connection, inAppPurchaseId);
   } catch (error) {
     console.error('Price export: base territory lookup failed:', error);
     // Keep auth/rate-limit statuses; anything else is a bad upstream read
@@ -153,14 +155,15 @@ async function buildAppleExport(query: ExportQuery): Promise<PriceExport | Respo
   if (!auth) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
   }
+  const connection = appleKeyConnection(auth.credentials);
 
   if (query.type === 'inapp') {
-    const product = await getInAppPurchase(auth.credentials, query.id);
+    const product = await getInAppPurchase(connection, query.id);
     if (!product) throw new ExportHttpError(404, 'Product not found');
 
     const [prices, baseTerritory] = await Promise.all([
-      getInAppPurchasePrices(auth.credentials, product.id),
-      getAppleBaseTerritory(auth.credentials, product.id),
+      getInAppPurchasePrices(connection, product.id),
+      getAppleBaseTerritory(connection, product.id),
     ]);
     if (Object.keys(prices).length === 0) throw new ExportHttpError(502, APPLE_EMPTY_PRICES_ERROR);
     // Prices exist, so a price schedule (and its base territory) must too
@@ -178,18 +181,18 @@ async function buildAppleExport(query: ExportQuery): Promise<PriceExport | Respo
     // API keys reach every app of a team: a numeric ID could be another app's
     // subscription, which would be exported under this app's bundle ID
     try {
-      await assertSubscriptionInApp(auth.credentials, query.id);
+      await assertSubscriptionInApp(connection, query.id);
     } catch (error) {
       if ((error as { code?: unknown }).code === APP_MISMATCH) throw new ExportHttpError(409, 'This subscription belongs to another app');
       throw error;
     }
   }
   const subscription = /^\d+$/.test(query.id)
-    ? await getAppleSubscriptionById(auth.credentials, query.id)
-    : await getAppleSubscription(auth.credentials, query.id);
+    ? await getAppleSubscriptionById(connection, query.id)
+    : await getAppleSubscription(connection, query.id);
   if (!subscription) throw new ExportHttpError(404, 'Subscription not found');
 
-  const prices = await getAppleSubscriptionPrices(auth.credentials, subscription.id);
+  const prices = await getAppleSubscriptionPrices(connection, subscription.id);
   if (Object.keys(prices.current).length === 0 && Object.keys(prices.scheduled).length === 0) {
     throw new ExportHttpError(502, APPLE_EMPTY_PRICES_ERROR);
   }

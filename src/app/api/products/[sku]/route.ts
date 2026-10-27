@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getGoogleAuthFromCookies } from '@/middleware/auth';
+import { GoogleKeyTokenSource } from '@/lib/token-source';
 import { getInAppProduct, updateInAppProductPrices, deleteRegionPrice } from '@/lib/google-play/products';
 import { GOOGLE_PRICING_WRITE_DENIED_ERROR } from '@/lib/google-play/errors';
 import {
@@ -35,6 +36,7 @@ export async function GET(
         { status: 401 }
       );
     }
+    const tokens = new GoogleKeyTokenSource(auth.credentials);
 
     const params = await context.params;
 
@@ -52,7 +54,7 @@ export async function GET(
       throw error;
     }
 
-    const product = await getInAppProduct(auth.credentials, auth.packageName, sku);
+    const product = await getInAppProduct(tokens, auth.packageName, sku);
 
     if (!product) {
       return NextResponse.json(
@@ -95,6 +97,7 @@ export async function PATCH(
         { status: 401 }
       );
     }
+    const tokens = new GoogleKeyTokenSource(auth.credentials);
 
     const params = await context.params;
 
@@ -125,7 +128,7 @@ export async function PATCH(
     }
 
     const updatedProduct = await updateInAppProductPrices(
-      auth.credentials,
+      tokens,
       auth.packageName,
       sku,
       result.data.prices,
@@ -170,6 +173,7 @@ export async function DELETE(
         { status: 401 }
       );
     }
+    const tokens = new GoogleKeyTokenSource(auth.credentials);
 
     const params = await context.params;
 
@@ -200,7 +204,7 @@ export async function DELETE(
     }
 
     const updatedProduct = await deleteRegionPrice(
-      auth.credentials,
+      tokens,
       auth.packageName,
       sku,
       result.data.regionCode

@@ -1,5 +1,5 @@
 import type {
-  AppleConnectCredentials,
+  AppleConnection,
   AppleApiResponse,
   AppleProductPrice,
   AppleTerritory,
@@ -12,11 +12,11 @@ import { ApiError } from '../utils/api-error';
 
 // Get the app's price schedule ID and base territory
 export async function getAppPriceSchedule(
-  credentials: AppleConnectCredentials
+  connection: AppleConnection
 ): Promise<{ scheduleId: string; baseTerritory: string } | null> {
-  const appId = await getAppIdForBundleId(credentials);
+  const appId = await getAppIdForBundleId(connection);
   if (!appId) {
-    throw new ApiError(`App with Bundle ID "${credentials.bundleId}" not found`, {
+    throw new ApiError(`App with Bundle ID "${connection.bundleId}" not found`, {
       status: 404,
       code: 'APP_NOT_FOUND',
       platform: 'apple',
@@ -32,7 +32,7 @@ export async function getAppPriceSchedule(
           baseTerritory?: { data: { id: string; type: 'territories' } };
         };
       }>
-    >(credentials, `/apps/${encodeURIComponent(appId)}/appPriceSchedule`, {
+    >(connection, `/apps/${encodeURIComponent(appId)}/appPriceSchedule`, {
       queryParams: {
         include: 'baseTerritory',
         'fields[appPriceSchedules]': 'baseTerritory',
@@ -86,13 +86,13 @@ function encodePricePointId(sourceId: string, territoryCode: string, priceTier: 
 
 // Get all app prices (manual + automatic) for all territories
 export async function getAppPrices(
-  credentials: AppleConnectCredentials
+  connection: AppleConnection
 ): Promise<{
   manual: Record<string, AppleProductPrice>;
   automatic: Record<string, AppleProductPrice>;
   baseTerritory: string;
 }> {
-  const schedule = await getAppPriceSchedule(credentials);
+  const schedule = await getAppPriceSchedule(connection);
   if (!schedule) {
     return { manual: {}, automatic: {}, baseTerritory: 'USA' };
   }
@@ -101,8 +101,8 @@ export async function getAppPrices(
 
   // Fetch both manual and automatic prices with pagination
   const [manualPrices, automaticPrices] = await Promise.all([
-    fetchPaginatedPrices(credentials, `/appPriceSchedules/${encodeURIComponent(scheduleId)}/manualPrices`),
-    fetchPaginatedPrices(credentials, `/appPriceSchedules/${encodeURIComponent(scheduleId)}/automaticPrices`),
+    fetchPaginatedPrices(connection, `/appPriceSchedules/${encodeURIComponent(scheduleId)}/manualPrices`),
+    fetchPaginatedPrices(connection, `/appPriceSchedules/${encodeURIComponent(scheduleId)}/automaticPrices`),
   ]);
 
   return {
@@ -114,7 +114,7 @@ export async function getAppPrices(
 
 // Fetch paginated prices from an endpoint, returning territory → price map
 async function fetchPaginatedPrices(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   basePath: string
 ): Promise<Record<string, AppleProductPrice>> {
   const prices: Record<string, AppleProductPrice> = {};
@@ -130,7 +130,7 @@ async function fetchPaginatedPrices(
     id: string;
     type: string;
     attributes: { startDate?: string; endDate?: string };
-  }>(credentials, basePath, { queryParams, maxPages: 20 })) {
+  }>(connection, basePath, { queryParams, maxPages: 20 })) {
     // Build lookups from included data
     const pricePoints = new Map<string, { customerPrice: string; proceeds: string }>();
     const territories = new Map<string, { currency: string }>();
@@ -188,13 +188,13 @@ async function fetchPaginatedPrices(
 
 // Update the app's price schedule
 export async function updateAppPriceSchedule(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   manualPrices: Array<{ territoryId: string; pricePointId: string }>,
   baseTerritoryId: string = 'USA'
 ): Promise<void> {
-  const appId = await getAppIdForBundleId(credentials);
+  const appId = await getAppIdForBundleId(connection);
   if (!appId) {
-    throw new ApiError(`App with Bundle ID "${credentials.bundleId}" not found`, {
+    throw new ApiError(`App with Bundle ID "${connection.bundleId}" not found`, {
       status: 404,
       code: 'APP_NOT_FOUND',
       platform: 'apple',
@@ -231,7 +231,7 @@ export async function updateAppPriceSchedule(
     },
   }));
 
-  await appleApiRequest(credentials, `/appPriceSchedules`, {
+  await appleApiRequest(connection, `/appPriceSchedules`, {
     method: 'POST',
     body: {
       data: {
@@ -264,7 +264,7 @@ export async function updateAppPriceSchedule(
 
 // Resolve Money-format prices to app price point IDs
 export async function resolveAppPricesToPricePoints(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   prices: Record<string, { currencyCode: string; units: string; nanos?: number }>
 ): Promise<{
   resolved: Array<{ territoryId: string; pricePointId: string }>;
@@ -297,7 +297,7 @@ export async function resolveAppPricesToPricePoints(
 
     if (!currencyPricePointsMap.has(currency)) {
       const pricePoints = await getAvailablePricePoints(
-        credentials,
+        connection,
         representativeTerritory
       );
       currencyPricePointsMap.set(currency, pricePoints);

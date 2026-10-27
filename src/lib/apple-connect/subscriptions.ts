@@ -1,5 +1,5 @@
 import type {
-  AppleConnectCredentials,
+  AppleConnection,
   AppleSubscriptionGroup,
   AppleSubscription,
   AppleApiListResponse,
@@ -20,15 +20,15 @@ import type { RequestBudget, RequestContext } from '../utils/request-budget';
 
 // List all subscription groups for an app
 export async function listSubscriptionGroups(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   ctx: RequestContext = {}
 ): Promise<NormalizedAppleSubscriptionGroup[]> {
-  // console.log('[Apple] listSubscriptionGroups - Starting for bundleId:', credentials.bundleId);
+  // console.log('[Apple] listSubscriptionGroups - Starting for bundleId:', connection.bundleId);
 
-  const appId = await getAppIdForBundleId(credentials, ctx);
+  const appId = await getAppIdForBundleId(connection, ctx);
   if (!appId) {
     console.error('[Apple] listSubscriptionGroups - No app ID found');
-    throw new ApiError(`App with Bundle ID "${credentials.bundleId}" not found`, {
+    throw new ApiError(`App with Bundle ID "${connection.bundleId}" not found`, {
       status: 404,
       code: 'APP_NOT_FOUND',
       platform: 'apple',
@@ -45,13 +45,13 @@ export async function listSubscriptionGroups(
   };
 
   for await (const page of appleListPages<AppleSubscriptionGroup>(
-    credentials,
+    connection,
     `/apps/${encodeURIComponent(appId)}/subscriptionGroups`,
     { queryParams, budget: ctx.budget }
   )) {
     // For each group, fetch its subscriptions directly
     for (const group of page.data) {
-      const groupSubs = await fetchGroupSubscriptions(credentials, group.id, group.attributes.referenceName, ctx);
+      const groupSubs = await fetchGroupSubscriptions(connection, group.id, group.attributes.referenceName, ctx);
       allGroups.push({
         id: group.id,
         name: group.attributes.referenceName,
@@ -67,7 +67,7 @@ export async function listSubscriptionGroups(
 
 // Fetch subscriptions for a specific group
 async function fetchGroupSubscriptions(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   groupId: string,
   groupName: string,
   ctx: RequestContext = {}
@@ -80,7 +80,7 @@ async function fetchGroupSubscriptions(
   };
 
   for await (const page of appleListPages<AppleSubscription>(
-    credentials,
+    connection,
     `/subscriptionGroups/${encodeURIComponent(groupId)}/subscriptions`,
     { queryParams, budget: ctx.budget }
   )) {
@@ -104,10 +104,10 @@ async function fetchGroupSubscriptions(
 
 // List all subscriptions (flattened from groups)
 export async function listSubscriptions(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   ctx: RequestContext = {}
 ): Promise<NormalizedAppleSubscription[]> {
-  const groups = await listSubscriptionGroups(credentials, ctx);
+  const groups = await listSubscriptionGroups(connection, ctx);
   return groups.flatMap((g) => g.subscriptions);
 }
 
@@ -115,20 +115,20 @@ export async function listSubscriptions(
 // Returns null only when the subscription genuinely doesn't exist; API
 // failures (auth, rate limit, 5xx, network) are thrown as ApiError.
 export async function getSubscription(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   productId: string,
   ctx: RequestContext = {}
 ): Promise<NormalizedAppleSubscription | null> {
   try {
     // Get all subscription groups to find the subscription
     // (throws APP_NOT_FOUND if the bundle ID doesn't resolve to an app)
-    const groups = await listSubscriptionGroups(credentials, ctx);
+    const groups = await listSubscriptionGroups(connection, ctx);
 
     for (const group of groups) {
       const sub = group.subscriptions.find((s) => s.productId === productId);
       if (sub) {
         // Fetch additional details including localizations
-        const details = await getSubscriptionDetails(credentials, sub.id, ctx);
+        const details = await getSubscriptionDetails(connection, sub.id, ctx);
         return details ?? sub;
       }
     }
@@ -141,7 +141,7 @@ export async function getSubscription(
 
 // Get subscription details with localizations
 async function getSubscriptionDetails(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   subscriptionId: string,
   ctx: RequestContext = {}
 ): Promise<NormalizedAppleSubscription | null> {
@@ -149,7 +149,7 @@ async function getSubscriptionDetails(
     // Single item endpoint returns AppleApiResponse (not list)
     const response = await appleApiRequest<
       AppleApiResponse<AppleSubscription> | AppleApiListResponse<AppleSubscription>
-    >(credentials, `/subscriptions/${encodeURIComponent(subscriptionId)}`, {
+    >(connection, `/subscriptions/${encodeURIComponent(subscriptionId)}`, {
       queryParams: {
         include: 'subscriptionLocalizations',
         'fields[subscriptions]':
@@ -207,11 +207,11 @@ async function getSubscriptionDetails(
 
 // Get a subscription by its Apple subscription ID (numeric ID like "1234567890")
 export async function getSubscriptionById(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   subscriptionId: string,
   ctx: RequestContext = {}
 ): Promise<NormalizedAppleSubscription | null> {
-  return getSubscriptionDetails(credentials, subscriptionId, ctx);
+  return getSubscriptionDetails(connection, subscriptionId, ctx);
 }
 
 // Type for subscription price data from API
@@ -240,7 +240,7 @@ export interface SubscriptionPricesResult {
 
 // Get prices for a subscription
 export async function getSubscriptionPrices(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   subscriptionId: string,
   ctx: RequestContext = {}
 ): Promise<SubscriptionPricesResult> {
@@ -264,7 +264,7 @@ export async function getSubscriptionPrices(
     };
 
     for await (const response of appleListPages<SubscriptionPriceData>(
-      credentials,
+      connection,
       `/subscriptions/${encodeURIComponent(subscriptionId)}/prices`,
       { queryParams, budget: ctx.budget }
     )) {
@@ -397,7 +397,7 @@ export const APPLE_PRICE_POINT_PAGE_LIMIT = 8000;
 
 // Get available subscription price points for a territory
 export async function getSubscriptionPricePoints(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   subscriptionId: string,
   territoryCode: string = 'USA',
   ctx: RequestContext = {}
@@ -424,7 +424,7 @@ export async function getSubscriptionPricePoints(
     };
 
     for await (const response of appleListPages<AppleSubscriptionPricePoint>(
-      credentials,
+      connection,
       `/subscriptions/${encodeURIComponent(subscriptionId)}/pricePoints`,
       { queryParams, budget: ctx.budget }
     )) {
@@ -466,7 +466,7 @@ export function toAppleTerritoryId(territoryCode: string): string {
 
 // Update subscription price
 export async function updateSubscriptionPrice(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   subscriptionId: string,
   pricePointId: string,
   territoryCode: string,
@@ -474,7 +474,7 @@ export async function updateSubscriptionPrice(
   preserveCurrentPrice: boolean = true,
   ctx: RequestContext = {}
 ): Promise<{ id?: string }> {
-  const created = await appleApiRequest<{ data?: { id?: string } }>(credentials, `/subscriptionPrices`, {
+  const created = await appleApiRequest<{ data?: { id?: string } }>(connection, `/subscriptionPrices`, {
     method: 'POST',
     budget: ctx.budget,
     body: {
@@ -513,12 +513,12 @@ export async function updateSubscriptionPrice(
 
 // Delete subscription price for a territory
 export async function deleteSubscriptionPrice(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   subscriptionPriceId: string,
   ctx: RequestContext = {}
 ): Promise<void> {
   await appleApiRequest(
-    credentials,
+    connection,
     `/subscriptionPrices/${encodeURIComponent(subscriptionPriceId)}`,
     {
       method: 'DELETE',
@@ -589,7 +589,7 @@ function describeScheduled(previous: ScheduledPriceSnapshot): string {
  * Never throws for per-territory failures; every territory gets an outcome.
  */
 export async function applySubscriptionPriceChanges(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   subscriptionId: string,
   changes: Record<string, SubscriptionPriceChange>,
   scheduledPrices: Record<string, AppleProductPrice>,
@@ -610,7 +610,7 @@ export async function applySubscriptionPriceChanges(
   ): Promise<TerritoryPriceOutcome> => {
     const create = () =>
       updateSubscriptionPrice(
-        credentials,
+        connection,
         subscriptionId,
         pricePointId,
         territoryCode,
@@ -659,7 +659,7 @@ export async function applySubscriptionPriceChanges(
 
     // New price exists; now it's safe to remove the one it replaces
     try {
-      await deleteSubscriptionPrice(credentials, previous.subscriptionPriceId, ctx);
+      await deleteSubscriptionPrice(connection, previous.subscriptionPriceId, ctx);
     } catch (deleteError) {
       // Already gone is fine; anything else leaves both prices scheduled
       if (getErrorStatus(deleteError) !== 404) {

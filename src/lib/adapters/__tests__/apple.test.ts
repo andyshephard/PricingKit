@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
+import { appleKeyConnection } from '@/lib/token-source';
 
 const appleApiRequest = vi.fn();
 vi.mock('@/lib/apple-connect/client', async (importOriginal) => {
@@ -33,6 +34,7 @@ const credentials: AppleConnectCredentials = {
   issuerId: '00000000-0000-0000-0000-000000000000',
   bundleId: 'com.example.app',
 };
+const connection = appleKeyConnection(credentials);
 const product: ProductRef = { platform: 'apple', type: 'subscription', id: SUB_ID, productId: 'com.example.app.pro.annual' };
 const app = { bundleId: 'com.example.app' };
 
@@ -56,7 +58,7 @@ function prices(state: ProductPriceState) {
 
 describe('AppleAdapter.fetchState', () => {
   it('reads current and scheduled prices by alpha-2 territory, as decimals', async () => {
-    const state = await new AppleAdapter({ credentials }).fetchState(product);
+    const state = await new AppleAdapter(connection).fetchState(product);
     expect(state.territories.GB.current).toMatchObject({ currency: 'GBP', amount: '24.99', pricePointId: server.point('GB', '24.99') });
     expect(state.territories.DE.scheduled).toMatchObject({ currency: 'EUR', amount: '29.99', startDate: '2099-06-01' });
     expect(state.territories.DE.refs?.scheduledPriceId).toBeTruthy();
@@ -64,7 +66,7 @@ describe('AppleAdapter.fetchState', () => {
   });
 
   it('refuses in-app purchases for now', async () => {
-    await expect(new AppleAdapter({ credentials }).fetchState({ platform: 'apple', type: 'inapp', id: '1' })).rejects.toMatchObject({
+    await expect(new AppleAdapter(connection).fetchState({ platform: 'apple', type: 'inapp', id: '1' })).rejects.toMatchObject({
       code: 'UNSUPPORTED_OPERATION',
     });
   });
@@ -73,7 +75,7 @@ describe('AppleAdapter.fetchState', () => {
 describe('AppleAdapter.fetchState when the store is ambiguous', () => {
   it('reports two future prices in a territory instead of picking one', async () => {
     server.seed('DE', '31.99', '2099-09-01');
-    const state = await new AppleAdapter({ credentials }).fetchState(product);
+    const state = await new AppleAdapter(connection).fetchState(product);
     expect(state.territories.DE.scheduled).toBeUndefined();
     expect(state.territories.DE.problems?.scheduled).toMatch(/2 future prices/);
     expect(state.territories.DE.current?.amount).toBe('27.99');
@@ -83,7 +85,7 @@ describe('AppleAdapter.fetchState when the store is ambiguous', () => {
   it('skips a price without its price point relationship instead of guessing', async () => {
     const gb = server.prices.find((p) => p.alpha2 === 'GB')!;
     server.dropPointRelationship.add(gb.id);
-    const adapter = new AppleAdapter({ credentials });
+    const adapter = new AppleAdapter(connection);
     const state = await adapter.fetchState(product);
     expect(state.territories.GB.current).toBeNull();
     expect(state.territories.GB.problems?.current).toMatch(/has no price point/);
@@ -93,7 +95,7 @@ describe('AppleAdapter.fetchState when the store is ambiguous', () => {
 
 describe('AppleAdapter.resolvePricePoints', () => {
   it("snaps each territory to its own live price points, reading several ladders per request", async () => {
-    const adapter = new AppleAdapter({ credentials });
+    const adapter = new AppleAdapter(connection);
     const result = await adapter.resolvePricePoints(product, {
       US: { currency: 'USD', amount: '26.10' },
       GB: { currency: 'GBP', amount: '26.10' },
@@ -113,14 +115,14 @@ describe('AppleAdapter.resolvePricePoints', () => {
 
   it('proceeds targets snap on each price point\'s proceeds and report the customer price', async () => {
     // The fake's proceeds are 70% of the customer price: 24.99 -> 17.49, 29.99 -> 20.99
-    const result = await new AppleAdapter({ credentials }).resolvePricePoints(product, { US: { currency: 'USD', amount: '17.5' } }, { measure: 'proceeds' });
+    const result = await new AppleAdapter(connection).resolvePricePoints(product, { US: { currency: 'USD', amount: '17.5' } }, { measure: 'proceeds' });
     expect(result.resolved.US).toMatchObject({ amount: '24.99', proceeds: '17.49', measure: 'proceeds', target: '17.5', deviation: '-0.01', pricePointId: server.point('US', '24.99') });
-    const ceil = await new AppleAdapter({ credentials }).resolvePricePoints(product, { US: { currency: 'USD', amount: '17.5' } }, { measure: 'proceeds', mode: 'ceil' });
+    const ceil = await new AppleAdapter(connection).resolvePricePoints(product, { US: { currency: 'USD', amount: '17.5' } }, { measure: 'proceeds', mode: 'ceil' });
     expect(Number(ceil.resolved.US.proceeds)).toBeGreaterThanOrEqual(17.5);
   });
 
   it('supports floor and reports what it cannot resolve', async () => {
-    const result = await new AppleAdapter({ credentials }).resolvePricePoints(
+    const result = await new AppleAdapter(connection).resolvePricePoints(
       product,
       { US: { currency: 'USD', amount: '26.10' }, GB: { currency: 'EUR', amount: '20' }, XX: { currency: 'USD', amount: '1' } },
       { mode: 'floor' }
@@ -132,7 +134,7 @@ describe('AppleAdapter.resolvePricePoints', () => {
 });
 
 async function plan(targets: Record<string, { currency: string; amount: string; startDate?: string }>) {
-  const adapter = new AppleAdapter({ credentials });
+  const adapter = new AppleAdapter(connection);
   const state = await adapter.fetchState(product);
   const resolved = await adapter.resolvePricePoints(product, targets);
   const snapped = Object.fromEntries(
@@ -143,7 +145,7 @@ async function plan(targets: Record<string, { currency: string; amount: string; 
 
 describe('AppleAdapter with the executor', () => {
   it('plans, applies, re-applies with no writes, and undoes back to the original prices', async () => {
-    const adapter = new AppleAdapter({ credentials });
+    const adapter = new AppleAdapter(connection);
     const original = prices(await adapter.fetchState(product));
 
     const changeSet = await plan({
@@ -171,7 +173,7 @@ describe('AppleAdapter with the executor', () => {
   });
 
   it('creates a replacement scheduled price before deleting the old one', async () => {
-    const adapter = new AppleAdapter({ credentials });
+    const adapter = new AppleAdapter(connection);
     const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' } });
     server.calls = [];
     await applyChangeSet(changeSet, { adapter });
@@ -181,7 +183,7 @@ describe('AppleAdapter with the executor', () => {
   });
 
   it('never deletes the old scheduled price when the replacement is refused', async () => {
-    const adapter = new AppleAdapter({ credentials });
+    const adapter = new AppleAdapter(connection);
     const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' } });
     server.failCreate.set('DEU', 409);
     server.calls = [];
@@ -194,7 +196,7 @@ describe('AppleAdapter with the executor', () => {
 
   it('charges every request to the run budget and stops when it is spent', async () => {
     const budget = new RequestBudget({ limit: 6 });
-    const adapter = new AppleAdapter({ credentials, budget });
+    const adapter = new AppleAdapter({ ...connection, budget });
     const changeSet = await plan({ US: { currency: 'USD', amount: '24.99' }, GB: { currency: 'GBP', amount: '26.99' }, DE: { currency: 'EUR', amount: '19.99' } });
     server.calls = [];
     const run = await applyChangeSet(changeSet, { adapter, budget, concurrency: 1 });
@@ -206,7 +208,7 @@ describe('AppleAdapter with the executor', () => {
 
   it('does not start a create-then-delete replacement with only one request left', async () => {
     const budget = new RequestBudget({ limit: 5 }); // 3 app checks + state read + 1
-    const adapter = new AppleAdapter({ credentials, budget });
+    const adapter = new AppleAdapter({ ...connection, budget });
     const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' } });
     server.calls = [];
     const run = await applyChangeSet(changeSet, { adapter, budget });
@@ -217,7 +219,7 @@ describe('AppleAdapter with the executor', () => {
 
   it('stops the run, rather than reporting success, when the budget runs out between create and delete', async () => {
     const budget = new RequestBudget({ limit: 5 }); // 3 app checks + state read + create; the delete is refused
-    const adapter = new AppleAdapter({ credentials, budget });
+    const adapter = new AppleAdapter({ ...connection, budget });
     const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' } });
     server.calls = [];
     const run = await applyChangeSet(changeSet, { adapter }); // executor not told about the budget
@@ -228,7 +230,7 @@ describe('AppleAdapter with the executor', () => {
   });
 
   it('records a warning when the replaced scheduled price cannot be deleted', async () => {
-    const adapter = new AppleAdapter({ credentials });
+    const adapter = new AppleAdapter(connection);
     const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' } });
     server.failDelete = 500;
     const run = await applyChangeSet(changeSet, { adapter });
@@ -237,7 +239,7 @@ describe('AppleAdapter with the executor', () => {
   });
 
   it('on resume after a create that took effect but errored, reports two scheduled prices and sends nothing', async () => {
-    const adapter = new AppleAdapter({ credentials });
+    const adapter = new AppleAdapter(connection);
     const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' } });
     server.failCreateAfterWrite.set('DEU', 504);
     const first = await applyChangeSet(changeSet, { adapter });
@@ -252,7 +254,7 @@ describe('AppleAdapter with the executor', () => {
   });
 
   it('refuses a plan against a territory whose price can only be guessed', async () => {
-    const adapter = new AppleAdapter({ credentials });
+    const adapter = new AppleAdapter(connection);
     const changeSet = await plan({ GB: { currency: 'GBP', amount: '26.99' } });
     const gb = server.prices.find((p) => p.alpha2 === 'GB')!;
     server.dropPointRelationship.add(gb.id);
@@ -263,7 +265,7 @@ describe('AppleAdapter with the executor', () => {
   });
 
   it('names the scheduled price when Apple refuses an immediate change with 409, deleting nothing', async () => {
-    const adapter = new AppleAdapter({ credentials });
+    const adapter = new AppleAdapter(connection);
     const changeSet = await plan({ DE: { currency: 'EUR', amount: '19.99' } });
     expect(changeSet.warnings?.[0]).toMatchObject({ opId: 'op-0001', message: expect.stringMatching(/also has a scheduled price \(29\.99 EUR/) });
     server.failCreate.set('DEU', 409);
@@ -275,7 +277,7 @@ describe('AppleAdapter with the executor', () => {
   });
 
   it('refuses to delete a scheduled price that no longer matches the plan', async () => {
-    const adapter = new AppleAdapter({ credentials });
+    const adapter = new AppleAdapter(connection);
     const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' } });
     const run = await applyChangeSet(changeSet, { adapter });
     const undo = buildUndoChangeSet(changeSet, run);
@@ -289,7 +291,7 @@ describe('AppleAdapter with the executor', () => {
   });
 
   it('records the created Apple price ID in the run log', async () => {
-    const adapter = new AppleAdapter({ credentials });
+    const adapter = new AppleAdapter(connection);
     const changeSet = await plan({ GB: { currency: 'GBP', amount: '26.99' } });
     const run = await applyChangeSet(changeSet, { adapter });
     expect(run.ops[0].response?.createdPriceId).toEqual(expect.any(String));

@@ -46,7 +46,12 @@ describe('GET offers ownership', () => {
     assertSubscriptionInApp.mockRejectedValue(new ApiError('Subscription 456 is not in com.example.test', { status: 409, code: 'APP_MISMATCH', platform: 'apple' }));
     const res = await call('456');
     expect(res.status).toBe(409);
-    expect(assertSubscriptionInApp).toHaveBeenCalledWith(session.credentials, '456', expect.objectContaining({ budget: expect.any(RequestBudget) }));
+    // The session's app, with tokens signed from the session key
+    expect(assertSubscriptionInApp).toHaveBeenCalledWith(
+      { bundleId: 'com.example.test', tokens: expect.objectContaining({ platform: 'apple', label: 'issuer:TESTKEY123' }) },
+      '456',
+      expect.objectContaining({ budget: expect.any(RequestBudget) })
+    );
     expect(fetchOffers).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,18 @@
 // Apple App Store Connect API Type Definitions
 
+import type { TokenSource } from '../token-source';
+
+/**
+ * What every App Store Connect call takes: where its bearer tokens come from,
+ * and the app it is for. The bundle ID is non-secret identity, kept apart from
+ * the token source ('' before an app is chosen).
+ */
+export interface AppleConnection {
+  tokens: TokenSource;
+  bundleId: string;
+}
+
+/** An App Store Connect API key and the selected app, as read from a session or the environment */
 export interface AppleConnectCredentials {
   privateKey: string; // .p8 file contents
   keyId: string; // Key ID from App Store Connect

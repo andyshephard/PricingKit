@@ -2,6 +2,7 @@
 // store. The App Store client is mocked: nothing leaves the process.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
+import { appleKeyConnection } from '@/lib/token-source';
 
 const appleApiRequest = vi.fn();
 vi.mock('@/lib/apple-connect/client', async (importOriginal) => {
@@ -16,6 +17,7 @@ import { RequestBudget } from '@/lib/utils/request-budget';
 import { getSupportedAppleTerritories } from '@/lib/apple-connect/territories';
 
 const credentials: AppleConnectCredentials = { privateKey: 'unused', keyId: 'TESTKEY123', issuerId: '00000000-0000-0000-0000-000000000000', bundleId: 'com.example.app' };
+const connection = appleKeyConnection(credentials);
 const app = { bundleId: 'com.example.app' };
 const A = '9500000001';
 const B = '9500000002';
@@ -41,7 +43,7 @@ beforeEach(() => {
   appleApiRequest.mockImplementation(store.handle);
 });
 
-const adapter = () => new AppleAdapter({ credentials, budget: new RequestBudget(), now: () => new Date('2030-03-01T12:00:00Z') });
+const adapter = () => new AppleAdapter({ ...connection, budget: new RequestBudget(), now: () => new Date('2030-03-01T12:00:00Z') });
 const half = { type: 'percentOfCurrent', percent: '50', snap: 'nearest' };
 const rules = (extra: object[] = []) =>
   parseOfferRules({
@@ -66,7 +68,7 @@ describe('AppleAdapter.planOfferSync', () => {
   });
 
   it('refuses every app when the credentials name none', async () => {
-    const noApp = new AppleAdapter({ credentials: { ...credentials, bundleId: '' }, budget: new RequestBudget() });
+    const noApp = new AppleAdapter({ ...connection, bundleId: '', budget: new RequestBudget() });
     await expect(noApp.planOfferSync({ rules: rules() })).rejects.toMatchObject({ code: 'APP_MISMATCH' });
     expect(appleApiRequest).not.toHaveBeenCalled();
   });
@@ -171,7 +173,7 @@ describe('requests spent reading a rules file', () => {
     });
 
     const syncBudget = new RequestBudget();
-    const plan = await new AppleAdapter({ credentials, budget: syncBudget, now: () => new Date('2030-03-01T12:00:00Z') }).planOfferSync({ rules: r });
+    const plan = await new AppleAdapter({ ...connection, budget: syncBudget, now: () => new Date('2030-03-01T12:00:00Z') }).planOfferSync({ rules: r });
     expect(plan.changeSet.ops).toEqual([]);
     expect(plan.entries[0]).toMatchObject({ action: 'none' });
     // 3 app ownership + 1 billing period + 1 base prices + 2 offer list and prices + 18 price point reads (10 territories each)

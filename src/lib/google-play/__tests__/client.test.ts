@@ -6,6 +6,7 @@ import {
   GooglePlayApiError,
 } from '../client';
 import type { ServiceAccountCredentials } from '../types';
+import { GoogleKeyTokenSource } from '../../token-source';
 import { ApiError } from '@/lib/utils/api-error';
 import { RequestBudget } from '@/lib/utils/request-budget';
 import { executeWithRateLimit } from '@/lib/utils/rate-limit';
@@ -13,6 +14,7 @@ import { executeWithRateLimit } from '@/lib/utils/rate-limit';
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 
 let credentials: ServiceAccountCredentials;
+let tokens: GoogleKeyTokenSource;
 
 // Throwaway RSA key generated per run; no real credentials involved
 async function generateTestCredentials(): Promise<ServiceAccountCredentials> {
@@ -131,6 +133,7 @@ async function finish(promise: Promise<unknown>): Promise<void> {
 
 beforeAll(async () => {
   credentials = await generateTestCredentials();
+  tokens = new GoogleKeyTokenSource(credentials);
 });
 
 beforeEach(() => {
@@ -155,7 +158,7 @@ describe('googlePlayFetch retries', () => {
       jsonResponse(200, { ok: true }),
     ]);
 
-    const promise = googlePlayFetch<{ ok: boolean }>(credentials, '/test');
+    const promise = googlePlayFetch<{ ok: boolean }>(tokens, '/test');
     // Math.random = 0.5 -> backoff of exactly 1000ms then 2000ms
     await expectBackoff(apiCalls, 1_000);
     await expectBackoff(apiCalls, 2_000);
@@ -169,7 +172,7 @@ describe('googlePlayFetch retries', () => {
       jsonResponse(400, googleError(400, 'Invalid price', 'INVALID_ARGUMENT')),
     ]);
 
-    const promise = googlePlayFetch(credentials, '/test');
+    const promise = googlePlayFetch(tokens, '/test');
     const assertion = expect(promise).rejects.toSatisfy((err: unknown) => {
       expect(err).toBeInstanceOf(GooglePlayApiError);
       expect(err).toBeInstanceOf(ApiError);
@@ -196,7 +199,7 @@ describe('googlePlayFetch retries', () => {
     // Mint the token up front so timing only covers the API calls
     await getGoogleAccessToken(credentials);
 
-    const promise = googlePlayFetch(credentials, '/test');
+    const promise = googlePlayFetch(tokens, '/test');
     await untilCalls(apiCalls, 1);
     await advance(4_900);
     expect(apiCalls).toHaveLength(1);
@@ -208,14 +211,14 @@ describe('googlePlayFetch retries', () => {
 
   it('with retryOnlyRateLimited, retries 429 but never resends after a 5xx or a network error', async () => {
     const rate = mockFetch([jsonResponse(429, googleError(429, 'Quota exceeded', 'RESOURCE_EXHAUSTED')), jsonResponse(200, { ok: true })]);
-    const ok = googlePlayFetch(credentials, '/offers', { method: 'POST', body: {}, retryOnlyRateLimited: true });
+    const ok = googlePlayFetch(tokens, '/offers', { method: 'POST', body: {}, retryOnlyRateLimited: true });
     await expectBackoff(rate.apiCalls, 1_000);
     await finish(ok);
     await expect(ok).resolves.toEqual({ ok: true });
     expect(rate.apiCalls).toHaveLength(2);
 
     const server = mockFetch([jsonResponse(503, googleError(503, 'Backend error', 'UNAVAILABLE'))]);
-    const failed = googlePlayFetch(credentials, '/offers', { method: 'POST', body: {}, retryOnlyRateLimited: true });
+    const failed = googlePlayFetch(tokens, '/offers', { method: 'POST', body: {}, retryOnlyRateLimited: true });
     const assertion = expect(failed).rejects.toMatchObject({ code: 503, retryable: false, attempts: 1 });
     await settle(failed);
     await assertion;
@@ -226,7 +229,7 @@ describe('googlePlayFetch retries', () => {
         throw new TypeError('fetch failed');
       },
     ]);
-    const lost = googlePlayFetch(credentials, '/offers', { method: 'POST', body: {}, retryOnlyRateLimited: true });
+    const lost = googlePlayFetch(tokens, '/offers', { method: 'POST', body: {}, retryOnlyRateLimited: true });
     const lostAssertion = expect(lost).rejects.toMatchObject({ retryable: false, attempts: 1 });
     await settle(lost);
     await lostAssertion;
@@ -235,7 +238,7 @@ describe('googlePlayFetch retries', () => {
 
   it('records how many requests a call sent before it failed', async () => {
     const { apiCalls } = mockFetch([jsonResponse(429, googleError(429, 'Quota exceeded', 'RESOURCE_EXHAUSTED')), jsonResponse(400, googleError(400, 'Invalid', 'INVALID_ARGUMENT'))]);
-    const promise = googlePlayFetch(credentials, '/offers', { method: 'POST', body: {}, retryOnlyRateLimited: true });
+    const promise = googlePlayFetch(tokens, '/offers', { method: 'POST', body: {}, retryOnlyRateLimited: true });
     const assertion = expect(promise).rejects.toMatchObject({ code: 400, attempts: 2 });
     await settle(promise);
     await assertion;
@@ -250,7 +253,7 @@ describe('googlePlayFetch retries', () => {
       jsonResponse(200, { ok: true }),
     ]);
 
-    const promise = googlePlayFetch(credentials, '/test');
+    const promise = googlePlayFetch(tokens, '/test');
     await expectBackoff(apiCalls, 1_000);
     await finish(promise);
     await expect(promise).resolves.toEqual({ ok: true });
@@ -265,7 +268,7 @@ describe('googlePlayFetch retries', () => {
       return passThrough(input);
     });
 
-    const promise = googlePlayFetch(credentials, '/test');
+    const promise = googlePlayFetch(tokens, '/test');
     await expectBackoff(fetchMock.mock.calls, 1_000);
     await finish(promise);
     await expect(promise).resolves.toEqual({ ok: true });
@@ -278,7 +281,7 @@ describe('googlePlayFetch retries', () => {
     const fetchMock = vi.fn(async () => new Response('invalid_grant', { status: 400 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const promise = googlePlayFetch(credentials, '/test');
+    const promise = googlePlayFetch(tokens, '/test');
     const assertion = expect(promise).rejects.toMatchObject({
       code: 401,
       errors: [{ reason: 'invalidCredentials' }],
@@ -299,7 +302,7 @@ describe('googlePlayFetch retries', () => {
       jsonResponse(503, googleError(503, 'down')),
     ]);
 
-    const promise = googlePlayFetch(credentials, '/test', { retry: { maxAttempts: 2 } });
+    const promise = googlePlayFetch(tokens, '/test', { retry: { maxAttempts: 2 } });
     const assertion = expect(promise).rejects.toMatchObject({ code: 503, retryable: true });
     await expectBackoff(apiCalls, 1_000);
     // No sleep after the last attempt
@@ -314,7 +317,7 @@ describe('googlePlayFetch retries', () => {
     };
     const { apiCalls } = mockFetch([networkFailure, networkFailure]);
 
-    const promise = googlePlayFetch(credentials, '/test', { retry: { maxAttempts: 2 } });
+    const promise = googlePlayFetch(tokens, '/test', { retry: { maxAttempts: 2 } });
     const assertion = expect(promise).rejects.toMatchObject({
       code: 503,
       retryable: true,
@@ -339,7 +342,7 @@ describe('googlePlayFetch retries', () => {
     ]);
 
     const promise = executeWithRateLimit(
-      [() => googlePlayFetch(credentials, '/test', { retry: { maxAttempts: 2 } })],
+      [() => googlePlayFetch(tokens, '/test', { retry: { maxAttempts: 2 } })],
       { concurrency: 1, maxRetries: 1, retryDelay: 100 }
     );
     await settle(promise);
@@ -351,8 +354,8 @@ describe('googlePlayFetch retries', () => {
     const { apiCalls } = mockFetch([jsonResponse(200, { ok: true })]);
     const budget = new RequestBudget({ limit: 1 });
 
-    await expect(googlePlayFetch(credentials, '/a', { budget })).resolves.toEqual({ ok: true });
-    await expect(googlePlayFetch(credentials, '/b', { budget })).rejects.toMatchObject({
+    await expect(googlePlayFetch(tokens, '/a', { budget })).resolves.toEqual({ ok: true });
+    await expect(googlePlayFetch(tokens, '/b', { budget })).rejects.toMatchObject({
       status: 429,
       code: 'BUDGET_EXCEEDED',
       retryable: false,

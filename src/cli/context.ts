@@ -8,6 +8,7 @@ import { lstat, open, readFile, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { AppleAdapter } from '@/lib/adapters/apple';
 import { PlayAdapter } from '@/lib/adapters/play';
+import { AppleKeyTokenSource, GoogleKeyTokenSource } from '@/lib/token-source';
 import type { AppRef, ProductPriceState, ProductRef, ResolveOptions, ResolveResult, ResolveTarget } from '@/lib/pricing';
 import type { RequestBudget } from '@/lib/utils/request-budget';
 import type { Flags } from './args';
@@ -150,13 +151,13 @@ export function assertExpectedApp(ctx: Pick<CommandContext, 'env'>, app: { bundl
 export async function appleAdapter(ctx: CommandContext, bundleId: string): Promise<AppleAdapter> {
   assertExpectedApp(ctx, { bundleId });
   const credentials = await appleCredentialsFromEnv(ctx.env, bundleId, ctx.redactor);
-  return new AppleAdapter({ credentials, budget: ctx.budget, now: ctx.now });
+  return new AppleAdapter({ tokens: new AppleKeyTokenSource(credentials), bundleId: credentials.bundleId, budget: ctx.budget, now: ctx.now });
 }
 
 export async function playAdapter(ctx: CommandContext, packageName: string): Promise<PlayAdapter> {
   assertExpectedApp(ctx, { packageName });
   const credentials = await googleCredentialsFromEnv(ctx.env, ctx.redactor);
-  return new PlayAdapter({ credentials, packageName, budget: ctx.budget });
+  return new PlayAdapter({ tokens: new GoogleKeyTokenSource(credentials), packageName, budget: ctx.budget });
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { ServiceAccountCredentials } from '../types';
+import { HeaderTokenSource } from '../../token-source';
 
 vi.mock('../client', () => ({
   googlePlayFetch: vi.fn(),
@@ -17,7 +17,7 @@ import {
 } from '../products';
 
 const fetchMock = vi.mocked(googlePlayFetch);
-const credentials = {} as ServiceAccountCredentials;
+const tokens = new HeaderTokenSource('google', 'test-access-token', 'test@example.iam.gserviceaccount.com');
 
 type Call = [unknown, string, { method?: string; query?: Record<string, unknown>; body?: unknown }?];
 type Region = { regionCode: string; [key: string]: unknown };
@@ -84,7 +84,7 @@ describe('updateBasePlanPrices', () => {
     const original = subscriptionFixture();
     serve(original);
 
-    await updateBasePlanPrices(credentials, 'com.example.app', 'premium', 'monthly', [
+    await updateBasePlanPrices(tokens, 'com.example.app', 'premium', 'monthly', [
       { regionCode: 'JP', price: { currencyCode: 'JPY', units: '1500' } },
     ]);
 
@@ -107,7 +107,7 @@ describe('updateBasePlanPrices', () => {
   it('keeps an existing region unavailable to new subscribers when its price changes', async () => {
     serve(subscriptionFixture());
 
-    await updateBasePlanPrices(credentials, 'com.example.app', 'premium', 'monthly', [
+    await updateBasePlanPrices(tokens, 'com.example.app', 'premium', 'monthly', [
       { regionCode: 'DE', price: { currencyCode: 'EUR', units: '7', nanos: 990000000 } },
     ]);
 
@@ -119,7 +119,7 @@ describe('updateBasePlanPrices', () => {
   it('adds a brand-new region (available by default) without filling in others', async () => {
     serve(subscriptionFixture());
 
-    await updateBasePlanPrices(credentials, 'com.example.app', 'premium', 'monthly', [
+    await updateBasePlanPrices(tokens, 'com.example.app', 'premium', 'monthly', [
       { regionCode: 'GB', price: { currencyCode: 'GBP', units: '7', nanos: 990000000 } },
     ]);
 
@@ -134,7 +134,7 @@ describe('updateBasePlanPrices', () => {
     monthlyPlan.regionalConfigs = monthlyPlan.regionalConfigs.filter(c => c.regionCode !== 'US');
     serve(sub);
 
-    await updateBasePlanPrices(credentials, 'com.example.app', 'premium', 'monthly', [
+    await updateBasePlanPrices(tokens, 'com.example.app', 'premium', 'monthly', [
       { regionCode: 'JP', price: { currencyCode: 'JPY', units: '1500' } },
     ]);
 
@@ -143,7 +143,7 @@ describe('updateBasePlanPrices', () => {
 
   it("uses the subscription's own regionsVersion", async () => {
     serve(subscriptionFixture());
-    await updateBasePlanPrices(credentials, 'com.example.app', 'premium', 'monthly', [
+    await updateBasePlanPrices(tokens, 'com.example.app', 'premium', 'monthly', [
       { regionCode: 'JP', price: { currencyCode: 'JPY', units: '1500' } },
     ]);
     expect(patchCall().query['regionsVersion.version']).toBe('2023/11');
@@ -157,7 +157,7 @@ describe('updateBasePlanPrices', () => {
       if (path.endsWith('/pricing:convertRegionPrices')) return { convertedRegionPrices: {}, regionVersion: { version: '2025/10' } } as never;
       return JSON.parse(resource);
     });
-    await updateBasePlanPrices(credentials, 'com.example.app', 'premium', 'monthly', [
+    await updateBasePlanPrices(tokens, 'com.example.app', 'premium', 'monthly', [
       { regionCode: 'JP', price: { currencyCode: 'JPY', units: '1500' } },
     ]);
     expect(patchCall().query['regionsVersion.version']).toBe('2025/10');
@@ -165,7 +165,7 @@ describe('updateBasePlanPrices', () => {
 
   it('sends the regions version it is given (a reviewed plan records one), without asking Play', async () => {
     serve(subscriptionFixture({ regionsVersion: undefined }));
-    await updateBasePlanPrices(credentials, 'com.example.app', 'premium', 'monthly', [{ regionCode: 'JP', price: { currencyCode: 'JPY', units: '1500' } }], {}, { regionsVersion: '2024/02' });
+    await updateBasePlanPrices(tokens, 'com.example.app', 'premium', 'monthly', [{ regionCode: 'JP', price: { currencyCode: 'JPY', units: '1500' } }], {}, { regionsVersion: '2024/02' });
     expect(patchCall().query['regionsVersion.version']).toBe('2024/02');
     expect(fetchMock.mock.calls.some((c) => String(c[1]).endsWith(':convertRegionPrices'))).toBe(false);
   });
@@ -178,7 +178,7 @@ describe('updateBasePlanPrices', () => {
       return JSON.parse(resource);
     });
     await expect(
-      updateBasePlanPrices(credentials, 'com.example.app', 'premium', 'monthly', [{ regionCode: 'JP', price: { currencyCode: 'JPY', units: '1500' } }])
+      updateBasePlanPrices(tokens, 'com.example.app', 'premium', 'monthly', [{ regionCode: 'JP', price: { currencyCode: 'JPY', units: '1500' } }])
     ).rejects.toMatchObject({ code: 'NO_REGIONS_VERSION' });
     expect(fetchMock.mock.calls.some((c) => (c as Call)[2]?.method === 'PATCH')).toBe(false);
   });
@@ -192,7 +192,7 @@ describe('updateBasePlanPrices', () => {
     });
 
     await expect(
-      updateBasePlanPrices(credentials, 'com.example.app', 'premium', 'monthly', [
+      updateBasePlanPrices(tokens, 'com.example.app', 'premium', 'monthly', [
         { regionCode: 'JP', price: { currencyCode: 'JPY', units: '1500' } },
       ])
     ).rejects.toBe(googleError);
@@ -204,7 +204,7 @@ describe('deleteBasePlanRegionPrice', () => {
     const original = subscriptionFixture();
     serve(original);
 
-    await deleteBasePlanRegionPrice(credentials, 'com.example.app', 'premium', 'monthly', 'DE');
+    await deleteBasePlanRegionPrice(tokens, 'com.example.app', 'premium', 'monthly', 'DE');
 
     const { body, query } = patchCall();
     const configs = body.basePlans[0].regionalConfigs;
@@ -217,14 +217,14 @@ describe('deleteBasePlanRegionPrice', () => {
 
   it('lets the caller remove the US region (Google decides if that is allowed)', async () => {
     serve(subscriptionFixture());
-    await deleteBasePlanRegionPrice(credentials, 'com.example.app', 'premium', 'monthly', 'US');
+    await deleteBasePlanRegionPrice(tokens, 'com.example.app', 'premium', 'monthly', 'US');
     expect(patchCall().body.basePlans[0].regionalConfigs.map((c: Region) => c.regionCode)).toEqual(['DE', 'JP']);
   });
 
   it('returns 404 without patching when the region is not configured', async () => {
     serve(subscriptionFixture());
     await expect(
-      deleteBasePlanRegionPrice(credentials, 'com.example.app', 'premium', 'monthly', 'FR')
+      deleteBasePlanRegionPrice(tokens, 'com.example.app', 'premium', 'monthly', 'FR')
     ).rejects.toMatchObject({ code: 404 });
     expect(fetchMock.mock.calls.some(c => (c as Call)[2]?.method === 'PATCH')).toBe(false);
   });
@@ -257,7 +257,7 @@ describe('updateInAppProductPrices', () => {
     const original = productFixture();
     serve(original);
 
-    await updateInAppProductPrices(credentials, 'com.example.app', 'coins_100', {
+    await updateInAppProductPrices(tokens, 'com.example.app', 'coins_100', {
       DE: { currencyCode: 'EUR', units: '2', nanos: 490000000 },
     });
 
@@ -279,7 +279,7 @@ describe('updateInAppProductPrices', () => {
   it('never turns a priceless region into USD 0', async () => {
     serve(productFixture());
 
-    await updateInAppProductPrices(credentials, 'com.example.app', 'coins_100', {
+    await updateInAppProductPrices(tokens, 'com.example.app', 'coins_100', {
       US: { currencyCode: 'USD', units: '2', nanos: 990000000 },
     });
 
@@ -293,7 +293,7 @@ describe('updateInAppProductPrices', () => {
 
   it('falls back to the fallback regionsVersion only when the product has none', async () => {
     serve(productFixture({ regionsVersion: undefined }));
-    await updateInAppProductPrices(credentials, 'com.example.app', 'coins_100', {
+    await updateInAppProductPrices(tokens, 'com.example.app', 'coins_100', {
       US: { currencyCode: 'USD', units: '2' },
     });
     expect(patchCall().query['regionsVersion.version']).toBe(FALLBACK_PRODUCT_REGIONS_VERSION);
@@ -305,7 +305,7 @@ describe('deleteRegionPrice (one-time products)', () => {
     const original = productFixture();
     serve(original);
 
-    const result = await deleteRegionPrice(credentials, 'com.example.app', 'coins_100', 'DE');
+    const result = await deleteRegionPrice(tokens, 'com.example.app', 'coins_100', 'DE');
 
     const { body, path, query } = patchCall();
     expect(path).toContain('/onetimeproducts/coins_100');
@@ -322,7 +322,7 @@ describe('deleteRegionPrice (one-time products)', () => {
   it('returns 404 without patching when the region is not configured', async () => {
     serve(productFixture());
     await expect(
-      deleteRegionPrice(credentials, 'com.example.app', 'coins_100', 'FR')
+      deleteRegionPrice(tokens, 'com.example.app', 'coins_100', 'FR')
     ).rejects.toMatchObject({ code: 404 });
     expect(fetchMock.mock.calls.some(c => (c as Call)[2]?.method === 'PATCH')).toBe(false);
   });
@@ -335,7 +335,7 @@ describe('deleteRegionPrice (one-time products)', () => {
       return JSON.parse(snapshot);
     });
     await expect(
-      deleteRegionPrice(credentials, 'com.example.app', 'coins_100', 'DE')
+      deleteRegionPrice(tokens, 'com.example.app', 'coins_100', 'DE')
     ).rejects.toBe(googleError);
   });
 });
@@ -349,11 +349,11 @@ describe('writing only if the price is still the expected one', () => {
     serve(subscriptionFixture());
     const newUs = { regionCode: 'US', price: { currencyCode: 'USD', units: '10' } } as never;
     await expect(
-      updateBasePlanPrices(credentials, 'com.example.app', 'premium', 'monthly', [newUs], {}, { expected: { US: { currencyCode: 'USD', units: '9', nanos: 980000000 } } })
+      updateBasePlanPrices(tokens, 'com.example.app', 'premium', 'monthly', [newUs], {}, { expected: { US: { currencyCode: 'USD', units: '9', nanos: 980000000 } } })
     ).rejects.toMatchObject({ status: 409, code: 'PRICE_CHANGED' });
     expect(fetchMock.mock.calls.some((c) => (c as Call)[2]?.method === 'PATCH')).toBe(false);
     // The previewed price still there: written
-    await updateBasePlanPrices(credentials, 'com.example.app', 'premium', 'monthly', [newUs], {}, { expected: { US: { currencyCode: 'USD', units: '9', nanos: 990000000 } } });
+    await updateBasePlanPrices(tokens, 'com.example.app', 'premium', 'monthly', [newUs], {}, { expected: { US: { currencyCode: 'USD', units: '9', nanos: 990000000 } } });
     expect(patchCall().body.basePlans[0].regionalConfigs.find((r) => r.regionCode === 'US')?.price).toEqual({ currencyCode: 'USD', units: '10' });
   });
 
@@ -364,7 +364,7 @@ describe('writing only if the price is still the expected one', () => {
       purchaseOptions: [{ purchaseOptionId: 'default', regionalPricingAndAvailabilityConfigs: [{ regionCode: 'US', availability: 'AVAILABLE', price: { currencyCode: 'USD', units: '12' } }] }],
     });
     await expect(
-      updateInAppProductPrices(credentials, 'com.example.app', 'coins', { US: { currencyCode: 'USD', units: '13' } }, undefined, {}, { expected: { US: { currencyCode: 'USD', units: '11' }, GB: { currencyCode: 'GBP', units: '9' } } })
+      updateInAppProductPrices(tokens, 'com.example.app', 'coins', { US: { currencyCode: 'USD', units: '13' } }, undefined, {}, { expected: { US: { currencyCode: 'USD', units: '11' }, GB: { currencyCode: 'GBP', units: '9' } } })
     ).rejects.toThrow(/PRICE_CHANGED: .* in GB, US/);
     expect(fetchMock.mock.calls.some((c) => (c as Call)[2]?.method === 'PATCH')).toBe(false);
   });

@@ -24,7 +24,8 @@ import {
   winBackOfferCreateBody,
   winBackOfferUpdateBody,
 } from '../offer-writes';
-import type { AppleConnectCredentials } from '../types';
+import type { AppleConnection } from '../types';
+import { appleKeyConnection } from '../../token-source';
 import { RequestBudget } from '@/lib/utils/request-budget';
 
 // ---------------------------------------------------------------------------
@@ -218,17 +219,17 @@ describe('offer write bodies match the OpenAPI spec', () => {
 // ---------------------------------------------------------------------------
 // Through the real client: creates retry only on 429, every request is budgeted
 
-let credentials: AppleConnectCredentials;
+let connection: AppleConnection;
 
 beforeAll(async () => {
   const keyPair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
   const pkcs8 = await crypto.subtle.exportKey('pkcs8', keyPair.privateKey);
-  credentials = {
+  connection = appleKeyConnection({
     privateKey: `-----BEGIN PRIVATE KEY-----\n${Buffer.from(pkcs8).toString('base64')}\n-----END PRIVATE KEY-----\n`,
     keyId: 'TESTKEY123',
     issuerId: '00000000-0000-0000-0000-000000000000',
     bundleId: 'com.example.test',
-  };
+  });
 });
 
 const json = (status: number, body: unknown) =>
@@ -274,13 +275,13 @@ afterEach(() => {
 });
 
 const creates: Array<[string, (budget?: RequestBudget) => Promise<{ id: string }>]> = [
-  ['promotional offer', (budget) => createPromotionalOffer(credentials, { subscriptionId: '1', name: 'n', offerCode: 'c', duration: 'ONE_YEAR', offerMode: 'PAY_UP_FRONT', numberOfPeriods: 1, prices }, { budget })],
-  ['introductory offer', (budget) => createIntroductoryOffer(credentials, { subscriptionId: '1', territory: 'US', pricePointId: 'pp', duration: 'ONE_MONTH', offerMode: 'PAY_UP_FRONT', numberOfPeriods: 1 }, { budget })],
+  ['promotional offer', (budget) => createPromotionalOffer(connection, { subscriptionId: '1', name: 'n', offerCode: 'c', duration: 'ONE_YEAR', offerMode: 'PAY_UP_FRONT', numberOfPeriods: 1, prices }, { budget })],
+  ['introductory offer', (budget) => createIntroductoryOffer(connection, { subscriptionId: '1', territory: 'US', pricePointId: 'pp', duration: 'ONE_MONTH', offerMode: 'PAY_UP_FRONT', numberOfPeriods: 1 }, { budget })],
   [
     'offer code',
     (budget) =>
       createOfferCode(
-        credentials,
+        connection,
         { subscriptionId: '1', name: 'n', customerEligibilities: ['NEW'], offerEligibility: 'STACK_WITH_INTRO_OFFERS', duration: 'ONE_MONTH', offerMode: 'PAY_UP_FRONT', numberOfPeriods: 1, prices },
         { budget }
       ),
@@ -289,7 +290,7 @@ const creates: Array<[string, (budget?: RequestBudget) => Promise<{ id: string }
     'win-back offer',
     (budget) =>
       createWinBackOffer(
-        credentials,
+        connection,
         {
           subscriptionId: '1',
           referenceName: 'n',
@@ -329,7 +330,7 @@ describe('offer creates retry only on 429', () => {
 
   it('a price replace (PATCH) is retried on 5xx: sending the same full list again is harmless', async () => {
     serve([json(503, appleError(503)), json(200, { data: { id: 'promo-1' } })]);
-    const promise = replacePromotionalOfferPrices(credentials, 'promo-1', ['keep-1'], prices);
+    const promise = replacePromotionalOfferPrices(connection, 'promo-1', ['keep-1'], prices);
     await settle(promise);
     await expect(promise).resolves.toBeUndefined();
     expect(calls.map((c) => c.method)).toEqual(['PATCH', 'PATCH']);
@@ -349,13 +350,13 @@ describe('offer writes are charged to the request budget', () => {
       json(200, {}),
       json(204, null),
     ]);
-    await createPromotionalOffer(credentials, { subscriptionId: '1', name: 'n', offerCode: 'c', duration: 'ONE_YEAR', offerMode: 'PAY_UP_FRONT', numberOfPeriods: 1, prices }, { budget });
-    await replacePromotionalOfferPrices(credentials, 'p', [], prices, { budget });
-    await deletePromotionalOffer(credentials, 'p', { budget });
-    await setIntroductoryOfferEndDate(credentials, 'i', '2030-01-01', { budget });
-    await deleteIntroductoryOffer(credentials, 'i', { budget });
-    await setOfferCodeActive(credentials, 'c', false, { budget });
-    await deleteWinBackOffer(credentials, 'w', { budget });
+    await createPromotionalOffer(connection, { subscriptionId: '1', name: 'n', offerCode: 'c', duration: 'ONE_YEAR', offerMode: 'PAY_UP_FRONT', numberOfPeriods: 1, prices }, { budget });
+    await replacePromotionalOfferPrices(connection, 'p', [], prices, { budget });
+    await deletePromotionalOffer(connection, 'p', { budget });
+    await setIntroductoryOfferEndDate(connection, 'i', '2030-01-01', { budget });
+    await deleteIntroductoryOffer(connection, 'i', { budget });
+    await setOfferCodeActive(connection, 'c', false, { budget });
+    await deleteWinBackOffer(connection, 'w', { budget });
     expect(budget.remaining).toBe(0);
     expect(calls.map((c) => `${c.method} ${new URL(c.url).pathname}`)).toEqual([
       'POST /v1/subscriptionPromotionalOffers',
@@ -366,7 +367,7 @@ describe('offer writes are charged to the request budget', () => {
       'PATCH /v1/subscriptionOfferCodes/c',
       'DELETE /v1/winBackOffers/w',
     ]);
-    await expect(updateWinBackOffer(credentials, 'w', { endDate: null }, { budget })).rejects.toMatchObject({ code: 'BUDGET_EXCEEDED' });
+    await expect(updateWinBackOffer(connection, 'w', { endDate: null }, { budget })).rejects.toMatchObject({ code: 'BUDGET_EXCEEDED' });
     expect(calls).toHaveLength(7);
   });
 });

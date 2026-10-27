@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getAppleAuthFromCookies } from '@/middleware/auth';
+import { appleKeyConnection } from '@/lib/token-source';
 import {
   getSubscription,
   getSubscriptionById,
@@ -40,6 +41,7 @@ export async function GET(
         { status: 401 }
       );
     }
+    const connection = appleKeyConnection(auth.credentials);
 
     const { id } = await params;
 
@@ -47,9 +49,9 @@ export async function GET(
 
     if (isNumericSubscriptionId(id)) {
       // API keys reach every app of a team: refuse another app's subscription
-      await assertSubscriptionInApp(auth.credentials, id);
+      await assertSubscriptionInApp(connection, id);
       // Fetch directly by Apple subscription ID
-      subscription = await getSubscriptionById(auth.credentials, id);
+      subscription = await getSubscriptionById(connection, id);
     } else {
       // Validate and decode product ID, then look up
       let productId: string;
@@ -64,7 +66,7 @@ export async function GET(
         }
         throw error;
       }
-      subscription = await getSubscription(auth.credentials, productId);
+      subscription = await getSubscription(connection, productId);
     }
 
     if (!subscription) {
@@ -75,7 +77,7 @@ export async function GET(
     }
 
     // Fetch prices for this subscription
-    const pricesResult = await getSubscriptionPrices(auth.credentials, subscription.id);
+    const pricesResult = await getSubscriptionPrices(connection, subscription.id);
     subscription.prices = pricesResult.current;
     subscription.scheduledPrices = Object.keys(pricesResult.scheduled).length > 0
       ? pricesResult.scheduled
@@ -117,6 +119,7 @@ export async function PATCH(
         { status: 401 }
       );
     }
+    const connection = appleKeyConnection(auth.credentials);
 
     const { id } = await params;
     // One budget for the whole run: reads, creates and deletes (Apple allows ~3600/hour per key)
@@ -138,7 +141,7 @@ export async function PATCH(
     // Get the subscription (by ID or productId)
     let subscription;
     if (isNumericSubscriptionId(id)) {
-      subscription = await getSubscriptionById(auth.credentials, id, ctx);
+      subscription = await getSubscriptionById(connection, id, ctx);
     } else {
       let productId: string;
       try {
@@ -152,7 +155,7 @@ export async function PATCH(
         }
         throw error;
       }
-      subscription = await getSubscription(auth.credentials, productId, ctx);
+      subscription = await getSubscription(connection, productId, ctx);
     }
 
     if (!subscription) {
@@ -163,25 +166,24 @@ export async function PATCH(
     }
 
     // API keys reach every app of a team: refuse another app's subscription
-    await assertSubscriptionInApp(auth.credentials, subscription.id, ctx);
+    await assertSubscriptionInApp(connection, subscription.id, ctx);
 
     const { prices, preserveCurrentPrice } = result.data;
 
     // Fetch current scheduled prices: Apple only allows one scheduled (future)
     // price per territory, so a future-dated change replaces the existing one
-    const currentPricesResult = await getSubscriptionPrices(auth.credentials, subscription.id, ctx);
+    const currentPricesResult = await getSubscriptionPrices(connection, subscription.id, ctx);
     const scheduledPrices = currentPricesResult.scheduled;
 
     // Stream progress back to the client
     const { stream, writer } = createNdjsonStream();
-    const credentials = auth.credentials;
     const subscriptionId = subscription.id;
 
     (async () => {
       try {
         // Creates first, deletes only after the replacement exists; a failed create deletes nothing
         const outcomes = await applySubscriptionPriceChanges(
-          credentials,
+          connection,
           subscriptionId,
           prices,
           scheduledPrices,
@@ -200,10 +202,10 @@ export async function PATCH(
         let updatedSubscription: Awaited<ReturnType<typeof getSubscriptionById>> = null;
         let refreshError: string | undefined;
         try {
-          updatedSubscription = await getSubscriptionById(credentials, subscriptionId, ctx);
+          updatedSubscription = await getSubscriptionById(connection, subscriptionId, ctx);
           if (updatedSubscription) {
             const updatedPricesResult = await getSubscriptionPrices(
-              credentials,
+              connection,
               updatedSubscription.id,
               ctx
             );
@@ -270,6 +272,7 @@ export async function DELETE(
         { status: 401 }
       );
     }
+    const connection = appleKeyConnection(auth.credentials);
 
     const read = await readJsonBody(request, LARGE_BODY_LIMIT);
     if (!read.ok) return read.response;
@@ -289,7 +292,7 @@ export async function DELETE(
     const ctx = { budget: new RequestBudget() };
     let subscription;
     if (isNumericSubscriptionId(id)) {
-      subscription = await getSubscriptionById(auth.credentials, id, ctx);
+      subscription = await getSubscriptionById(connection, id, ctx);
     } else {
       let productId: string;
       try {
@@ -300,18 +303,18 @@ export async function DELETE(
         }
         throw error;
       }
-      subscription = await getSubscription(auth.credentials, productId, ctx);
+      subscription = await getSubscription(connection, productId, ctx);
     }
     if (!subscription) {
       return NextResponse.json({ error: 'Subscription not found' }, { status: 404 });
     }
-    await assertSubscriptionInApp(auth.credentials, subscription.id, ctx);
-    const entries = await listSubscriptionPriceEntries(auth.credentials, subscription.id, ctx);
+    await assertSubscriptionInApp(connection, subscription.id, ctx);
+    const entries = await listSubscriptionPriceEntries(connection, subscription.id, ctx);
     if (!entries.some((e) => e.subscriptionPriceId === result.data.subscriptionPriceId)) {
       return NextResponse.json({ error: 'That price is not one of this subscription\'s prices' }, { status: 404 });
     }
 
-    await deleteSubscriptionPrice(auth.credentials, result.data.subscriptionPriceId, ctx);
+    await deleteSubscriptionPrice(connection, result.data.subscriptionPriceId, ctx);
 
     return NextResponse.json({ success: true });
   } catch (error) {

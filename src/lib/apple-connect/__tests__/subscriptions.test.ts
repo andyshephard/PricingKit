@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AppleConnectCredentials, AppleProductPrice } from '../types';
+import { appleKeyConnection } from '../../token-source';
 import { ApiError } from '@/lib/utils/api-error';
 
 // No network: every Apple call goes through this mock
@@ -30,6 +31,7 @@ const credentials: AppleConnectCredentials = {
   issuerId: '00000000-0000-0000-0000-000000000000',
   bundleId: 'com.example.test',
 };
+const connection = appleKeyConnection(credentials);
 
 type Call = { endpoint: string; method: string; body?: unknown };
 
@@ -81,7 +83,7 @@ describe('Apple subscription reads surface errors', () => {
       throw new AppleApiError(500, 'UNEXPECTED_ERROR', 'Server error', 'Something broke');
     });
 
-    const promise = getSubscriptionPrices(credentials, 'sub-1');
+    const promise = getSubscriptionPrices(connection, 'sub-1');
     await expect(promise).rejects.toBeInstanceOf(ApiError);
     await expect(promise).rejects.toMatchObject({ status: 500, platform: 'apple' });
   });
@@ -91,7 +93,7 @@ describe('Apple subscription reads surface errors', () => {
       throw new AppleApiError(429, 'RATE_LIMIT_EXCEEDED', 'Rate limited', 'Too many requests');
     });
 
-    await expect(getSubscriptionPricePoints(credentials, 'sub-1', 'USA')).rejects.toMatchObject({
+    await expect(getSubscriptionPricePoints(connection, 'sub-1', 'USA')).rejects.toMatchObject({
       status: 429,
     });
   });
@@ -101,7 +103,7 @@ describe('Apple subscription reads surface errors', () => {
       throw new TypeError('fetch failed');
     });
 
-    await expect(getSubscriptionPricePoints(credentials, 'sub-1', 'USA')).rejects.toBeInstanceOf(
+    await expect(getSubscriptionPricePoints(connection, 'sub-1', 'USA')).rejects.toBeInstanceOf(
       ApiError
     );
   });
@@ -110,12 +112,12 @@ describe('Apple subscription reads surface errors', () => {
     recordCalls(() => {
       throw new AppleApiError(404, 'NOT_FOUND', 'Not found', 'No such subscription');
     });
-    await expect(getSubscriptionById(credentials, '999')).resolves.toBeNull();
+    await expect(getSubscriptionById(connection, '999')).resolves.toBeNull();
 
     recordCalls(() => {
       throw new AppleApiError(403, 'FORBIDDEN', 'Forbidden', 'Not allowed');
     });
-    await expect(getSubscriptionById(credentials, '999')).rejects.toMatchObject({ status: 403 });
+    await expect(getSubscriptionById(connection, '999')).rejects.toMatchObject({ status: 403 });
   });
 
   it('getSubscription throws when listing subscription groups fails', async () => {
@@ -123,7 +125,7 @@ describe('Apple subscription reads surface errors', () => {
       throw new AppleApiError(401, 'NOT_AUTHORIZED', 'Unauthorized', 'Bad token');
     });
 
-    await expect(getSubscription(credentials, 'com.example.monthly')).rejects.toMatchObject({
+    await expect(getSubscription(connection, 'com.example.monthly')).rejects.toMatchObject({
       status: 401,
     });
   });
@@ -136,7 +138,7 @@ describe('Apple subscription reads surface errors', () => {
       return { data: [], links: {} };
     });
 
-    await expect(getSubscription(credentials, 'com.example.missing')).resolves.toBeNull();
+    await expect(getSubscription(connection, 'com.example.missing')).resolves.toBeNull();
   });
 });
 
@@ -161,7 +163,7 @@ describe('updateSubscriptionPrice', () => {
   it('POSTs alpha-3 territory IDs even when given alpha-2', async () => {
     const calls = recordCalls(() => ({}));
 
-    await updateSubscriptionPrice(credentials, 'sub-1', 'pp-1', 'DE', '2099-01-01');
+    await updateSubscriptionPrice(connection, 'sub-1', 'pp-1', 'DE', '2099-01-01');
 
     expect(calls).toHaveLength(1);
     expect(calls[0].method).toBe('POST');
@@ -174,7 +176,7 @@ describe('applySubscriptionPriceChanges', () => {
     const calls = recordCalls(() => ({}));
 
     const outcomes = await applySubscriptionPriceChanges(
-      credentials,
+      connection,
       'sub-1',
       { FR: { pricePointId: 'new-pp-fr', startDate: '2099-02-01' } },
       {},
@@ -189,7 +191,7 @@ describe('applySubscriptionPriceChanges', () => {
     const calls = recordCalls(() => ({}));
 
     const outcomes = await applySubscriptionPriceChanges(
-      credentials,
+      connection,
       'sub-1',
       { FR: { pricePointId: 'new-pp-fr', startDate: '2099-02-01' } },
       { FR: scheduledFR },
@@ -212,7 +214,7 @@ describe('applySubscriptionPriceChanges', () => {
     });
 
     const outcomes = await applySubscriptionPriceChanges(
-      credentials,
+      connection,
       'sub-1',
       { FR: { pricePointId: 'new-pp-fr', startDate: '2099-02-01' } },
       { FR: scheduledFR },
@@ -238,7 +240,7 @@ describe('applySubscriptionPriceChanges', () => {
     });
 
     const outcomes = await applySubscriptionPriceChanges(
-      credentials,
+      connection,
       'sub-1',
       { FR: { pricePointId: 'new-pp-fr', startDate: '2099-02-01' } },
       { FR: scheduledFR },
@@ -274,7 +276,7 @@ describe('applySubscriptionPriceChanges', () => {
     });
 
     const outcomes = await applySubscriptionPriceChanges(
-      credentials,
+      connection,
       'sub-1',
       { FR: { pricePointId: 'new-pp-fr' } },
       { FR: scheduledFR },
@@ -289,7 +291,7 @@ describe('applySubscriptionPriceChanges', () => {
   it('leaves a scheduled price in place when an immediate change succeeds', async () => {
     const calls = recordCalls(() => ({}));
     const outcomes = await applySubscriptionPriceChanges(
-      credentials,
+      connection,
       'sub-1',
       { FR: { pricePointId: 'new-pp-fr' } },
       { FR: scheduledFR },
@@ -308,7 +310,7 @@ describe('applySubscriptionPriceChanges', () => {
     });
 
     const outcomes = await applySubscriptionPriceChanges(
-      credentials,
+      connection,
       'sub-1',
       { FR: { pricePointId: 'new-pp-fr', startDate: '2099-02-01' } },
       {},
@@ -330,7 +332,7 @@ describe('applySubscriptionPriceChanges', () => {
     });
 
     const outcomes = await applySubscriptionPriceChanges(
-      credentials,
+      connection,
       'sub-1',
       { FR: { pricePointId: 'new-pp-fr', startDate: '2099-02-01' } },
       { FR: scheduledFR },
@@ -350,7 +352,7 @@ describe('applySubscriptionPriceChanges', () => {
     });
 
     const outcomes = await applySubscriptionPriceChanges(
-      credentials,
+      connection,
       'sub-1',
       {
         FR: { pricePointId: 'pp-fr' },

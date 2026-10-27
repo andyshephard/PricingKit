@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { ServiceAccountCredentials } from '@/lib/google-play/types';
 
 vi.mock('@/lib/google-play/client', () => ({ googlePlayFetch: vi.fn() }));
 
 import { googlePlayFetch } from '@/lib/google-play/client';
 import { PlayAdapter } from '../play';
+import { HeaderTokenSource } from '@/lib/token-source';
 import {
   basePriceOps,
   applyChangeSet,
@@ -15,7 +15,7 @@ import {
 import { RequestBudget } from '@/lib/utils/request-budget';
 
 const fetchMock = vi.mocked(googlePlayFetch);
-const credentials = {} as ServiceAccountCredentials;
+const tokens = new HeaderTokenSource('google', 'test-access-token', 'test@example.iam.gserviceaccount.com');
 const PKG = 'com.example.app';
 const plan: ProductRef = { platform: 'google', type: 'subscription', productId: 'pro', basePlanId: 'annual' };
 const coins: ProductRef = { platform: 'google', type: 'inapp', productId: 'coins' };
@@ -99,7 +99,7 @@ beforeEach(() => {
   });
 });
 
-const adapter = (budget?: RequestBudget) => new PlayAdapter({ credentials, packageName: PKG, budget });
+const adapter = (budget?: RequestBudget) => new PlayAdapter({ tokens, packageName: PKG, budget });
 
 describe('PlayAdapter', () => {
   it('reads base plan and one-time product prices as decimals', async () => {

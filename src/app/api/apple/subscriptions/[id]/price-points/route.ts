@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAppleAuthFromCookies } from '@/middleware/auth';
+import { appleKeyConnection } from '@/lib/token-source';
 import {
   getSubscriptionPricePoints,
 } from '@/lib/apple-connect';
@@ -22,6 +23,7 @@ export async function GET(
         { status: 401 }
       );
     }
+    const connection = appleKeyConnection(auth.credentials);
 
     const { id } = await params;
     // Only a numeric subscription ID reaches the App Store Connect path
@@ -33,13 +35,13 @@ export async function GET(
       return NextResponse.json({ error: 'territory must be an ISO 3166-1 code, e.g. GB' }, { status: 400 });
     }
     // API keys reach every app of a team: refuse another app's subscription
-    await assertSubscriptionInApp(auth.credentials, id);
+    await assertSubscriptionInApp(connection, id);
 
     // Convert alpha-2 to alpha-3 if needed (Apple API uses alpha-3)
     const alpha3Territory = alpha2ToAlpha3(territory) || territory;
 
     const pricePoints = await getSubscriptionPricePoints(
-      auth.credentials,
+      connection,
       id,
       alpha3Territory
     );

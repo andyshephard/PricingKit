@@ -18,7 +18,7 @@ import {
   type OfferTerritoryPrice,
   type StoreOffer,
 } from '@/lib/pricing';
-import type { AppleConnectCredentials } from './types';
+import type { AppleConnection } from './types';
 import { appleListAll } from './pagination';
 import { alpha3ToAlpha2 } from './territories';
 import type { RequestContext } from '../utils/request-budget';
@@ -161,12 +161,12 @@ function newOffer(
 
 /** Read every page of an offer's price list (promotional offer, offer code or win-back offer) */
 async function listOfferPrices(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   path: string,
   priceType: 'subscriptionPromotionalOfferPrices' | 'subscriptionOfferCodePrices' | 'winBackOfferPrices',
   ctx: RequestContext
 ): Promise<{ data: OfferPriceData[]; included: unknown[] }> {
-  return appleListAll<OfferPriceData>(credentials, path, {
+  return appleListAll<OfferPriceData>(connection, path, {
     queryParams: { ...PRICE_FIELDS, [`fields[${priceType}]`]: 'territory,subscriptionPricePoint' },
     budget: ctx.budget,
   });
@@ -182,14 +182,14 @@ function pick(offers: StoreOffer[], options: OfferListOptions): StoreOffer[] {
 }
 
 async function withPrices(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   offers: StoreOffer[],
   pathFor: (offer: StoreOffer) => string,
   priceType: 'subscriptionPromotionalOfferPrices' | 'subscriptionOfferCodePrices' | 'winBackOfferPrices',
   ctx: RequestContext
 ): Promise<StoreOffer[]> {
   await mapWithConcurrency(offers, OFFER_PRICE_READ_CONCURRENCY, async (offer) => {
-    const page = await listOfferPrices(credentials, pathFor(offer), priceType, ctx);
+    const page = await listOfferPrices(connection, pathFor(offer), priceType, ctx);
     const refs = lookups(page.included);
     const reads = page.data.map((p) => readPrice(p.id, p.relationships, refs, offer.mode));
     placePrices(offer, reads);
@@ -217,13 +217,13 @@ interface IntroOfferData {
  * territory, while the core models one offer with a price per territory.
  */
 export async function listSubscriptionIntroductoryOffers(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   subscriptionId: string,
   ctx: RequestContext = {},
   options: OfferListOptions = {}
 ): Promise<StoreOffer[]> {
   try {
-    const page = await appleListAll<IntroOfferData>(credentials, `/subscriptions/${encodeURIComponent(subscriptionId)}/introductoryOffers`, {
+    const page = await appleListAll<IntroOfferData>(connection, `/subscriptions/${encodeURIComponent(subscriptionId)}/introductoryOffers`, {
       queryParams: {
         ...PRICE_FIELDS,
         'fields[subscriptionIntroductoryOffers]': 'startDate,endDate,duration,offerMode,numberOfPeriods,territory,subscriptionPricePoint',
@@ -277,14 +277,14 @@ function promoFrom(item: OfferData): StoreOffer {
 }
 
 export async function listSubscriptionPromotionalOffers(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   subscriptionId: string,
   ctx: RequestContext = {},
   options: OfferListOptions = {}
 ): Promise<StoreOffer[]> {
   try {
     // Prices are read per offer: the list's include=prices is capped at 50 per offer
-    const page = await appleListAll<OfferData>(credentials, `/subscriptions/${encodeURIComponent(subscriptionId)}/promotionalOffers`, {
+    const page = await appleListAll<OfferData>(connection, `/subscriptions/${encodeURIComponent(subscriptionId)}/promotionalOffers`, {
       queryParams: {
         'fields[subscriptionPromotionalOffers]': 'duration,name,numberOfPeriods,offerCode,offerMode',
         limit: String(APPLE_OFFER_PAGE_LIMIT),
@@ -292,7 +292,7 @@ export async function listSubscriptionPromotionalOffers(
       budget: ctx.budget,
     });
     return await withPrices(
-      credentials,
+      connection,
       pick(page.data.map(promoFrom), options),
       (o) => `/subscriptionPromotionalOffers/${encodeURIComponent(o.storeId)}/prices`,
       'subscriptionPromotionalOfferPrices',
@@ -324,13 +324,13 @@ function offerCodeFrom(item: OfferData): StoreOffer {
 }
 
 export async function listSubscriptionOfferCodes(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   subscriptionId: string,
   ctx: RequestContext = {},
   options: OfferListOptions = {}
 ): Promise<StoreOffer[]> {
   try {
-    const page = await appleListAll<OfferData>(credentials, `/subscriptions/${encodeURIComponent(subscriptionId)}/offerCodes`, {
+    const page = await appleListAll<OfferData>(connection, `/subscriptions/${encodeURIComponent(subscriptionId)}/offerCodes`, {
       queryParams: {
         'fields[subscriptionOfferCodes]':
           'name,customerEligibilities,offerEligibility,duration,offerMode,numberOfPeriods,totalNumberOfCodes,productionCodeCount,sandboxCodeCount,active,autoRenewEnabled',
@@ -339,7 +339,7 @@ export async function listSubscriptionOfferCodes(
       budget: ctx.budget,
     });
     return await withPrices(
-      credentials,
+      connection,
       pick(page.data.map(offerCodeFrom), options),
       (o) => `/subscriptionOfferCodes/${encodeURIComponent(o.storeId)}/prices`,
       'subscriptionOfferCodePrices',
@@ -388,13 +388,13 @@ function winBackFrom(item: OfferData): StoreOffer {
 }
 
 export async function listSubscriptionWinBackOffers(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   subscriptionId: string,
   ctx: RequestContext = {},
   options: OfferListOptions = {}
 ): Promise<StoreOffer[]> {
   try {
-    const page = await appleListAll<OfferData>(credentials, `/subscriptions/${encodeURIComponent(subscriptionId)}/winBackOffers`, {
+    const page = await appleListAll<OfferData>(connection, `/subscriptions/${encodeURIComponent(subscriptionId)}/winBackOffers`, {
       queryParams: {
         'fields[winBackOffers]':
           'referenceName,offerId,duration,offerMode,periodCount,customerEligibilityPaidSubscriptionDurationInMonths,customerEligibilityTimeSinceLastSubscribedInMonths,customerEligibilityWaitBetweenOffersInMonths,startDate,endDate,priority,promotionIntent',
@@ -403,7 +403,7 @@ export async function listSubscriptionWinBackOffers(
       budget: ctx.budget,
     });
     return await withPrices(
-      credentials,
+      connection,
       pick(page.data.map(winBackFrom), options),
       (o) => `/winBackOffers/${encodeURIComponent(o.storeId)}/prices`,
       'winBackOfferPrices',
@@ -427,13 +427,13 @@ export const LISTERS: Record<AppleOfferKind, typeof listSubscriptionPromotionalO
  * never found. Returns null when there is no such offer.
  */
 export async function getSubscriptionOffer(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   subscriptionId: string,
   kind: AppleOfferKind,
   idOrKey: string,
   ctx: RequestContext = {}
 ): Promise<StoreOffer | null> {
-  const found = await LISTERS[kind](credentials, subscriptionId, ctx, { only: idOrKey });
+  const found = await LISTERS[kind](connection, subscriptionId, ctx, { only: idOrKey });
   if (found.length > 1) {
     throw new ApiError(`${found.length} ${kind} offers match ${idOrKey}; use the store ID`, {
       status: 409,
@@ -447,24 +447,24 @@ export async function getSubscriptionOffer(
 
 /** Every offer of one kind of a subscription, each with its prices */
 export async function listSubscriptionOffersOfKind(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   subscriptionId: string,
   kind: AppleOfferKind,
   ctx: RequestContext = {}
 ): Promise<StoreOffer[]> {
-  return LISTERS[kind](credentials, subscriptionId, ctx);
+  return LISTERS[kind](connection, subscriptionId, ctx);
 }
 
 /** Every offer of a subscription, all four kinds, each with its prices */
 export async function listSubscriptionOffers(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   subscriptionId: string,
   ctx: RequestContext = {}
 ): Promise<StoreOffer[]> {
   // One kind after another: each kind already reads its prices concurrently
-  const intro = await listSubscriptionIntroductoryOffers(credentials, subscriptionId, ctx);
-  const promo = await listSubscriptionPromotionalOffers(credentials, subscriptionId, ctx);
-  const codes = await listSubscriptionOfferCodes(credentials, subscriptionId, ctx);
-  const winBack = await listSubscriptionWinBackOffers(credentials, subscriptionId, ctx);
+  const intro = await listSubscriptionIntroductoryOffers(connection, subscriptionId, ctx);
+  const promo = await listSubscriptionPromotionalOffers(connection, subscriptionId, ctx);
+  const codes = await listSubscriptionOfferCodes(connection, subscriptionId, ctx);
+  const winBack = await listSubscriptionWinBackOffers(connection, subscriptionId, ctx);
   return [...intro, ...promo, ...codes, ...winBack];
 }

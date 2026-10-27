@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getAppleAuthFromCookies } from '@/middleware/auth';
+import { appleKeyConnection } from '@/lib/token-source';
 import {
   getAppPrices,
   updateAppPriceSchedule,
@@ -17,8 +18,9 @@ export async function GET() {
     if (!auth) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
+    const connection = appleKeyConnection(auth.credentials);
 
-    const { manual, automatic, baseTerritory } = await getAppPrices(auth.credentials);
+    const { manual, automatic, baseTerritory } = await getAppPrices(connection);
 
     // Merge manual and automatic prices (manual takes precedence)
     const prices: Record<string, (typeof manual)[string]> = { ...automatic, ...manual };
@@ -66,6 +68,7 @@ export async function PATCH(request: NextRequest) {
     if (!auth) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
+    const connection = appleKeyConnection(auth.credentials);
 
     const read = await readJsonBody(request, LARGE_BODY_LIMIT);
     if (!read.ok) return read.response;
@@ -107,7 +110,7 @@ export async function PATCH(request: NextRequest) {
         );
       }
 
-      const resolution = await resolveAppPricesToPricePoints(auth.credentials, moneyPrices);
+      const resolution = await resolveAppPricesToPricePoints(connection, moneyPrices);
       skippedTerritories = resolution.skipped;
 
       if (resolution.resolved.length === 0) {
@@ -126,10 +129,10 @@ export async function PATCH(request: NextRequest) {
       }));
     }
 
-    await updateAppPriceSchedule(auth.credentials, manualPrices, baseTerritoryId);
+    await updateAppPriceSchedule(connection, manualPrices, baseTerritoryId);
 
     // Fetch updated prices
-    const updated = await getAppPrices(auth.credentials);
+    const updated = await getAppPrices(connection);
     const allPrices = { ...updated.automatic, ...updated.manual };
 
     return NextResponse.json({

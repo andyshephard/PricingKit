@@ -29,7 +29,7 @@
 // (the spec lists none) and free-trial prices without a price point on create.
 
 import { appleApiRequest } from './client';
-import type { AppleConnectCredentials } from './types';
+import type { AppleConnection } from './types';
 import { toAppleTerritoryId } from './subscriptions';
 import type { RequestContext } from '../utils/request-budget';
 
@@ -140,8 +140,8 @@ export function promotionalOfferCreateBody(input: PromotionalOfferInput) {
   };
 }
 
-export async function createPromotionalOffer(credentials: AppleConnectCredentials, input: PromotionalOfferInput, ctx: RequestContext = {}): Promise<{ id: string }> {
-  const response = await appleApiRequest<Created>(credentials, '/subscriptionPromotionalOffers', {
+export async function createPromotionalOffer(connection: AppleConnection, input: PromotionalOfferInput, ctx: RequestContext = {}): Promise<{ id: string }> {
+  const response = await appleApiRequest<Created>(connection, '/subscriptionPromotionalOffers', {
     method: 'POST',
     body: promotionalOfferCreateBody(input),
     budget: ctx.budget,
@@ -169,21 +169,21 @@ export function promotionalOfferPricesUpdateBody(offerId: string, keep: string[]
 }
 
 export async function replacePromotionalOfferPrices(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   offerId: string,
   keep: string[],
   add: OfferPriceInput[],
   ctx: RequestContext = {}
 ): Promise<void> {
-  await appleApiRequest(credentials, `/subscriptionPromotionalOffers/${encodeURIComponent(offerId)}`, {
+  await appleApiRequest(connection, `/subscriptionPromotionalOffers/${encodeURIComponent(offerId)}`, {
     method: 'PATCH',
     body: promotionalOfferPricesUpdateBody(offerId, keep, add),
     budget: ctx.budget,
   });
 }
 
-export async function deletePromotionalOffer(credentials: AppleConnectCredentials, offerId: string, ctx: RequestContext = {}): Promise<void> {
-  await appleApiRequest(credentials, `/subscriptionPromotionalOffers/${encodeURIComponent(offerId)}`, { method: 'DELETE', budget: ctx.budget });
+export async function deletePromotionalOffer(connection: AppleConnection, offerId: string, ctx: RequestContext = {}): Promise<void> {
+  await appleApiRequest(connection, `/subscriptionPromotionalOffers/${encodeURIComponent(offerId)}`, { method: 'DELETE', budget: ctx.budget });
 }
 
 // ---------------------------------------------------------------------------
@@ -223,8 +223,8 @@ export function introductoryOfferCreateBody(input: IntroductoryOfferInput) {
   };
 }
 
-export async function createIntroductoryOffer(credentials: AppleConnectCredentials, input: IntroductoryOfferInput, ctx: RequestContext = {}): Promise<{ id: string }> {
-  const response = await appleApiRequest<Created>(credentials, '/subscriptionIntroductoryOffers', {
+export async function createIntroductoryOffer(connection: AppleConnection, input: IntroductoryOfferInput, ctx: RequestContext = {}): Promise<{ id: string }> {
+  const response = await appleApiRequest<Created>(connection, '/subscriptionIntroductoryOffers', {
     method: 'POST',
     body: introductoryOfferCreateBody(input),
     budget: ctx.budget,
@@ -237,16 +237,16 @@ export function introductoryOfferEndDateBody(id: string, endDate: string | null)
 }
 
 /** Set (or clear, with null) an introductory offer's end date */
-export async function setIntroductoryOfferEndDate(credentials: AppleConnectCredentials, id: string, endDate: string | null, ctx: RequestContext = {}): Promise<void> {
-  await appleApiRequest(credentials, `/subscriptionIntroductoryOffers/${encodeURIComponent(id)}`, {
+export async function setIntroductoryOfferEndDate(connection: AppleConnection, id: string, endDate: string | null, ctx: RequestContext = {}): Promise<void> {
+  await appleApiRequest(connection, `/subscriptionIntroductoryOffers/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     body: introductoryOfferEndDateBody(id, endDate),
     budget: ctx.budget,
   });
 }
 
-export async function deleteIntroductoryOffer(credentials: AppleConnectCredentials, id: string, ctx: RequestContext = {}): Promise<void> {
-  await appleApiRequest(credentials, `/subscriptionIntroductoryOffers/${encodeURIComponent(id)}`, { method: 'DELETE', budget: ctx.budget });
+export async function deleteIntroductoryOffer(connection: AppleConnection, id: string, ctx: RequestContext = {}): Promise<void> {
+  await appleApiRequest(connection, `/subscriptionIntroductoryOffers/${encodeURIComponent(id)}`, { method: 'DELETE', budget: ctx.budget });
 }
 
 // ---------------------------------------------------------------------------
@@ -287,8 +287,8 @@ export function offerCodeCreateBody(input: OfferCodeInput) {
   };
 }
 
-export async function createOfferCode(credentials: AppleConnectCredentials, input: OfferCodeInput, ctx: RequestContext = {}): Promise<{ id: string }> {
-  const response = await appleApiRequest<Created>(credentials, '/subscriptionOfferCodes', {
+export async function createOfferCode(connection: AppleConnection, input: OfferCodeInput, ctx: RequestContext = {}): Promise<{ id: string }> {
+  const response = await appleApiRequest<Created>(connection, '/subscriptionOfferCodes', {
     method: 'POST',
     body: offerCodeCreateBody(input),
     budget: ctx.budget,
@@ -300,8 +300,8 @@ export function offerCodeActiveBody(id: string, active: boolean) {
   return { data: { type: 'subscriptionOfferCodes', id, attributes: { active } } };
 }
 
-export async function setOfferCodeActive(credentials: AppleConnectCredentials, id: string, active: boolean, ctx: RequestContext = {}): Promise<void> {
-  await appleApiRequest(credentials, `/subscriptionOfferCodes/${encodeURIComponent(id)}`, {
+export async function setOfferCodeActive(connection: AppleConnection, id: string, active: boolean, ctx: RequestContext = {}): Promise<void> {
+  await appleApiRequest(connection, `/subscriptionOfferCodes/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     body: offerCodeActiveBody(id, active),
     budget: ctx.budget,
@@ -359,8 +359,8 @@ export function winBackOfferCreateBody(input: WinBackOfferInput) {
   };
 }
 
-export async function createWinBackOffer(credentials: AppleConnectCredentials, input: WinBackOfferInput, ctx: RequestContext = {}): Promise<{ id: string }> {
-  const response = await appleApiRequest<Created>(credentials, '/winBackOffers', {
+export async function createWinBackOffer(connection: AppleConnection, input: WinBackOfferInput, ctx: RequestContext = {}): Promise<{ id: string }> {
+  const response = await appleApiRequest<Created>(connection, '/winBackOffers', {
     method: 'POST',
     body: winBackOfferCreateBody(input),
     budget: ctx.budget,
@@ -390,14 +390,14 @@ export function winBackOfferUpdateBody(id: string, update: WinBackOfferUpdate) {
   return { data: { type: 'winBackOffers', id, attributes } };
 }
 
-export async function updateWinBackOffer(credentials: AppleConnectCredentials, id: string, update: WinBackOfferUpdate, ctx: RequestContext = {}): Promise<void> {
-  await appleApiRequest(credentials, `/winBackOffers/${encodeURIComponent(id)}`, {
+export async function updateWinBackOffer(connection: AppleConnection, id: string, update: WinBackOfferUpdate, ctx: RequestContext = {}): Promise<void> {
+  await appleApiRequest(connection, `/winBackOffers/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     body: winBackOfferUpdateBody(id, update),
     budget: ctx.budget,
   });
 }
 
-export async function deleteWinBackOffer(credentials: AppleConnectCredentials, id: string, ctx: RequestContext = {}): Promise<void> {
-  await appleApiRequest(credentials, `/winBackOffers/${encodeURIComponent(id)}`, { method: 'DELETE', budget: ctx.budget });
+export async function deleteWinBackOffer(connection: AppleConnection, id: string, ctx: RequestContext = {}): Promise<void> {
+  await appleApiRequest(connection, `/winBackOffers/${encodeURIComponent(id)}`, { method: 'DELETE', budget: ctx.budget });
 }

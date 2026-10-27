@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getGoogleAuthFromCookies } from '@/middleware/auth';
+import { GoogleKeyTokenSource } from '@/lib/token-source';
 import {
   getInAppProduct,
   updateInAppProductPrices,
@@ -164,6 +165,7 @@ export async function POST(request: NextRequest) {
         { status: 401 }
       );
     }
+    const tokens = new GoogleKeyTokenSource(auth.credentials);
 
     const read = await readJsonBody(request, LARGE_BODY_LIMIT);
     if (!read.ok) return read.response;
@@ -233,7 +235,7 @@ export async function POST(request: NextRequest) {
 
       try {
         if (item.type === 'product') {
-          const product = await getInAppProduct(auth.credentials, auth.packageName, item.id, ctx);
+          const product = await getInAppProduct(tokens, auth.packageName, item.id, ctx);
           if (!product) {
             results.push({ id: item.id, success: false, committed: false, error: 'Product not found' });
             if (stopOnFailure) stopped = true;
@@ -241,7 +243,7 @@ export async function POST(request: NextRequest) {
           }
           await run(item.id, { id: item.id }, product.prices ?? {}, (plan) =>
             updateInAppProductPrices(
-              auth.credentials,
+              tokens,
               auth.packageName,
               item.id,
               Object.fromEntries(plan.changes.map((c) => [c.regionCode, c.price])),
@@ -251,7 +253,7 @@ export async function POST(request: NextRequest) {
             )
           );
         } else {
-          const subscription = await getSubscription(auth.credentials, auth.packageName, item.id, ctx);
+          const subscription = await getSubscription(tokens, auth.packageName, item.id, ctx);
           if (!subscription) {
             results.push({ id: item.id, basePlanId: item.basePlanId, success: false, committed: false, error: 'Subscription not found' });
             if (stopOnFailure) stopped = true;
@@ -288,7 +290,7 @@ export async function POST(request: NextRequest) {
               await run(`${item.id}/${basePlan.basePlanId}`, head, prices, (plan) => {
                 // Same price maths as products; everything else in the config is sent back as fetched
                 const newConfigs: RegionalBasePlanConfig[] = plan.changes.map((c) => ({ ...configs.get(c.regionCode)!, price: c.price }));
-                return updateBasePlanPrices(auth.credentials, auth.packageName, item.id, basePlan.basePlanId, newConfigs, ctx, {
+                return updateBasePlanPrices(tokens, auth.packageName, item.id, basePlan.basePlanId, newConfigs, ctx, {
                   expected: Object.fromEntries(plan.changes.map((c) => [c.regionCode, c.current])),
                 });
               });
