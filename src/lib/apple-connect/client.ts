@@ -4,6 +4,15 @@ import type {
   AppleApiErrorResponse,
 } from './types';
 import { TokenCache, hashCredentialFields } from '../token-cache';
+import { ApiError, isRetryableStatus, toApiError } from '../utils/api-error';
+import type { RequestBudget } from '../utils/request-budget';
+import {
+  computeBackoffDelay,
+  parseRetryAfter,
+  resolveRetryOptions,
+  sleep,
+  type RetryOptions,
+} from '../utils/retry';
 
 const JWT_EXPIRY_SECONDS = 20 * 60; // 20 minutes (max allowed)
 const TOKEN_REFRESH_MARGIN = 60; // Refresh 1 minute before expiry
@@ -142,20 +151,76 @@ export function validateAppleCredentials(
   return true;
 }
 
+// Parsed App Store Connect X-Rate-Limit header
+export interface AppleRateLimitInfo {
+  /** Hourly request limit for the key (user-hour-lim) */
+  limit?: number;
+  /** Requests remaining in the current hour (user-hour-rem) */
+  remaining?: number;
+}
+
+/**
+ * Parse Apple's X-Rate-Limit header, e.g. "user-hour-lim:3600;user-hour-rem:123;"
+ * Returns undefined if the header is absent or carries no known fields.
+ */
+export function parseAppleRateLimitHeader(header: string | null): AppleRateLimitInfo | undefined {
+  if (!header) return undefined;
+  const info: AppleRateLimitInfo = {};
+  for (const part of header.split(';')) {
+    const [rawKey, rawValue] = part.split(':');
+    // Skip empty values: Number('') is 0, which would wrongly read as "quota spent"
+    if (!rawKey || rawValue === undefined || rawValue.trim() === '') continue;
+    const value = Number(rawValue.trim());
+    if (!Number.isFinite(value)) continue;
+    const key = rawKey.trim().toLowerCase();
+    if (key === 'user-hour-lim') info.limit = value;
+    if (key === 'user-hour-rem') info.remaining = value;
+  }
+  return info.limit === undefined && info.remaining === undefined ? undefined : info;
+}
+
+// Last X-Rate-Limit seen per API key (keyed by issuer + key ID, no secrets)
+const lastRateLimitByKey = new Map<string, AppleRateLimitInfo & { updatedAt: number }>();
+
+function rateLimitKey(credentials: AppleConnectCredentials): string {
+  return `${credentials.issuerId}:${credentials.keyId}`;
+}
+
+/** Most recent X-Rate-Limit info observed for these credentials, if any */
+export function getAppleRateLimitInfo(
+  credentials: AppleConnectCredentials
+): (AppleRateLimitInfo & { updatedAt: number }) | undefined {
+  return lastRateLimitByKey.get(rateLimitKey(credentials));
+}
+
+export interface AppleApiRequestOptions {
+  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  body?: unknown;
+  queryParams?: Record<string, string>;
+  apiVersion?: 'v1' | 'v2';
+  /**
+   * Backoff settings for 429 / 5xx / network errors (default: 4 attempts).
+   * POST (create) requests only ever retry 429; see appleApiRequest.
+   */
+  retry?: RetryOptions;
+  /** Optional per-run budget; each attempt consumes one request */
+  budget?: RequestBudget;
+  /** Called with the parsed X-Rate-Limit header after every response */
+  onRateLimit?: (info: AppleRateLimitInfo) => void;
+}
+
 // API request helper
 export async function appleApiRequest<T>(
   credentials: AppleConnectCredentials,
   endpoint: string,
-  options: {
-    method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
-    body?: unknown;
-    queryParams?: Record<string, string>;
-    apiVersion?: 'v1' | 'v2';
-  } = {}
+  options: AppleApiRequestOptions = {}
 ): Promise<T> {
-  const { method = 'GET', body, queryParams, apiVersion = 'v1' } = options;
-
-  const token = await generateJWT(credentials);
+  const { method = 'GET', body, queryParams, apiVersion = 'v1', budget, onRateLimit } = options;
+  const retry = resolveRetryOptions(options.retry);
+  // A POST creates something. After a 5xx, timeout or dropped connection the
+  // create may still have succeeded on Apple's side, so retrying could
+  // duplicate it. Only a 429 (rejected before processing) is safe to retry.
+  const retriesOnlyRateLimits = method === 'POST';
 
   const baseUrl = `https://api.appstoreconnect.apple.com/${apiVersion}`;
   let url = `${baseUrl}${endpoint}`;
@@ -167,78 +232,130 @@ export async function appleApiRequest<T>(
 
   // console.log('[Apple API Request]', method, url);
 
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
-    'Content-Type': 'application/json',
-  };
+  for (let attempt = 0; ; attempt++) {
+    const isLastAttempt = attempt + 1 >= retry.maxAttempts;
 
-  const fetchOptions: RequestInit = {
-    method,
-    headers,
-  };
+    // Throws BUDGET_EXCEEDED before anything is sent
+    budget?.consume('apple');
 
-  if (body) {
-    fetchOptions.body = JSON.stringify(body);
-  }
-
-  let response = await fetch(url, {
-    ...fetchOptions,
-    signal: AbortSignal.timeout(30_000), // 30 second timeout
-  });
-
-  // console.log('[Apple API Response] Status:', response.status);
-
-  // Handle 429 rate limiting: respect Retry-After header and retry once
-  if (response.status === 429) {
-    const retryAfterHeader = response.headers.get('Retry-After');
-    let waitSeconds = 30; // default if header is absent
-    if (retryAfterHeader) {
-      const parsed = Number(retryAfterHeader);
-      if (!Number.isNaN(parsed) && parsed > 0) {
-        waitSeconds = Math.min(parsed, 60); // cap at 60s
-      }
+    const token = await generateJWT(credentials);
+    const fetchOptions: RequestInit = {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      signal: AbortSignal.timeout(30_000), // 30 second timeout per attempt
+    };
+    if (body) {
+      fetchOptions.body = JSON.stringify(body);
     }
-    console.log(
-      `[Apple API] Rate limited (429) on ${method} ${endpoint}. Waiting ${waitSeconds}s...`
-    );
-    await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
 
-    // Retry once with a fresh timeout
-    response = await fetch(url, {
-      ...fetchOptions,
-      signal: AbortSignal.timeout(30_000),
-    });
-  }
+    let response: Response;
+    try {
+      response = await fetch(url, fetchOptions);
+    } catch (networkError) {
+      const apiError = toApiError(networkError, 'apple');
+      // fetch() rejections are network failures / timeouts: transient
+      const retryable =
+        !retriesOnlyRateLimits && (apiError.retryable || networkError instanceof TypeError);
+      if (!retryable || isLastAttempt) {
+        throw new ApiError(apiError.message, {
+          status: apiError.status === 500 ? 503 : apiError.status,
+          code: apiError.code === 'UNKNOWN_ERROR' ? 'NETWORK_ERROR' : apiError.code,
+          platform: 'apple',
+          // Non-transient failures are terminal; a transient one that ran out of
+          // attempts follows its 503/504 status so an outer retry policy still applies
+          retryable: retryable ? undefined : false,
+          details: { attempts: attempt + 1 },
+          cause: networkError,
+        });
+      }
+      const delay = computeBackoffDelay(attempt, retry.baseDelayMs, retry.maxDelayMs);
+      console.log(
+        `[Apple API] Network error on ${method} ${endpoint}: ${apiError.message}. ` +
+        `Retry ${attempt + 1}/${retry.maxAttempts - 1} in ${delay}ms...`
+      );
+      await sleep(delay);
+      continue;
+    }
 
-  if (!response.ok) {
-    const errorData = (await response.json()) as AppleApiErrorResponse;
-    console.error('[Apple API Error] Response:', JSON.stringify(errorData, null, 2));
-    const error = errorData.errors?.[0];
-    throw new AppleApiError(
-      response.status,
+    // console.log('[Apple API Response] Status:', response.status);
+
+    const rateLimit = parseAppleRateLimitHeader(response.headers.get('X-Rate-Limit'));
+    if (rateLimit) {
+      lastRateLimitByKey.set(rateLimitKey(credentials), { ...rateLimit, updatedAt: Date.now() });
+      if (rateLimit.remaining !== undefined) {
+        budget?.recordUpstreamRemaining(rateLimit.remaining);
+      }
+      onRateLimit?.(rateLimit);
+    }
+
+    if (response.ok) {
+      // Handle 204 No Content
+      if (response.status === 204) {
+        return {} as T;
+      }
+      return response.json() as Promise<T>;
+    }
+
+    const status = response.status;
+    const retryAfterMs = parseRetryAfter(response.headers.get('Retry-After'));
+    // No point retrying a 429 when Apple says the hourly quota is spent
+    const quotaSpent = status === 429 && rateLimit?.remaining === 0;
+    const retryAfterTooLong =
+      retryAfterMs !== undefined && retryAfterMs > retry.maxRetryAfterMs;
+    const statusRetryable = retriesOnlyRateLimits ? status === 429 : isRetryableStatus(status);
+    const shouldRetry = statusRetryable && !quotaSpent && !retryAfterTooLong && !isLastAttempt;
+
+    if (shouldRetry) {
+      // Wait at least Retry-After; jittered backoff spreads out concurrent retries
+      const backoff = computeBackoffDelay(attempt, retry.baseDelayMs, retry.maxDelayMs);
+      const delay = retryAfterMs !== undefined ? Math.max(retryAfterMs, backoff) : backoff;
+      console.log(
+        `[Apple API] ${status} on ${method} ${endpoint}. ` +
+        `Retry ${attempt + 1}/${retry.maxAttempts - 1} in ${delay}ms...`
+      );
+      // Drain the body so the connection can be reused
+      await response.text().catch(() => undefined);
+      await sleep(delay);
+      continue;
+    }
+
+    const text = await response.text().catch(() => '');
+    let errorData: AppleApiErrorResponse | undefined;
+    try {
+      errorData = text ? (JSON.parse(text) as AppleApiErrorResponse) : undefined;
+    } catch {
+      // Non-JSON body (e.g. gateway HTML) - fall through to generic error
+    }
+    console.error('[Apple API Error] Response:', errorData ? JSON.stringify(errorData, null, 2) : `${status} ${text.slice(0, 500)}`);
+    const error = errorData?.errors?.[0];
+    const apiError = new AppleApiError(
+      status,
       error?.code || 'UNKNOWN_ERROR',
       error?.title || 'Unknown error',
-      error?.detail || `Request failed with status ${response.status}`
+      error?.detail || `Request failed with status ${status}`
     );
+    apiError.details = { errors: errorData?.errors, attempts: attempt + 1, rateLimit };
+    // Only terminal conditions opt out of outer retries (e.g. executeWithRateLimit);
+    // otherwise retryable follows the status so the caller's retry policy still applies
+    if (quotaSpent || retryAfterTooLong || !statusRetryable) {
+      apiError.retryable = false;
+    }
+    throw apiError;
   }
-
-  // Handle 204 No Content
-  if (response.status === 204) {
-    return {} as T;
-  }
-
-  return response.json() as Promise<T>;
 }
 
 // Custom error class for Apple API errors
-export class AppleApiError extends Error {
+export class AppleApiError extends ApiError {
   constructor(
     public statusCode: number,
     public code: string,
     public title: string,
     public detail: string
   ) {
-    super(`${title}: ${detail}`);
+    super(`${title}: ${detail}`, { status: statusCode, code, platform: 'apple' });
     this.name = 'AppleApiError';
   }
 }

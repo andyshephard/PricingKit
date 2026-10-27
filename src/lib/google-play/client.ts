@@ -8,6 +8,15 @@ import {
   MISSING_ENCRYPTION_KEY_MESSAGE,
 } from '../encryption';
 import { TokenCache, hashCredentialFields } from '../token-cache';
+import { ApiError, getErrorStatus, isRetryableStatus, toApiError } from '../utils/api-error';
+import type { RequestBudget } from '../utils/request-budget';
+import {
+  computeBackoffDelay,
+  parseRetryAfter,
+  resolveRetryOptions,
+  sleep,
+  type RetryOptions,
+} from '../utils/retry';
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 const ANDROID_PUBLISHER_BASE = 'https://androidpublisher.googleapis.com';
@@ -154,17 +163,48 @@ interface GoogleErrorEnvelope {
   };
 }
 
-export interface GooglePlayApiError {
+/**
+ * Error thrown by googlePlayFetch. Extends the shared ApiError; `code` stays
+ * the numeric HTTP code and `errors` the Google reasons, so existing
+ * `err.code === 403` / `err.errors[0].reason` checks keep working.
+ */
+export class GooglePlayApiError extends ApiError {
   code: number;
-  message: string;
-  status?: string;
   errors: Array<{ reason?: string; message?: string }>;
+  /** Google's canonical status string, e.g. "PERMISSION_DENIED" */
+  googleStatus?: string;
+
+  constructor(init: {
+    code: number;
+    message: string;
+    googleStatus?: string;
+    errors?: Array<{ reason?: string; message?: string }>;
+    retryable?: boolean;
+    cause?: unknown;
+  }) {
+    super(init.message, {
+      status: init.code,
+      code: init.code,
+      platform: 'google',
+      retryable: init.retryable,
+      details: { googleStatus: init.googleStatus, errors: init.errors ?? [] },
+      cause: init.cause,
+    });
+    this.name = 'GooglePlayApiError';
+    this.code = init.code;
+    this.errors = init.errors ?? [];
+    this.googleStatus = init.googleStatus;
+  }
 }
 
 export interface GooglePlayFetchOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
   body?: unknown;
   query?: Record<string, string | number | undefined>;
+  /** Backoff settings for 429 / 5xx / network errors (default: 4 attempts) */
+  retry?: RetryOptions;
+  /** Optional per-run budget; each attempt consumes one request */
+  budget?: RequestBudget;
 }
 
 function buildUrl(path: string, query?: GooglePlayFetchOptions['query']): string {
@@ -187,56 +227,115 @@ export async function googlePlayFetch<T>(
   path: string,
   options: GooglePlayFetchOptions = {}
 ): Promise<T> {
-  const { method = 'GET', body, query } = options;
-  const token = await getGoogleAccessToken(credentials);
+  const { method = 'GET', body, query, budget } = options;
+  const retry = resolveRetryOptions(options.retry);
   const url = buildUrl(path, query);
 
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
-    Accept: 'application/json',
-  };
-  if (body !== undefined) {
-    headers['Content-Type'] = 'application/json';
-  }
+  for (let attempt = 0; ; attempt++) {
+    const isLastAttempt = attempt + 1 >= retry.maxAttempts;
 
-  const response = await fetch(url, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(60_000),
-  });
+    // Throws BUDGET_EXCEEDED before anything is sent
+    budget?.consume('google');
 
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  const text = await response.text();
-  let parsed: unknown = undefined;
-  if (text) {
+    let response: Response;
     try {
-      parsed = JSON.parse(text);
-    } catch {
-      // Non-JSON body — leave parsed undefined.
-    }
-  }
+      // Inside the try so a network failure while minting the token is retried too
+      const token = await getGoogleAccessToken(credentials);
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      };
+      if (body !== undefined) {
+        headers['Content-Type'] = 'application/json';
+      }
 
-  if (!response.ok) {
+      response = await fetch(url, {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(60_000),
+      });
+    } catch (networkError) {
+      // Token endpoint HTTP errors (e.g. 401 invalid credentials) keep their shape
+      if (getErrorStatus(networkError) !== undefined) {
+        throw networkError;
+      }
+      const normalised = toApiError(networkError, 'google');
+      // fetch() rejections are network failures / timeouts: transient
+      const retryable = normalised.retryable || networkError instanceof TypeError;
+      if (!retryable || isLastAttempt) {
+        throw new GooglePlayApiError({
+          code: normalised.status === 500 ? 503 : normalised.status,
+          message: normalised.message,
+          errors: [{ reason: 'networkError', message: normalised.message }],
+          // Non-transient failures are terminal; a transient one that ran out of
+          // attempts follows its 503/504 status so an outer retry policy still applies
+          retryable: retryable ? undefined : false,
+          cause: networkError,
+        });
+      }
+      const delay = computeBackoffDelay(attempt, retry.baseDelayMs, retry.maxDelayMs);
+      console.log(
+        `[googlePlayFetch] Network error on ${method} ${path}: ${normalised.message}. ` +
+        `Retry ${attempt + 1}/${retry.maxAttempts - 1} in ${delay}ms...`
+      );
+      await sleep(delay);
+      continue;
+    }
+
+    if (response.status === 204) {
+      return undefined as T;
+    }
+
+    const text = await response.text();
+    let parsed: unknown = undefined;
+    if (text) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        // Non-JSON body — leave parsed undefined.
+      }
+    }
+
+    if (response.ok) {
+      return parsed as T;
+    }
+
     const envelope = (parsed as GoogleErrorEnvelope) ?? {};
     const errInfo = envelope.error ?? {};
-    const apiError: GooglePlayApiError = {
-      code: errInfo.code ?? response.status,
-      message: errInfo.message ?? response.statusText ?? `HTTP ${response.status}`,
-      status: errInfo.status,
+    // Google puts the HTTP status in error.code; prefer it, fall back to the response
+    const code = typeof errInfo.code === 'number' ? errInfo.code : response.status;
+    const retryAfterMs = parseRetryAfter(response.headers.get('Retry-After'));
+    const retryAfterTooLong =
+      retryAfterMs !== undefined && retryAfterMs > retry.maxRetryAfterMs;
+
+    if (isRetryableStatus(code) && !retryAfterTooLong && !isLastAttempt) {
+      // Wait at least Retry-After; jittered backoff spreads out concurrent retries
+      const backoff = computeBackoffDelay(attempt, retry.baseDelayMs, retry.maxDelayMs);
+      const delay = retryAfterMs !== undefined ? Math.max(retryAfterMs, backoff) : backoff;
+      console.log(
+        `[googlePlayFetch] ${method} ${path} → ${code}. ` +
+        `Retry ${attempt + 1}/${retry.maxAttempts - 1} in ${delay}ms...`
+      );
+      await sleep(delay);
+      continue;
+    }
+
+    const apiError = new GooglePlayApiError({
+      code,
+      message: errInfo.message || response.statusText || `HTTP ${response.status}`,
+      googleStatus: errInfo.status,
       errors: Array.isArray(errInfo.errors) ? errInfo.errors : [],
-    };
+      // Only a too-long Retry-After is terminal; otherwise retryable follows the
+      // status so a caller's own retry policy (e.g. executeWithRateLimit) still applies
+      retryable: retryAfterTooLong ? false : undefined,
+    });
     console.error(
       `[googlePlayFetch] ${method} ${url} → ${response.status}`,
-      JSON.stringify({ code: apiError.code, status: apiError.status, message: apiError.message, errors: apiError.errors })
+      JSON.stringify({ code: apiError.code, status: apiError.googleStatus, message: apiError.message, errors: apiError.errors })
     );
     throw apiError;
   }
-
-  return parsed as T;
 }
 
 export function validateServiceAccountJson(json: unknown): json is ServiceAccountCredentials {
