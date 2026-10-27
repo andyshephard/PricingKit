@@ -75,6 +75,8 @@ CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm test`, `npm run typecheck` a
   session-envelope.ts   # Session envelope {v, typ, iat, exp, creds}: sealSession / openSession, SESSION_VERSION
   session.ts            # Cookie names (__Host- in production), read/write/clear helpers, readSessionCookie, hasAuthenticatedSession()
   token-cache.ts        # LRU cache for Apple JWTs / Google access tokens
+  security-headers.ts   # Response headers and CSP for every route (next.config.ts): no 'unsafe-eval' outside next dev, base-uri 'none', form-action 'self'
+  request-guard.ts      # rejectCrossSite + readJsonBody for every non-GET route
 
 /src/cli/               # pricingkit CLI: args, commands/, credentials (env only), redact, spec-file (YAML), mcp (MCP server); `apply` is its only write
 /bin/pricingkit.mjs     # CLI launcher (tsx)

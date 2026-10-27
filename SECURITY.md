@@ -68,6 +68,11 @@ Requests that change something (`POST`, `PUT`, `PATCH`, `DELETE`):
 - are size-limited: 16 KB for sign-in, app switching and settings, 1 MB for store edits,
   plans, applies and bulk updates (`413`), by `Content-Length` and by the bytes actually read.
 
+Every response carries a Content-Security-Policy (no `eval` outside `next dev`, no `<base>`
+changes, forms only to this site, no plugins, no framing), `X-Frame-Options: DENY`,
+`nosniff`, a strict referrer policy and HSTS. Inline scripts and styles are still allowed
+(Next.js inlines its bootstrap code; a nonce-based policy is planned).
+
 Other data:
 
 - The optional Open Exchange Rates API key entered in Settings is stored in an `HttpOnly`
