@@ -246,7 +246,7 @@ any other value refuses the whole run before anything is read or sent.
 Each op is checked against App Store Connect first: one already done is
 skipped, one whose offer changed since the plan was made fails with nothing
 sent. The run log (pricingkit.applyRun) is saved after every step to
---run-out (default <plan>.run.json), written atomically. An existing log is
+--run-out (default <plan>.run.json, next to the plan file), written atomically. An existing log is
 never replaced unless you pass --force (or resume it in place); resume a
 failed or interrupted run with --resume. Deleting an offer needs --force-delete, because
 App Store Connect doesn't report redemptions.
@@ -258,7 +258,7 @@ ${SHARED_HELP}`,
   pricingkit undo <plan.json> <run.json> [--out <undo.json>] [--force]
 
 Builds the plan that undoes what the run changed (newest first, from each
-op's "before"), writes it (default <plan>.undo.json, never replaced unless
+op's "before"), writes it (default <plan>.undo.json next to the plan, never replaced unless
 --force), and prints its summary, its hash and anything that can't be
 reversed (e.g. offer codes already redeemed). Sends no store requests and
 needs no credentials. Works for runs from the CLI and from the web app (save

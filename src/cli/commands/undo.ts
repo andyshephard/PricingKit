@@ -3,16 +3,16 @@
 // applied (after review) with `pricingkit apply <undo.json> --confirm <hash>`.
 
 import { existsSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { buildUndoChangeSet, isOfferOp, parseChangeSet, parseRun, serializeChangeSet, type ApplyRun, type ChangeSet } from '@/lib/pricing';
 import { stringFlag } from '../args';
 import { readInputFile, writeOutputFileAtomic, type CommandContext, type CommandResult } from '../context';
 import { CliError, EXIT_CHANGES, EXIT_OK, UsageError } from '../errors';
 import { formatPlanSummary, summarizeChangeSet } from './diff';
 
-/** Default undo plan file: plan.json -> plan.undo.json */
+/** Default undo plan file, next to the plan: plans/x.json -> plans/x.undo.json */
 export function defaultUndoFile(planPath: string): string {
-  return `${basename(planPath).replace(/\.json$/i, '')}.undo.json`;
+  return join(dirname(planPath), `${basename(planPath).replace(/\.json$/i, '')}.undo.json`);
 }
 
 export async function undoCommand(ctx: CommandContext): Promise<CommandResult> {

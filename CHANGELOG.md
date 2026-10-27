@@ -69,6 +69,7 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 
 ### Fixed
 
+- `pricingkit apply` wrote its default run log (`<plan>.run.json`) to the current working directory instead of next to the plan file, so `apply plans/x.json` run from elsewhere left `x.run.json` in the wrong place (and a second apply from another directory didn't see it). It is now written next to the plan. `pricingkit undo`'s default `<plan>.undo.json` had the same problem and is fixed too. `--run-out` and `--out` still resolve against the working directory.
 - A failed Google access-token request is now thrown as a `GooglePlayApiError` (a real `Error`, still `code: 401` with reason `invalidCredentials`, not retried) instead of a plain object, so anything that prints it shows Google's message instead of `[object Object]`.
 - Plan, state and run files that aren't valid JSON are refused with "not valid JSON" only. The parser's message, which can quote the file's contents, is no longer passed on.
 

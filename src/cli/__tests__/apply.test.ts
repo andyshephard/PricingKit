@@ -2,7 +2,7 @@
 // the in-memory offer store. The App Store client is mocked: nothing leaves
 // the process.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const appleApiRequest = vi.fn();
@@ -155,6 +155,32 @@ describe('pricingkit apply', () => {
     expect(r2.code).toBe(1);
     expect(r2.stderr).toMatch(/offer plans only/);
     expect(store.writes()).toEqual([]);
+  });
+});
+
+describe('default run log and undo plan paths', () => {
+  it('are next to the plan file, not in the working directory', async () => {
+    const { hash } = await planFile();
+    mkdirSync(join(tmp.dir, 'plans'));
+    writeFileSync(join(tmp.dir, 'plans', 'offers.json'), readFileSync(join(tmp.dir, 'plan.json'), 'utf8'));
+    mkdirSync(join(tmp.dir, 'elsewhere'));
+    const cwd = join(tmp.dir, 'elsewhere');
+
+    const r = await run(['apply', '../plans/offers.json', '--confirm', hash], { env, cwd });
+    expect(r.code).toBe(0);
+    expect(existsSync(join(tmp.dir, 'plans', 'offers.run.json'))).toBe(true);
+    expect(readdirSync(cwd)).toEqual([]);
+    expect(r.stdout).toContain(join(tmp.dir, 'plans', 'offers.run.json'));
+
+    const u = await run(['undo', '../plans/offers.json', '../plans/offers.run.json'], { env: {}, cwd });
+    expect(u.code).toBe(2);
+    expect(existsSync(join(tmp.dir, 'plans', 'offers.undo.json'))).toBe(true);
+    expect(readdirSync(cwd)).toEqual([]);
+
+    // A second apply finds the log next to the plan and refuses to replace it
+    const again = await run(['apply', '../plans/offers.json', '--confirm', hash], { env, cwd });
+    expect(again.code).toBe(1);
+    expect(again.stderr).toMatch(/offers\.run\.json already exists/);
   });
 });
 

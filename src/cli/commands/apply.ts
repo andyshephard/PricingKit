@@ -4,7 +4,7 @@
 // run can be resumed with --resume and undone later.
 
 import { existsSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import {
   applyChangeSet,
   changeSetHash,
@@ -21,10 +21,14 @@ import { stringFlag } from '../args';
 import { appleAdapter, readInputFile, writeOutputFileAtomic, type CommandContext, type CommandResult } from '../context';
 import { CliError, EXIT_ERROR, EXIT_OK, UsageError } from '../errors';
 
-/** Default run log file for a plan file: plan.json -> plan.run.json */
+/**
+ * Default run log file for a plan file, next to the plan: plans/x.json ->
+ * plans/x.run.json (relative paths stay relative to the working directory,
+ * like the plan path itself)
+ */
 export function defaultRunFile(planPath: string): string {
   const name = basename(planPath).replace(/\.json$/i, '');
-  return `${name}.run.json`;
+  return join(dirname(planPath), `${name}.run.json`);
 }
 
 export async function applyCommand(ctx: CommandContext): Promise<CommandResult> {
