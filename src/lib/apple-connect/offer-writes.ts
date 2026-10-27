@@ -19,10 +19,14 @@
 // create that timed out or answered 5xx may exist, so it is reported and
 // detected by its key on the next read, never sent twice.
 //
-// Unconfirmed against a real account (see CLAUDE.md): local IDs for inline
-// prices ("${price-USA}"), the win-back inline price relationships (the spec
-// lists none), free-trial prices without a price point, and whether a
-// promotional offer PATCH replaces the whole price list.
+// Confirmed on a test app with PricingKit (Oct 2026): local IDs for inline
+// prices ("${price-USA}") work for promotional offer creates, and a
+// promotional offer PATCH replaces the whole price list with the one sent
+// (175 territories after the PATCH, no duplicates). A promo create can
+// answer a transient 500 having created nothing; the next read doesn't find
+// it and a resume creates it once.
+// Still unconfirmed (see CLAUDE.md): the win-back inline price relationships
+// (the spec lists none) and free-trial prices without a price point on create.
 
 import { appleApiRequest } from './client';
 import type { AppleConnectCredentials } from './types';

@@ -171,6 +171,23 @@ describe('applying offer plans', () => {
     expect(store.offers).toHaveLength(2);
   });
 
+  it('a create that answered 500 having created nothing is created once on resume (seen on a real account)', async () => {
+    const plan = await planBoth();
+    store.failures.push({ method: 'POST', path: /^\/subscriptionPromotionalOffers$/, status: 500 });
+    let saved: ApplyRun | undefined;
+    const first = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash, concurrency: 1, onUpdate: (r) => void (saved = r) });
+    expect(first.ops[0]).toMatchObject({ status: 'failed', attempts: 1, error: { status: 500 } });
+    expect(store.offers).toHaveLength(1); // nothing was created for the failed op
+
+    const resumed = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash, run: parseRun(serializeRun(saved!)) });
+    expect(resumed.status).toBe('completed');
+    expect(resumed.ops[0]).toMatchObject({ status: 'ok', attempts: 2 });
+    expect(resumed.ops[0].response?.confirmedOnResume).toBeUndefined();
+    // Three POSTs in all: the refused one, the other product's, and exactly one on resume
+    expect(store.writes().filter((w) => w.startsWith('POST'))).toHaveLength(3);
+    expect(store.offers.filter((o) => o.subscriptionId === ANNUAL)).toHaveLength(1);
+  });
+
   it('undo deletes the created offers only with force, and says what it cannot undo', async () => {
     const plan = await planBoth();
     const run = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash });

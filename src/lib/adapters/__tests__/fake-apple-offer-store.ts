@@ -6,10 +6,13 @@
 // Confirmed against a real account (read-only): free-trial intro prices have
 // no price point; a pay-up-front promotional offer's stored price is the
 // total for its whole duration.
-// ASSUMED, not confirmed (to be checked in the write test): a promotional
-// offer PATCH replaces the offer's whole price list with the one sent; the
-// 10-promotional-offer cap (enforced here like Apple's help pages describe);
-// inline price IDs of the form "${...}".
+// Confirmed on a test app (writes, Oct 2026): a promotional offer PATCH
+// replaces the offer's whole price list with the one sent (175 prices after
+// the PATCH, no duplicates); inline price IDs of the form "${...}" work for
+// promotional offer creates; a create can answer a transient 500 having
+// created nothing (inject it with a `failures` entry without `afterWrite`).
+// ASSUMED, not confirmed: the 10-promotional-offer cap (enforced here like
+// Apple's help pages describe).
 import { AppleApiError } from '@/lib/apple-connect/client';
 import type { RequestBudget } from '@/lib/utils/request-budget';
 
@@ -274,7 +277,7 @@ export class FakeOfferStore {
       }
       if (method === 'PATCH') {
         if (offer.type === 'subscriptionPromotionalOffers') {
-          // ASSUMED: the list sent replaces the whole price list
+          // Confirmed on a test app: the list sent replaces the whole price list
           const refs = (body as { data: { relationships: { prices: { data: Array<{ id: string }> } } } }).data.relationships.prices.data;
           const fresh = this.inline(body as never);
           const kept = refs.filter((r) => !r.id.startsWith('${')).map((r) => {
