@@ -155,7 +155,10 @@ const undo = buildUndoChangeSet(plan, run);               // itself a plan to re
   again. If `onUpdate` throws, the run stops before any further write (`stoppedReason:
   PERSIST_FAILED`).
 - **Budgeted.** Every request is charged to the `RequestBudget` (Apple's `X-Rate-Limit` feeds it
-  too). The run stops before the budget runs dry and leaves the rest pending.
+  too). An op starts only if the budget covers all its requests (an Apple scheduled-price
+  replacement needs two); otherwise the run stops and leaves the rest pending.
+- **Never guesses.** If a territory's price can't be read unambiguously (for example two future
+  Apple prices), the planner skips it and the executor refuses ops on it (`STATE_CHANGED`).
 - **Undoable.** The undo plan reverses every op the run applied, newest first, from the `before`
   snapshots. Apple can't remove a territory's current price, so an op that added one is listed as
   not reversible.
@@ -182,7 +185,7 @@ OPEN_EXCHANGE_RATES_APP_ID=your-api-key
 # request passes through that proxy (clients can forge these headers):
 #   cf-connecting-ip (Cloudflare, incl. Workers), x-real-ip, or x-forwarded-for (last entry used)
 # Unset, anonymous key tests share a per-instance cap instead.
-TRUSTED_CLIENT_IP_HEADER=cf-connecting-ip
+# TRUSTED_CLIENT_IP_HEADER=cf-connecting-ip
 ```
 
 ## Security

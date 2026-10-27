@@ -93,7 +93,8 @@ export async function listSubscriptionPricePointsByTerritory(
 
 /**
  * Apple's equivalent of one price point in other territories
- * (GET /v1/subscriptionPricePoints/{id}/equalizations). This is Apple's own
+ * (GET /v1/subscriptionPricePoints/{id}/equalizations; Apple documents limit
+ * up to 8000, the same as the pricePoints list). This is Apple's own
  * equalisation of a single price, so it fits plans that want "the same tier
  * everywhere"; per-territory targets (PPP, percent of each territory's own
  * price) need the full ladders from listSubscriptionPricePointsByTerritory.
