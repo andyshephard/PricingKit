@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Header } from '@/components/layout';
 import { BasePlanEditor } from '@/components/subscriptions/base-plan-editor';
+import { PlaySubscriptionOffers } from '@/components/subscriptions/play-subscription-offers';
 import { ExportPricesButton } from '@/components/pricing/export-prices-button';
 import { formatMoney } from '@/lib/google-play/types';
 import type { SubscriptionResponse } from '@/types/api';
@@ -162,6 +163,8 @@ export default function GoogleSubscriptionDetailPage({
               <h2 className="text-lg font-semibold mb-4">Base Plans</h2>
               <BasePlanEditor subscription={subscription} />
             </div>
+
+            <PlaySubscriptionOffers productId={subscription.productId || decodedId} />
           </>
         ) : (
           <Card>
