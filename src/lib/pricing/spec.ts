@@ -49,6 +49,12 @@
 //   maxAgeYears) or inflate (carry it forward with the "cpi" ratios given).
 // - "freshness": maximum ages of the reference data (freshness.ts); stale
 //   data is a warning, or refuses the plan with "refuseStale".
+//
+// Phase 6: "baseTerritory" is per product. It is the territory a product's
+// prices are anchored on (products of one app may use different ones), and a
+// strategy target that leaves out base.territory takes it. There is no
+// app-wide base territory anywhere in a spec. Fixed targets may also come
+// from a prices CSV ("pricesFile", read by the CLI, see prices-csv.ts).
 
 import { z } from 'zod';
 import { appRefSchema, productRefSchema, type PlanSkip } from './changeset';
@@ -86,7 +92,11 @@ export type SpecRounding = (typeof SPEC_ROUNDINGS)[number];
 export interface StrategyTargets {
   type: 'strategy';
   strategy: SpecStrategy;
-  /** The price in one territory every other price is derived from. Currency defaults to the territory's current one. */
+  /**
+   * The price in one territory every other price is derived from. Currency
+   * defaults to the territory's current one. The territory defaults to the
+   * product's own baseTerritory (filled in when the spec is parsed).
+   */
   base: { territory: string; amount: Decimal; currency?: string };
   /** Default: "none" on the App Store (snapping picks the price point), "nearest-99" on Google Play */
   rounding?: SpecRounding;
@@ -118,6 +128,12 @@ export interface SpecConsent {
 
 export interface PricingSpecProduct {
   product: ProductRef;
+  /**
+   * This product's base territory (alpha-2): the territory its prices are
+   * anchored on. Per product, never app-wide. A strategy target without
+   * base.territory uses it; when both are given they must agree.
+   */
+  baseTerritory?: string;
   targets: SpecTargets;
   /** Apple: how a target snaps to the territory's price points (default nearest). Play has no ladder; ignored there. */
   snap?: SnapMode;
@@ -178,7 +194,8 @@ const targetsSchema = z.discriminatedUnion('type', [
     .object({
       type: z.literal('strategy'),
       strategy: z.enum(SPEC_STRATEGIES),
-      base: z.object({ territory: territorySchema, amount: positiveDecimal, currency: currencySchema.optional() }).strict(),
+      // territory may come from the product's baseTerritory (checked and filled in by specProductSchema / parsePricingSpec)
+      base: z.object({ territory: territorySchema.optional(), amount: positiveDecimal, currency: currencySchema.optional() }).strict(),
       rounding: z.enum(SPEC_ROUNDINGS).optional(),
       territories: z.union([z.literal('all'), z.array(territorySchema).min(1)]).optional(),
       exchangeRates: z.record(currencySchema, positiveDecimal).optional(),
@@ -198,17 +215,11 @@ const targetsSchema = z.discriminatedUnion('type', [
       if (t.strategy === 'custom') {
         if (!t.multipliers || Object.keys(t.multipliers).length === 0) {
           ctx.addIssue({ code: 'custom', message: 'the custom strategy needs "multipliers" (territory -> multiplier) or, in the CLI, "multipliersFile"', path: ['multipliers'] });
-        } else if (Array.isArray(t.territories)) {
-          const missing = t.territories.filter((x) => !(x in t.multipliers!) && x !== t.base.territory);
-          if (missing.length > 0) ctx.addIssue({ code: 'custom', message: `no multiplier for ${missing.join(', ')}`, path: ['territories'] });
         }
       } else if (t.multipliers) {
         ctx.addIssue({ code: 'custom', message: 'multipliers go with the custom strategy only', path: ['multipliers'] });
       }
       if (t.pppStaleness && t.strategy !== 'ppp') ctx.addIssue({ code: 'custom', message: 'pppStaleness goes with the ppp strategy only', path: ['pppStaleness'] });
-      if (t.pppStaleness?.mode === 'inflate' && !t.pppStaleness.cpi?.[t.base.territory]) {
-        ctx.addIssue({ code: 'custom', message: `the inflate policy needs cpi for the base territory ${t.base.territory}`, path: ['pppStaleness', 'cpi'] });
-      }
       if (t.exchangeRatesAsOf && !t.exchangeRates) ctx.addIssue({ code: 'custom', message: 'exchangeRatesAsOf goes with exchangeRates', path: ['exchangeRatesAsOf'] });
     }),
   z.object({ type: z.literal('fixed'), prices: z.record(territorySchema, specPriceSchema) }).strict(),
@@ -230,6 +241,7 @@ const targetsSchema = z.discriminatedUnion('type', [
 const specProductSchema = z
   .object({
     product: productRefSchema,
+    baseTerritory: territorySchema.optional(),
     targets: targetsSchema,
     snap: z.enum(['nearest', 'floor', 'ceil']).optional(),
     startDate: z.string().refine((v) => isCalendarDate(v), { message: 'startDate must be a real date, YYYY-MM-DD' }).optional(),
@@ -248,7 +260,27 @@ const specProductSchema = z
       .strict()
       .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((entry, ctx) => {
+    if (entry.targets.type !== 'strategy') return;
+    const t = entry.targets;
+    // The base territory is per product: the target's own, else the product's
+    const base = t.base.territory ?? entry.baseTerritory;
+    if (!base) {
+      ctx.addIssue({ code: 'custom', message: "a strategy target needs a base territory: give targets.base.territory or the product's baseTerritory (there is no app-wide default)", path: ['targets', 'base', 'territory'] });
+      return;
+    }
+    if (t.base.territory && entry.baseTerritory && t.base.territory !== entry.baseTerritory) {
+      ctx.addIssue({ code: 'custom', message: `targets.base.territory (${t.base.territory}) and the product's baseTerritory (${entry.baseTerritory}) differ; give one`, path: ['targets', 'base', 'territory'] });
+    }
+    if (t.strategy === 'custom' && t.multipliers && Array.isArray(t.territories)) {
+      const missing = t.territories.filter((x) => !(x in t.multipliers!) && x !== base);
+      if (missing.length > 0) ctx.addIssue({ code: 'custom', message: `no multiplier for ${missing.join(', ')}`, path: ['targets', 'territories'] });
+    }
+    if (t.pppStaleness?.mode === 'inflate' && !t.pppStaleness.cpi?.[base]) {
+      ctx.addIssue({ code: 'custom', message: `the inflate policy needs cpi for the base territory ${base}`, path: ['targets', 'pppStaleness', 'cpi'] });
+    }
+  });
 
 export const pricingSpecSchema = z
   .object({
@@ -324,6 +356,10 @@ export function parsePricingSpec(input: string | unknown): PricingSpec {
     throw new PricingSpecError(result.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`));
   }
   const spec = result.data as PricingSpec;
+  // A strategy target without base.territory takes the product's own (the schema checked one exists)
+  for (const entry of spec.products) {
+    if (entry.targets.type === 'strategy' && !entry.targets.base.territory) entry.targets.base.territory = entry.baseTerritory!;
+  }
   const problems = checkSpecRules(spec);
   if (problems.length > 0) throw new PricingSpecError(problems);
   return spec;

@@ -8,15 +8,20 @@ import { SubscriptionsTable } from '@/components/subscriptions/subscriptions-tab
 import { Button } from '@/components/ui/button';
 import { useSelectionStore } from '@/store/selection-store';
 import { useAuthStore } from '@/store/auth-store';
+import { pickBasePrice, productBaseKey } from '@/lib/base-territory';
+
+const EMPTY_BASES: Record<string, string> = {};
 import { parseMoney } from '@/lib/google-play/types';
 import type { RawAppleSubscription, SubscriptionsListResponse } from '@/types/api';
 
 export default function AppleSubscriptionsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const appleBaseCountry = useAuthStore((state) => state.appleBaseCountry) || 'US';
+  const bundleId = useAuthStore((state) => state.bundleId);
+  const productBases = useAuthStore((state) => state.appleProductBaseTerritories) ?? EMPTY_BASES;
 
   const { data, isLoading, refetch, isRefetching, error } = useQuery<SubscriptionsListResponse>({
-    queryKey: ['subscriptions', 'apple', appleBaseCountry],
+    queryKey: ['subscriptions', 'apple', appleBaseCountry, bundleId, productBases],
     queryFn: async () => {
       const response = await fetch('/api/apple/subscriptions');
       if (!response.ok) {
@@ -31,10 +36,10 @@ export default function AppleSubscriptionsPage() {
       // Normalize Apple subscriptions for the table
       if (data.subscriptions) {
         data.subscriptions = data.subscriptions.map((s: RawAppleSubscription) => {
-          const basePrice = s.prices?.[appleBaseCountry] || s.prices?.['US'] || Object.values(s.prices || {})[0] || null;
-          const basePriceRegion = basePrice
-            ? (s.prices?.[appleBaseCountry] ? appleBaseCountry : (s.prices?.['US'] ? 'US' : Object.keys(s.prices || {})[0]))
-            : null;
+          // The product's own base territory first, then the display default, then US
+          const picked = pickBasePrice(s.prices, [productBases[productBaseKey(bundleId, s.productId)], appleBaseCountry, 'US']);
+          const basePrice = picked?.price ?? null;
+          const basePriceRegion = picked?.region ?? null;
 
           return {
             productId: s.productId,

@@ -4,14 +4,19 @@ import { parseMoney } from '@/lib/google-play/types';
 import type { RawAppleSubscription, SubscriptionsListResponse, SubscriptionResponse } from '@/types/api';
 import type { AppleProductPrice } from '@/lib/apple-connect/types';
 import { useAuthStore } from '@/store/auth-store';
+import { pickBasePrice, productBaseKey } from '@/lib/base-territory';
+
+const EMPTY_BASES: Record<string, string> = {};
 import { useStreamingMutation } from './use-streaming-mutation';
 
 export function useSubscriptions() {
   const platform = useAuthStore((state) => state.platform);
   const appleBaseCountry = useAuthStore((state) => state.appleBaseCountry) || 'US';
+  const bundleId = useAuthStore((state) => state.bundleId);
+  const productBases = useAuthStore((state) => state.appleProductBaseTerritories) ?? EMPTY_BASES;
 
   return useQuery<SubscriptionsListResponse>({
-    queryKey: ['subscriptions', platform, platform === 'apple' ? appleBaseCountry : null],
+    queryKey: ['subscriptions', platform, platform === 'apple' ? [appleBaseCountry, bundleId, productBases] : null],
     queryFn: async () => {
       const url = platform === 'apple' ? '/api/apple/subscriptions' : '/api/subscriptions';
       const response = await fetch(url);
@@ -28,10 +33,10 @@ export function useSubscriptions() {
       if (platform === 'apple' && data.subscriptions) {
         data.subscriptions = data.subscriptions.map((s: RawAppleSubscription) => {
           // Get the base price for selected country, fallback to US, then first available
-          const basePrice = s.prices?.[appleBaseCountry] || s.prices?.['US'] || Object.values(s.prices || {})[0] || null;
-          const basePriceRegion = basePrice
-            ? (s.prices?.[appleBaseCountry] ? appleBaseCountry : (s.prices?.['US'] ? 'US' : Object.keys(s.prices || {})[0]))
-            : null;
+          // The product's own base territory first, then the display default, then US
+          const picked = pickBasePrice(s.prices, [productBases[productBaseKey(bundleId, s.productId)], appleBaseCountry, 'US']);
+          const basePrice = picked?.price ?? null;
+          const basePriceRegion = picked?.region ?? null;
 
           return {
             productId: s.productId,

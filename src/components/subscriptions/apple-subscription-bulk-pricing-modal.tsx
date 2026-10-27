@@ -42,6 +42,8 @@ import {
   alpha2ToAlpha3,
   alpha3ToAlpha2,
 } from '@/lib/apple-connect/territories';
+import { useAuthStore } from '@/store/auth-store';
+import { productBaseKey } from '@/lib/base-territory';
 import { useAppleAppPrice } from '@/hooks/use-apple-app-price';
 import { findClosestTierForCurrency, getPriceTiersForCurrency } from '@/lib/apple-connect/price-tier-data';
 import { getCurrencySymbol } from '@/lib/utils/currency';
@@ -199,13 +201,18 @@ export function AppleSubscriptionBulkPricingModal({
   const basePriceNum = parseFloat(basePrice) || 0;
   const isApproved = subscription.state === 'APPROVED';
 
-  // Seed base region from app-level Apple base territory once it loads,
-  // unless the user has already picked a region this session.
+  // The base territory is per product: this subscription's remembered one
+  // first, and only without it the app's price schedule base territory.
+  const bundleId = useAuthStore((state) => state.bundleId);
+  const baseKey = productBaseKey(bundleId, subscription.productId);
+  const productBase = useAuthStore((state) => state.appleProductBaseTerritories?.[baseKey]);
+  const setProductBase = useAuthStore((state) => state.setAppleProductBaseTerritory);
   useEffect(() => {
-    if (open && appPrice?.baseTerritory && !userTouchedRegion) {
-      setBaseRegion(appPrice.baseTerritory);
-    }
-  }, [open, appPrice?.baseTerritory, userTouchedRegion]);
+    if (!open || userTouchedRegion) return;
+    const own = productBase ? alpha2ToAlpha3(productBase) : null;
+    if (own) setBaseRegion(own);
+    else if (appPrice?.baseTerritory) setBaseRegion(appPrice.baseTerritory);
+  }, [open, productBase, appPrice?.baseTerritory, userTouchedRegion]);
 
   // When base region changes, prefill basePrice from the subscription's price
   // for that region (if it exists). Apple subs prices are keyed by alpha-2.
@@ -757,6 +764,9 @@ export function AppleSubscriptionBulkPricingModal({
                   onValueChange={(v) => {
                     setBaseRegion(v);
                     setUserTouchedRegion(true);
+                    // Remembered for this subscription only
+                    const alpha2 = alpha3ToAlpha2(v);
+                    if (alpha2) setProductBase(baseKey, alpha2);
                   }}
                 >
                   <SelectTrigger id="base-region" className="w-56">

@@ -43,6 +43,7 @@ import {
   parseMoney,
 } from '@/lib/google-play/types';
 import { getSupportedAppleTerritories, getTerritoryByAlpha3, alpha2ToAlpha3 } from '@/lib/apple-connect/territories';
+import { inAppBaseTerritory } from '@/lib/base-territory';
 import { findClosestTierForCurrency, getPriceTiersForCurrency } from '@/lib/apple-connect/price-tier-data';
 import { getCurrencySymbol as sharedGetCurrencySymbol } from '@/lib/utils/currency';
 import { useAppleAppPrice } from '@/hooks/use-apple-app-price';
@@ -134,17 +135,13 @@ export function BulkPricingModal({
   const platform: 'apple' | 'google' = isAppleProduct ? 'apple' : 'google';
   const { data: appPrice } = useAppleAppPrice();
 
-  // Initial base region: app-level (Apple) → per-product → 'USA' / 'US'.
+  // Initial base region: the product's own price schedule base territory
+  // (Apple) → the app's → 'USA' / 'US'. The base territory is per product.
+  const productBaseTerritory = (product as ProductWithApple)._appleProduct?.baseTerritory;
   const initialBaseRegion = useMemo(() => {
-    if (platform === 'apple') {
-      return (
-        appPrice?.baseTerritory ||
-        (product as ProductWithApple)._appleProduct?.baseTerritory ||
-        'USA'
-      );
-    }
+    if (platform === 'apple') return inAppBaseTerritory(productBaseTerritory, appPrice?.baseTerritory);
     return 'US';
-  }, [platform, appPrice?.baseTerritory, product]);
+  }, [platform, appPrice?.baseTerritory, productBaseTerritory]);
 
   const [baseRegion, setBaseRegion] = useState<string>(initialBaseRegion);
   const custom = useCustomMultipliers(baseRegion);
@@ -152,17 +149,19 @@ export function BulkPricingModal({
   const [inputMode, setInputMode] = useState<'tier' | 'manual'>('tier');
   const [selectedTierId, setSelectedTierId] = useState<string | null>(null);
 
-  // Once app-level base territory loads, seed unless user already picked one.
+  // Once the app's base territory loads, seed with it only when the product
+  // has none of its own and the user hasn't picked one.
   useEffect(() => {
     if (
       open &&
       platform === 'apple' &&
+      !productBaseTerritory &&
       appPrice?.baseTerritory &&
       !userTouchedRegion
     ) {
       setBaseRegion(appPrice.baseTerritory);
     }
-  }, [open, platform, appPrice?.baseTerritory, userTouchedRegion]);
+  }, [open, platform, productBaseTerritory, appPrice?.baseTerritory, userTouchedRegion]);
 
   // Currency derived from selected base region.
   const baseCurrency = useMemo(() => {

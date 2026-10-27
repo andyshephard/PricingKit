@@ -41,7 +41,10 @@ interface AuthState {
   bundleId: string | null;
   keyId: string | null;
   issuerId: string | null;
+  /** Display default for App Store base prices when a product has no base territory of its own */
   appleBaseCountry: string;
+  /** Per-product base territory (alpha-2), keyed by productBaseKey(bundleId, productId) */
+  appleProductBaseTerritories: Record<string, string>;
 
   // Google app history (multi-app switcher)
   googleAppHistory: GoogleAppHistoryEntry[];
@@ -57,6 +60,7 @@ interface AuthState {
   clearAppleAuth: () => void;
   clearAuth: () => void;
   setAppleBaseCountry: (country: string) => void;
+  setAppleProductBaseTerritory: (key: string, territory: string | null) => void;
 
   addGoogleAppToHistory: (entry: Omit<GoogleAppHistoryEntry, 'addedAt'>) => void;
   removeGoogleAppFromHistory: (packageName: string, clientEmail: string) => void;
@@ -86,6 +90,7 @@ export const useAuthStore = create<AuthState>()(
       keyId: null,
       issuerId: null,
       appleBaseCountry: 'US',
+      appleProductBaseTerritories: {},
 
       googleAppHistory: [],
 
@@ -194,6 +199,15 @@ export const useAuthStore = create<AuthState>()(
 
       // Set Apple base country for price display
       setAppleBaseCountry: (country) => set({ appleBaseCountry: country }),
+
+      // Remember one product's base territory (null forgets it)
+      setAppleProductBaseTerritory: (key, territory) =>
+        set((state) => {
+          const next = { ...(state.appleProductBaseTerritories ?? {}) };
+          if (territory) next[key] = territory;
+          else delete next[key];
+          return { appleProductBaseTerritories: next };
+        }),
 
       addGoogleAppToHistory: ({ packageName, projectId, clientEmail }) =>
         set((state) => {
