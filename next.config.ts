@@ -5,6 +5,8 @@ import { securityHeaders } from "./src/lib/security-headers";
 initOpenNextCloudflareForDev();
 
 const nextConfig: NextConfig = {
+  // `next dev` would otherwise write an AGENTS.md into the repo when it detects a coding agent
+  agentRules: false,
   turbopack: {
     rules: {
       // The docs render CHANGELOG.md at build time: Markdown imports are plain strings
