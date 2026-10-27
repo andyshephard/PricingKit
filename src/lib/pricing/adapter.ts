@@ -38,7 +38,11 @@ export interface ApplyContext {
   territoryState: TerritoryPriceState | undefined;
 }
 
-/** JSON-safe description of what the store did, stored in the run log */
+/**
+ * JSON-safe description of what the store did, stored in the run log. A
+ * string `warning` marks an op that was applied but needs attention; the
+ * executor copies it onto the op record.
+ */
 export type OpResponse = Record<string, unknown>;
 
 export interface PlatformAdapter {
@@ -60,6 +64,12 @@ export interface PlatformAdapter {
    */
   applyMany?(ops: BasePriceOp[], contexts: ApplyContext[]): Promise<Array<{ response?: OpResponse; error?: unknown }>>;
   batchKey?(op: BasePriceOp): string | undefined;
+  /**
+   * Most requests applying these ops (one unit: a single op, or one batch)
+   * can send, not counting client retries. The executor won't start a unit
+   * the budget can't cover. Defaults to one per op.
+   */
+  requestsNeeded?(ops: BasePriceOp[], contexts: ApplyContext[]): number;
   /** The op that undoes `op`, from its before snapshot */
   inverse(op: BasePriceOp): InverseResult;
 }

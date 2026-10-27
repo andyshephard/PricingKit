@@ -174,6 +174,12 @@ export class PlayAdapter implements PlatformAdapter {
     return result;
   }
 
+  /** Price edits: one read and one PATCH for the whole batch. Each region removal: a read and a PATCH. */
+  requestsNeeded(ops: BasePriceOp[]): number {
+    const sets = ops.some((op) => op.kind === 'setPrice') ? 2 : 0;
+    return sets + 2 * ops.filter((op) => op.kind === 'removePrice').length;
+  }
+
   batchKey(op: BasePriceOp): string {
     return productKey(op.target.product);
   }

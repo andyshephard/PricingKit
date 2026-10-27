@@ -234,15 +234,42 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
       update(record, { status: 'failed', finishedAt: now(), error: opError });
       if (isBudgetError(opError)) stop(BUDGET_EXCEEDED);
     } else {
-      update(record, { status: 'ok', finishedAt: now(), ...(outcome.response ? { response: outcome.response } : {}) });
+      const warning = typeof outcome.response?.warning === 'string' ? outcome.response.warning : undefined;
+      update(record, {
+        status: 'ok',
+        finishedAt: now(),
+        ...(outcome.response ? { response: outcome.response } : {}),
+        ...(warning ? { warning } : {}),
+      });
     }
   };
 
+  // Requests held back for units in flight, so two units can't both count on
+  // the same remaining budget. Conservative: a unit's reservation is held
+  // until it finishes even as its requests are spent.
+  let reserved = 0;
+  const requestsFor = (unit: Array<{ op: BasePriceOp; context: ApplyContext }>) =>
+    adapter.requestsNeeded
+      ? adapter.requestsNeeded(unit.map((u) => u.op), unit.map((u) => u.context))
+      : unit.length;
+
   await mapWithConcurrency(units, concurrency, async (unit) => {
-    if (stopReason || budgetLow()) {
-      stop(stopReason ?? BUDGET_EXCEEDED);
+    // Never start an op the budget can't finish: a two-request op (create
+    // then delete) stopped halfway leaves the store in a state no plan expects.
+    const needed = requestsFor(unit);
+    if (stopReason || (budget !== undefined && budget.remaining - reserved - reserve < needed)) {
+      stop(stopReason ?? BUDGET_EXCEEDED, stopReason ? undefined : `Not enough request budget left to start ${unit.map((u) => u.op.id).join(', ')} (needs ${needed})`);
       return; // left pending (or failed from an earlier pass) for a resume
     }
+    reserved += needed;
+    try {
+      await runUnit(unit);
+    } finally {
+      reserved -= needed;
+    }
+  });
+
+  async function runUnit(unit: Array<{ op: BasePriceOp; context: ApplyContext }>): Promise<void> {
     // Record the attempt and persist it BEFORE sending, so a crash mid-request
     // leaves a log that shows the op may have been sent (attempts > 0). On
     // resume, an op found at its target is then counted as this run's change.
@@ -252,7 +279,9 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
       update(record, { attempts: record.attempts + 1, startedAt: now() });
       return before;
     });
-    if (!(await publish()) || stopReason) {
+    // Only a failed save cancels a unit that already holds its budget
+    // reservation; another unit stopping for budget doesn't affect this one.
+    if (!(await publish()) || stopReason === PERSIST_FAILED) {
       // Nothing was sent: undo the in-memory attempt so the log stays truthful
       unit.forEach(({ op }, i) => Object.assign(records.get(op.id)!, previous[i]));
       return;
@@ -274,7 +303,7 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
       }
     }
     await publish();
-  });
+  }
 
   // 4. Optional read-back
   if (verify && !stopReason) {
@@ -307,6 +336,7 @@ export function describeRun(changeSet: ChangeSet, run: ApplyRun): string[] {
     const op = ops.get(record.opId);
     const what = op ? describeOp(op) : record.opId;
     const why = record.error ? ` (${record.error.message})` : record.skipReason ? ` (${record.skipReason})` : '';
-    return `${record.status.padEnd(7)} ${record.opId} ${what}${why}`;
+    const warning = record.warning ? ` WARNING: ${record.warning}` : '';
+    return `${record.status.padEnd(7)} ${record.opId} ${what}${why}${warning}`;
   });
 }

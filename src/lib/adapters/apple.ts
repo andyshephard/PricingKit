@@ -33,7 +33,7 @@ import {
 } from '@/lib/apple-connect/price-points';
 import { alpha2ToAlpha3, alpha3ToAlpha2 } from '@/lib/apple-connect/territories';
 import { ApiError, getErrorStatus } from '@/lib/utils/api-error';
-import type { RequestBudget } from '@/lib/utils/request-budget';
+import { isBudgetExceeded, type RequestBudget } from '@/lib/utils/request-budget';
 
 export interface AppleAdapterOptions {
   credentials: AppleConnectCredentials;
@@ -195,6 +195,14 @@ export class AppleAdapter implements PlatformAdapter {
     return out;
   }
 
+  /** A scheduled-price replacement is two requests (create, then delete); everything else one. */
+  requestsNeeded(ops: BasePriceOp[], contexts: ApplyContext[]): number {
+    return ops.reduce(
+      (sum, op, i) => sum + (op.kind === 'schedulePrice' && op.before && contexts[i]?.territoryState?.refs?.scheduledPriceId ? 2 : 1),
+      0
+    );
+  }
+
   async apply(op: BasePriceOp, context: ApplyContext): Promise<OpResponse> {
     const id = subscriptionId(op.target.product);
     const territory = op.target.territory;
@@ -224,6 +232,15 @@ export class AppleAdapter implements PlatformAdapter {
           return { createdPriceId: created.id ?? null, deletedPriceId: replacedId };
         } catch (error) {
           if (getErrorStatus(error) === 404) return { createdPriceId: created.id ?? null, deletedPriceId: replacedId };
+          if (isBudgetExceeded(error)) {
+            // Don't report this as done: the run must stop and say so. The
+            // territory now has two scheduled prices; a resume reports it as
+            // changed rather than guessing which to keep.
+            throw new ApiError(
+              `New scheduled price ${created.id ?? ''} created in ${territory}, but the request budget ran out before the one it replaces (${replacedId}) could be deleted. Delete one of the two scheduled prices.`,
+              { status: 429, code: 'BUDGET_EXCEEDED', platform: 'apple', retryable: false, cause: error }
+            );
+          }
           return {
             createdPriceId: created.id ?? null,
             warning: `New scheduled price added, but the one it replaces (${replacedId}) could not be removed: ${(error as Error).message}`,

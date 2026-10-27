@@ -55,6 +55,8 @@ export interface OpRecord {
   observed?: PriceValue | null;
   /** Set when the run re-read the store after applying (verify option) */
   verified?: boolean;
+  /** The op was applied but something needs attention (from the adapter's response) */
+  warning?: string;
 }
 
 export type RunStatus = 'running' | 'completed' | 'incomplete';
@@ -129,6 +131,7 @@ const opRecordSchema = z
     response: z.record(z.string(), z.unknown()).optional(),
     observed: priceValueSchema.nullable().optional(),
     verified: z.boolean().optional(),
+    warning: z.string().optional(),
   })
   .strict();
 

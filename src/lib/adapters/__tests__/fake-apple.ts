@@ -38,6 +38,8 @@ export class FakeAppleServer {
   private counter = 0;
   /** Fail the next POST for this territory (alpha-3) with this status */
   failCreate = new Map<string, number>();
+  /** Fail every DELETE with this status */
+  failDelete?: number;
 
   constructor() {
     for (const [, t] of Object.entries(TERRITORIES)) {
@@ -65,8 +67,9 @@ export class FakeAppleServer {
 
   handle = async (_credentials: unknown, endpoint: string, options: Record<string, unknown> = {}) => {
     const method = (options.method as string) ?? 'GET';
-    this.calls.push({ method, endpoint, options });
+    // Like the real client: a spent budget refuses before anything is sent
     (options.budget as RequestBudget | undefined)?.consume('apple');
+    this.calls.push({ method, endpoint, options });
     const query = (options.queryParams ?? {}) as Record<string, string>;
 
     if (method === 'GET' && endpoint === `/subscriptions/${SUB_ID}/prices`) {
@@ -127,6 +130,7 @@ export class FakeAppleServer {
     }
 
     if (method === 'DELETE' && endpoint.startsWith('/subscriptionPrices/')) {
+      if (this.failDelete) throw new AppleApiError(this.failDelete, 'UNEXPECTED_ERROR', 'Server error', 'Delete failed');
       const id = endpoint.slice('/subscriptionPrices/'.length);
       const before = this.prices.length;
       this.prices = this.prices.filter((p) => p.id !== id);

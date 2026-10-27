@@ -23,6 +23,8 @@ export class FakeStore implements PlatformAdapter {
   peakInFlight = 0;
   failures = new Map<string, FakeFailure>(); // key: territory
   applyMany?: PlatformAdapter['applyMany'];
+  /** Requests each apply sends (and declares through requestsNeeded) */
+  costPerOp = 1;
   batchKey?: PlatformAdapter['batchKey'];
 
   constructor(readonly platform: Platform, states: ProductPriceState[], private readonly budget?: RequestBudget) {
@@ -80,12 +82,17 @@ export class FakeStore implements PlatformAdapter {
     }
   }
 
+  requestsNeeded(ops: BasePriceOp[]): number {
+    return ops.length * this.costPerOp;
+  }
+
   async apply(op: BasePriceOp, context: ApplyContext): Promise<OpResponse> {
     this.budget?.consume(this.platform);
     this.inFlight++;
     this.peakInFlight = Math.max(this.peakInFlight, this.inFlight);
     try {
       await new Promise((r) => setTimeout(r, 1));
+      for (let i = 1; i < this.costPerOp; i++) this.budget?.consume(this.platform);
       this.writes.push(`${op.kind}:${op.target.territory}`);
       this.write(op, context);
       return { wrote: op.idempotencyKey };

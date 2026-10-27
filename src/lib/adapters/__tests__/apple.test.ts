@@ -174,6 +174,38 @@ describe('AppleAdapter with the executor', () => {
     expect(run.ops.map((r) => r.status)).toEqual(['ok', 'ok', 'pending']);
   });
 
+  it('does not start a create-then-delete replacement with only one request left', async () => {
+    const budget = new RequestBudget({ limit: 2 }); // state read + 1
+    const adapter = new AppleAdapter({ credentials, budget });
+    const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' } });
+    server.calls = [];
+    const run = await applyChangeSet(changeSet, { adapter, budget });
+    expect(server.writes()).toEqual([]);
+    expect(run.ops[0].status).toBe('pending');
+    expect(run.stoppedReason).toBe('BUDGET_EXCEEDED');
+  });
+
+  it('stops the run, rather than reporting success, when the budget runs out between create and delete', async () => {
+    const budget = new RequestBudget({ limit: 2 }); // state read + create; the delete is refused
+    const adapter = new AppleAdapter({ credentials, budget });
+    const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' } });
+    server.calls = [];
+    const run = await applyChangeSet(changeSet, { adapter }); // executor not told about the budget
+    expect(server.writes()).toEqual(['POST /subscriptionPrices']);
+    expect(run.ops[0]).toMatchObject({ status: 'failed', error: { code: 'BUDGET_EXCEEDED' } });
+    expect(run.ops[0].error?.message).toMatch(/two scheduled prices|Delete one of the two/);
+    expect(run.stoppedReason).toBe('BUDGET_EXCEEDED');
+  });
+
+  it('records a warning when the replaced scheduled price cannot be deleted', async () => {
+    const adapter = new AppleAdapter({ credentials });
+    const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01' } });
+    server.failDelete = 500;
+    const run = await applyChangeSet(changeSet, { adapter });
+    expect(run.ops[0].status).toBe('ok');
+    expect(run.ops[0].warning).toMatch(/could not be removed/);
+  });
+
   it('refuses to delete a scheduled price that no longer matches the plan', async () => {
     const adapter = new AppleAdapter({ credentials });
     const changeSet = await plan({ DE: { currency: 'EUR', amount: '31.99', startDate: '2099-07-01T00:00:00.000Z' } });

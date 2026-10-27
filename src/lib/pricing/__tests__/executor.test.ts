@@ -322,6 +322,18 @@ describe('applyChangeSet', () => {
       expect(run.ops[1].error).toMatchObject({ code: 'BUDGET_EXCEEDED', status: 429 });
     });
 
+    it('never starts an op the remaining budget cannot finish, even with writes in flight', async () => {
+      const budget = new RequestBudget({ limit: 4 }); // 1 read + 3 left; each op needs 2
+      const store = new FakeStore('apple', [appleState()], budget);
+      store.costPerOp = 2;
+      const run = await applyChangeSet(applePlan(), { adapter: store, budget, concurrency: 2 });
+      expect(budget.used).toBe(3);
+      expect(run.ops.map((r) => r.status)).toEqual(['ok', 'pending', 'pending']);
+      expect(run.stoppedReason).toBe('BUDGET_EXCEEDED');
+      expect(run.stoppedDetail).toMatch(/needs 2/);
+      expect(run.ops.every((r) => r.status !== 'failed')).toBe(true);
+    });
+
     it('keeps a reserve when asked', async () => {
       const budget = new RequestBudget({ limit: 10 });
       const store = new FakeStore('apple', [appleState()], budget);
@@ -348,6 +360,17 @@ describe('applyChangeSet', () => {
     expect(updates.at(-1)).toEqual(final);
     const okCounts = updates.map((r) => summarizeRun(r).ok);
     expect(okCounts).toEqual([...okCounts].sort((a, b) => a - b));
+  });
+
+  it('records adapter warnings on the op and shows them in describeRun', async () => {
+    const store = new FakeStore('apple', [appleState()]);
+    const realApply = store.apply.bind(store);
+    store.apply = async (op, context) => ({ ...(await realApply(op, context)), ...(op.target.territory === 'GB' ? { warning: 'old price left in place' } : {}) });
+    const plan = applePlan();
+    const run = await applyChangeSet(plan, { adapter: store });
+    expect(run.ops[1]).toMatchObject({ status: 'ok', warning: 'old price left in place' });
+    expect(parseRun(serializeRun(run)).ops[1].warning).toBe('old price left in place');
+    expect(describeRun(plan, run)[1]).toMatch(/WARNING: old price left in place$/);
   });
 
   it('marks ops verified after a read-back', async () => {
