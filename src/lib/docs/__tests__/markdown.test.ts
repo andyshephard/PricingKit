@@ -40,6 +40,11 @@ describe('docs markdown reader', () => {
     expect(safeHref('https://example.com')).toBe('https://example.com');
     expect(safeHref('/docs')).toBe('/docs');
     expect(safeHref('data:text/html,x')).toBeNull();
+    // Protocol-relative URLs are other sites, not site paths
+    expect(safeHref('//example.invalid/x')).toBeNull();
+    expect(safeHref('/\\example.invalid/x')).toBeNull();
+    expect(safeHref('/docs/security#reporting')).toBe('/docs/security#reporting');
+    expect(parseInline('[x](//example.invalid)')).toEqual([{ type: 'text', text: 'x' }]);
   });
 
   it('gives repeated headings unique ids', () => {

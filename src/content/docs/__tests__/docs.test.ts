@@ -5,6 +5,7 @@ import { DOC_GROUPS, DOC_PAGES, docHref, docSearchIndex, findDoc } from '..';
 import { searchDocs } from '@/lib/docs/search';
 import sitemap from '@/app/sitemap';
 import robots from '@/app/robots';
+import { metadata as setupMetadata } from '@/app/setup/layout';
 
 const PAGES_DIR = join(__dirname, '../pages');
 const sources = readdirSync(PAGES_DIR).map((f) => ({ file: f, text: readFileSync(join(PAGES_DIR, f), 'utf8') }));
@@ -72,7 +73,9 @@ describe('sitemap and robots', () => {
     expect(urls).toContain('https://pricing-kit.com/docs/changelog');
     expect(urls).toContain('https://pricing-kit.com/setup-guide/apple');
     expect(urls).toContain('https://pricing-kit.com/index-checker');
-    expect(urls.some((u) => /dashboard|\/api\//.test(u))).toBe(false);
+    expect(urls.some((u) => /dashboard|\/api\/|\/setup(\/|$)/.test(u))).toBe(false);
+    // The connect screen is noindex
+    expect(setupMetadata.robots).toMatchObject({ index: false });
     const r = robots();
     expect(r.sitemap).toBe('https://pricing-kit.com/sitemap.xml');
     expect(JSON.stringify(r.rules)).toContain('/dashboard');

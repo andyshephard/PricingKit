@@ -30,10 +30,15 @@ export function slugify(text: string): string {
   );
 }
 
-/** Links only to http(s), mailto, site-relative paths and in-page anchors */
+/**
+ * Links only to http(s), mailto, site-relative paths and in-page anchors.
+ * "//host" and "/\host" are protocol-relative (browsers read a backslash as a
+ * slash), so they are other sites, not site paths.
+ */
 export function safeHref(href: string): string | null {
   const h = href.trim();
-  if (/^(https?:|mailto:)/i.test(h) || h.startsWith('/') || h.startsWith('#')) return h;
+  if (/^(https?:|mailto:)/i.test(h) || h.startsWith('#')) return h;
+  if (h.startsWith('/') && !/^\/[/\\]/.test(h)) return h;
   return null;
 }
 
