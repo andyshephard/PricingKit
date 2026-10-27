@@ -360,53 +360,6 @@ export class AppleApiError extends ApiError {
   }
 }
 
-// Cookie-based encrypted session management
-// Credentials are encrypted and stored directly in the cookie (no server-side state)
-import {
-  encrypt,
-  decrypt,
-  isEncryptionAvailable,
-  isPlaintextSessionAllowed,
-  MissingEncryptionKeyError,
-  MISSING_ENCRYPTION_KEY_MESSAGE,
-} from '../encryption';
-
-export async function createAppleSession(
-  credentials: AppleConnectCredentials
-): Promise<string> {
-  if (isEncryptionAvailable()) {
-    return await encrypt(JSON.stringify(credentials));
-  } else if (isPlaintextSessionAllowed()) {
-    console.warn('Warning: ENCRYPTION_KEY not set. Apple credentials stored in plaintext cookie (next dev only).');
-    return Buffer.from(JSON.stringify(credentials)).toString('base64');
-  } else {
-    throw new MissingEncryptionKeyError();
-  }
-}
-
-export async function getAppleSessionCredentials(
-  cookieValue: string
-): Promise<AppleConnectCredentials | null> {
-  try {
-    if (isEncryptionAvailable()) {
-      const decrypted = await decrypt(cookieValue);
-      return JSON.parse(decrypted) as AppleConnectCredentials;
-    } else if (isPlaintextSessionAllowed()) {
-      const decoded = Buffer.from(cookieValue, 'base64').toString('utf-8');
-      return JSON.parse(decoded) as AppleConnectCredentials;
-    } else {
-      console.error(MISSING_ENCRYPTION_KEY_MESSAGE);
-      return null;
-    }
-  } catch (error) {
-    console.error('Error decrypting Apple session credentials:', error);
-    return null;
-  }
-}
-
-export async function deleteAppleSession(): Promise<void> {
-  // No-op: cookie deletion is handled by the auth route
-}
 
 // Test connection to App Store Connect
 export async function testAppleConnection(

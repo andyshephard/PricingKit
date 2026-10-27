@@ -2,26 +2,22 @@ import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import {
   validateAppleCredentials,
-  createAppleSession,
-  getAppleSessionCredentials,
-  deleteAppleSession,
   testAppleConnection,
 } from '@/lib/apple-connect/client';
 import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
 import {
   MissingEncryptionKeyError,
-  MISSING_ENCRYPTION_KEY_MESSAGE,
   canStoreSessions,
+  encryptionKeyMessage,
 } from '@/lib/encryption';
 import {
-  APPLE_BUNDLE_ID_COOKIE,
-  APPLE_SESSION_COOKIE,
-  SESSION_COOKIE_MAX_AGE,
+  clearCookie,
+  COOKIE_NAMES,
+  CookieTooLargeError,
+  readAppCookie,
+  readSessionCookie,
+  writeSessionCookie,
 } from '@/lib/session';
-
-const SESSION_COOKIE = APPLE_SESSION_COOKIE;
-const BUNDLE_ID_COOKIE = APPLE_BUNDLE_ID_COOKIE;
-const COOKIE_MAX_AGE = SESSION_COOKIE_MAX_AGE;
 
 export async function POST(request: NextRequest) {
   try {
@@ -60,8 +56,8 @@ export async function POST(request: NextRequest) {
     // Fail closed before contacting Apple: without ENCRYPTION_KEY (outside
     // `next dev`) the session could not be stored anyway.
     if (!canStoreSessions()) {
-      console.error(MISSING_ENCRYPTION_KEY_MESSAGE);
-      return NextResponse.json({ error: MISSING_ENCRYPTION_KEY_MESSAGE }, { status: 500 });
+      console.error(encryptionKeyMessage());
+      return NextResponse.json({ error: encryptionKeyMessage() }, { status: 500 });
     }
 
     const testResult = await testAppleConnection(credentials);
@@ -72,17 +68,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const sessionId = await createAppleSession(credentials);
-
     const cookieStore = await cookies();
-    cookieStore.set(SESSION_COOKIE, sessionId, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: COOKIE_MAX_AGE,
-      path: '/',
-    });
-    cookieStore.delete(BUNDLE_ID_COOKIE);
+    try {
+      await writeSessionCookie(cookieStore, 'apple', credentials);
+    } catch (error) {
+      if (error instanceof CookieTooLargeError) {
+        return NextResponse.json({ error: 'These credentials are too large to keep in a browser cookie.' }, { status: 400 });
+      }
+      throw error;
+    }
+    clearCookie(cookieStore, COOKIE_NAMES.appleBundle);
 
     return NextResponse.json({
       success: true,
@@ -105,14 +100,8 @@ export async function POST(request: NextRequest) {
 export async function GET() {
   try {
     const cookieStore = await cookies();
-    const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
-    const bundleId = cookieStore.get(BUNDLE_ID_COOKIE)?.value ?? null;
-
-    if (!sessionId) {
-      return NextResponse.json({ authenticated: false });
-    }
-
-    const credentials = await getAppleSessionCredentials(sessionId);
+    const bundleId = readAppCookie(cookieStore, COOKIE_NAMES.appleBundle) ?? null;
+    const credentials = await readSessionCookie(cookieStore, 'apple');
     if (!credentials) {
       return NextResponse.json({ authenticated: false });
     }
@@ -132,14 +121,8 @@ export async function GET() {
 export async function DELETE() {
   try {
     const cookieStore = await cookies();
-    const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
-
-    if (sessionId) {
-      await deleteAppleSession();
-    }
-
-    cookieStore.delete(SESSION_COOKIE);
-    cookieStore.delete(BUNDLE_ID_COOKIE);
+    clearCookie(cookieStore, COOKIE_NAMES.appleSession);
+    clearCookie(cookieStore, COOKIE_NAMES.appleBundle);
 
     return NextResponse.json({ success: true });
   } catch (error) {

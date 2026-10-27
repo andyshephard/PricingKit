@@ -846,9 +846,13 @@ products:
 Create a `.env.local` file (optional):
 
 ```env
-# Encrypts credentials in the session cookie. Required everywhere except `next dev`
-# (generate with: openssl rand -base64 32)
-ENCRYPTION_KEY=your-secure-random-string
+# Encrypts credentials in the session cookie. Required everywhere except `next dev`:
+# base64 of at least 32 random bytes; anything else is refused outside `next dev`.
+# Generate with: openssl rand -base64 32
+ENCRYPTION_KEY=
+
+# Optional: change (or set) this to sign everyone out at once
+# SESSION_VERSION=2
 
 # Open Exchange Rates API key (for currency conversion)
 OPEN_EXCHANGE_RATES_APP_ID=your-api-key
@@ -867,7 +871,7 @@ OPEN_EXCHANGE_RATES_APP_ID=your-api-key
 - The server does not persist credentials; it decrypts them in memory per request to call the Apple/Google APIs
 - Short-lived API tokens (Apple JWTs, Google access tokens) are cached in memory, keyed by a hash of the full credential
 - Without `ENCRYPTION_KEY`, sign-in is refused (except under `next dev`)
-- Sessions expire after 24 hours
+- Sessions expire 24 hours after sign-in, enforced by the server (the expiry is inside the encrypted cookie); `SESSION_VERSION` signs everyone out
 - Using a hosted instance means trusting its operator with your credentials; self-host for full control
 
 See [SECURITY.md](SECURITY.md) for the full credential-handling model and how to report a vulnerability.

@@ -1,25 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import {
-  googlePlayFetch,
-  getSessionCredentials,
-} from '@/lib/google-play/client';
-import {
-  GOOGLE_PACKAGE_NAME_COOKIE,
-  GOOGLE_SESSION_COOKIE,
-  SESSION_COOKIE_MAX_AGE,
-} from '@/lib/session';
-
-const COOKIE_MAX_AGE = SESSION_COOKIE_MAX_AGE;
+import { googlePlayFetch } from '@/lib/google-play/client';
+import { COOKIE_NAMES, readSessionCookie, SESSION_COOKIE_MAX_AGE, writeCookie } from '@/lib/session';
 
 export async function POST(request: NextRequest) {
   const cookieStore = await cookies();
-  const sessionId = cookieStore.get(GOOGLE_SESSION_COOKIE)?.value;
-  if (!sessionId) {
-    return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-  }
-
-  const credentials = await getSessionCredentials(sessionId);
+  const credentials = await readSessionCookie(cookieStore, 'google');
   if (!credentials) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
   }
@@ -85,13 +71,7 @@ export async function POST(request: NextRequest) {
   // a missing permission surfaces on the first real edit via the route-level 403
   // handlers.
 
-  cookieStore.set(GOOGLE_PACKAGE_NAME_COOKIE, packageName, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    maxAge: COOKIE_MAX_AGE,
-    path: '/',
-  });
+  writeCookie(cookieStore, COOKIE_NAMES.googlePackage, packageName, SESSION_COOKIE_MAX_AGE);
 
   return NextResponse.json({ ok: true, packageName });
 }

@@ -1,30 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import {
-  appleApiRequest,
-  AppleApiError,
-  getAppleSessionCredentials,
-} from '@/lib/apple-connect/client';
+import { appleApiRequest, AppleApiError } from '@/lib/apple-connect/client';
 import type {
   AppleApiListResponse,
   AppleConnectCredentials,
 } from '@/lib/apple-connect/types';
-import {
-  APPLE_BUNDLE_ID_COOKIE,
-  APPLE_SESSION_COOKIE,
-  SESSION_COOKIE_MAX_AGE,
-} from '@/lib/session';
-
-const COOKIE_MAX_AGE = SESSION_COOKIE_MAX_AGE;
+import { COOKIE_NAMES, readSessionCookie, SESSION_COOKIE_MAX_AGE, writeCookie } from '@/lib/session';
 
 export async function POST(request: NextRequest) {
   const cookieStore = await cookies();
-  const sessionId = cookieStore.get(APPLE_SESSION_COOKIE)?.value;
-  if (!sessionId) {
-    return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-  }
-
-  const sessionCredentials = await getAppleSessionCredentials(sessionId);
+  const sessionCredentials = await readSessionCookie(cookieStore, 'apple');
   if (!sessionCredentials) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
   }
@@ -88,13 +73,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  cookieStore.set(APPLE_BUNDLE_ID_COOKIE, bundleId, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    maxAge: COOKIE_MAX_AGE,
-    path: '/',
-  });
+  writeCookie(cookieStore, COOKIE_NAMES.appleBundle, bundleId, SESSION_COOKIE_MAX_AGE);
 
   return NextResponse.json({ ok: true, bundleId });
 }

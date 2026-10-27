@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createCookieStore, type TestCookieStore } from './helpers';
+import { createCookieStore, sessionCookieValue, TEST_ENCRYPTION_KEY, type TestCookieStore } from './helpers';
 
 let cookieStore: TestCookieStore;
 vi.mock('next/headers', () => ({
@@ -23,7 +23,6 @@ vi.mock('@/lib/world-bank/ppp', () => ({
 import { GET as settingsGET } from '../settings/exchange-rates/route';
 import { GET as exchangeRatesGET } from '../exchange-rates/route';
 import { GET as pppGET } from '../ppp/route';
-import { createSession } from '@/lib/google-play/client';
 import type { ServiceAccountCredentials } from '@/lib/google-play/types';
 
 const ENV_KEY = 'abcdef0123456789operatorkey9876';
@@ -37,7 +36,7 @@ const RATES = {
 
 describe('public data endpoints', () => {
   beforeEach(() => {
-    vi.stubEnv('ENCRYPTION_KEY', 'test-encryption-key-at-least-32-characters');
+    vi.stubEnv('ENCRYPTION_KEY', TEST_ENCRYPTION_KEY);
     cookieStore = createCookieStore();
     getExchangeRatesMock.mockReset().mockResolvedValue(RATES);
     getPPPMultipliersMock.mockReset().mockRejectedValue(new Error('World Bank down: internal detail'));
@@ -97,11 +96,12 @@ describe('public data endpoints', () => {
     });
 
     it('a valid Google session can force a refresh', async () => {
-      const session = await createSession({
+      const session = await sessionCookieValue('google', {
         type: 'service_account',
         client_email: 'svc@example.iam.gserviceaccount.com',
         private_key_id: 'kid',
         private_key: 'unused',
+        project_id: 'example',
       } as ServiceAccountCredentials);
       cookieStore = createCookieStore({ gplay_session: session });
 

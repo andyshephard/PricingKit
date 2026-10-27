@@ -8,45 +8,14 @@
 
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { getSessionCredentials } from '@/lib/google-play/client';
-import { getAppleSessionCredentials } from '@/lib/apple-connect/client';
 import type { ServiceAccountCredentials } from '@/lib/google-play/types';
 import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
+import { COOKIE_NAMES, readAppCookie, readSessionCookie } from '@/lib/session';
 
-import {
-  APPLE_BUNDLE_ID_COOKIE,
-  APPLE_SESSION_COOKIE,
-  GOOGLE_PACKAGE_NAME_COOKIE,
-  GOOGLE_SESSION_COOKIE,
-  SESSION_COOKIE_MAX_AGE,
-} from '@/lib/session';
-import { isLegacyCiphertext, reencryptLegacyCiphertext } from '@/lib/encryption';
-
-type CookieStore = Awaited<ReturnType<typeof cookies>>;
-
-/**
- * Session cookies written before the v2 (HKDF) format are re-encrypted on
- * the request that reads them, so nobody is logged out by the upgrade. Same
- * attributes as the login routes set; the cookie gets a fresh lifetime once.
- * Best effort: where cookies can't be set (e.g. a Server Component render),
- * the old cookie keeps working and is migrated on a later API request.
- */
-async function migrateLegacySessionCookie(cookieStore: CookieStore, name: string, value: string): Promise<void> {
-  if (!isLegacyCiphertext(value)) return;
-  const upgraded = await reencryptLegacyCiphertext(value);
-  if (!upgraded) return;
-  try {
-    cookieStore.set(name, upgraded, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: SESSION_COOKIE_MAX_AGE,
-      path: '/',
-    });
-  } catch {
-    // read-only cookie store here; try again on the next request
-  }
-}
+// Sessions are sealed envelopes with an absolute expiry (src/lib/session-envelope.ts).
+// readSessionCookie re-writes a legacy cookie (old format or old name) as v3
+// under the current name, keeping its expiry; where the cookie store is
+// read-only the old cookie keeps working until the legacy cutoff.
 
 /**
  * Google Play authentication result
@@ -85,19 +54,10 @@ export function forbiddenResponse(message: string = 'Access denied') {
 export async function getGoogleAuthFromCookies(): Promise<GoogleAuthResult | null> {
   try {
     const cookieStore = await cookies();
-    const sessionId = cookieStore.get(GOOGLE_SESSION_COOKIE)?.value;
-    const packageName = cookieStore.get(GOOGLE_PACKAGE_NAME_COOKIE)?.value;
-
-    if (!sessionId || !packageName) {
-      return null;
-    }
-
-    const credentials = await getSessionCredentials(sessionId);
-    if (!credentials) {
-      return null;
-    }
-    await migrateLegacySessionCookie(cookieStore, GOOGLE_SESSION_COOKIE, sessionId);
-
+    const packageName = readAppCookie(cookieStore, COOKIE_NAMES.googlePackage);
+    if (!packageName) return null;
+    const credentials: ServiceAccountCredentials | null = await readSessionCookie(cookieStore, 'google');
+    if (!credentials) return null;
     return { credentials, packageName };
   } catch (error) {
     console.error('Error getting Google auth from cookies:', error);
@@ -112,12 +72,8 @@ export async function getGoogleAuthFromCookies(): Promise<GoogleAuthResult | nul
  */
 export async function getAppleSessionFromCookies(): Promise<AppleConnectCredentials | null> {
   try {
-    const cookieStore = await cookies();
-    const sessionId = cookieStore.get(APPLE_SESSION_COOKIE)?.value;
-    if (!sessionId) return null;
-    const sessionCredentials = await getAppleSessionCredentials(sessionId);
+    const sessionCredentials = await readSessionCookie(await cookies(), 'apple');
     if (!sessionCredentials) return null;
-    await migrateLegacySessionCookie(cookieStore, APPLE_SESSION_COOKIE, sessionId);
     return { ...sessionCredentials, bundleId: sessionCredentials.bundleId ?? '' };
   } catch (error) {
     console.error('Error getting Apple session from cookies:', error);
@@ -132,18 +88,10 @@ export async function getAppleSessionFromCookies(): Promise<AppleConnectCredenti
 export async function getAppleAuthFromCookies(): Promise<AppleAuthResult | null> {
   try {
     const cookieStore = await cookies();
-    const sessionId = cookieStore.get(APPLE_SESSION_COOKIE)?.value;
-    const bundleId = cookieStore.get(APPLE_BUNDLE_ID_COOKIE)?.value;
-
-    if (!sessionId || !bundleId) {
-      return null;
-    }
-
-    const sessionCredentials = await getAppleSessionCredentials(sessionId);
-    if (!sessionCredentials) {
-      return null;
-    }
-    await migrateLegacySessionCookie(cookieStore, APPLE_SESSION_COOKIE, sessionId);
+    const bundleId = readAppCookie(cookieStore, COOKIE_NAMES.appleBundle);
+    if (!bundleId) return null;
+    const sessionCredentials = await readSessionCookie(cookieStore, 'apple');
+    if (!sessionCredentials) return null;
 
     const credentials: AppleConnectCredentials = {
       ...sessionCredentials,

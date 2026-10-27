@@ -2,21 +2,23 @@ import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import {
   validateServiceAccountJson,
-  createSession,
-  getSessionCredentials,
-  deleteSession,
   googlePlayFetch,
 } from '@/lib/google-play/client';
 import type { ServiceAccountCredentials } from '@/lib/google-play/types';
 import {
   MissingEncryptionKeyError,
-  MISSING_ENCRYPTION_KEY_MESSAGE,
   canStoreSessions,
+  encryptionKeyMessage,
 } from '@/lib/encryption';
 import {
-  GOOGLE_PACKAGE_NAME_COOKIE,
-  GOOGLE_SESSION_COOKIE,
+  clearCookie,
+  COOKIE_NAMES,
+  CookieTooLargeError,
+  readAppCookie,
+  readSessionCookie,
   SESSION_COOKIE_MAX_AGE,
+  writeCookie,
+  writeSessionCookie,
 } from '@/lib/session';
 
 interface ProbeListResp<T> {
@@ -25,10 +27,6 @@ interface ProbeListResp<T> {
 interface ProbeProduct {
   productId?: string;
 }
-
-const SESSION_COOKIE = GOOGLE_SESSION_COOKIE;
-const PACKAGE_NAME_COOKIE = GOOGLE_PACKAGE_NAME_COOKIE;
-const COOKIE_MAX_AGE = SESSION_COOKIE_MAX_AGE;
 
 export async function POST(request: NextRequest) {
   try {
@@ -60,8 +58,8 @@ export async function POST(request: NextRequest) {
     // Fail closed before contacting Google: without ENCRYPTION_KEY (outside
     // `next dev`) the session could not be stored anyway.
     if (!canStoreSessions()) {
-      console.error(MISSING_ENCRYPTION_KEY_MESSAGE);
-      return NextResponse.json({ error: MISSING_ENCRYPTION_KEY_MESSAGE }, { status: 500 });
+      console.error(encryptionKeyMessage());
+      return NextResponse.json({ error: encryptionKeyMessage() }, { status: 500 });
     }
 
     // Test the connection by trying to list subscriptions (uses the newer monetization API)
@@ -122,26 +120,19 @@ export async function POST(request: NextRequest) {
     // live store); a missing permission surfaces on the first real edit, where the
     // product/subscription routes return GOOGLE_PRICING_WRITE_DENIED_ERROR.
 
-    // Create session and store session ID in cookie
-    const sessionId = await createSession(creds);
-
+    // The session keeps client_email, private_key_id, private_key and
+    // project_id only, sealed with a 24-hour expiry. Credentials too large
+    // for a cookie are refused here rather than dropped by the browser.
     const cookieStore = await cookies();
-
-    cookieStore.set(SESSION_COOKIE, sessionId, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: COOKIE_MAX_AGE,
-      path: '/',
-    });
-
-    cookieStore.set(PACKAGE_NAME_COOKIE, packageName, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: COOKIE_MAX_AGE,
-      path: '/',
-    });
+    try {
+      await writeSessionCookie(cookieStore, 'google', creds);
+    } catch (error) {
+      if (error instanceof CookieTooLargeError) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+      throw error;
+    }
+    writeCookie(cookieStore, COOKIE_NAMES.googlePackage, packageName, SESSION_COOKIE_MAX_AGE);
 
     return NextResponse.json({
       success: true,
@@ -171,14 +162,12 @@ export async function POST(request: NextRequest) {
 export async function GET() {
   try {
     const cookieStore = await cookies();
-    const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
-    const packageName = cookieStore.get(PACKAGE_NAME_COOKIE)?.value;
-
-    if (!sessionId || !packageName) {
+    const packageName = readAppCookie(cookieStore, COOKIE_NAMES.googlePackage);
+    if (!packageName) {
       return NextResponse.json({ authenticated: false });
     }
 
-    const credentials = await getSessionCredentials(sessionId);
+    const credentials = await readSessionCookie(cookieStore, 'google');
     if (!credentials) {
       return NextResponse.json({ authenticated: false });
     }
@@ -198,14 +187,8 @@ export async function GET() {
 export async function DELETE() {
   try {
     const cookieStore = await cookies();
-    const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
-
-    if (sessionId) {
-      await deleteSession();
-    }
-
-    cookieStore.delete(SESSION_COOKIE);
-    cookieStore.delete(PACKAGE_NAME_COOKIE);
+    clearCookie(cookieStore, COOKIE_NAMES.googleSession);
+    clearCookie(cookieStore, COOKIE_NAMES.googlePackage);
 
     return NextResponse.json({ success: true });
   } catch (error) {

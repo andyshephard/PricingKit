@@ -71,8 +71,9 @@ CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm test`, `npm run typecheck` a
   /utils/rate-limit.ts  # executeWithRateLimit for bulk/batch loops
   /utils/attempt-limiter.ts  # In-memory per-client limiter (anonymous OER key tests)
   /apple-connect/pagination.ts  # appleListPages / appleListAll: the one links.next loop
-  encryption.ts         # AES-256-GCM cookie encryption (v2: HKDF key; legacy PBKDF2 read + migrated), MissingEncryptionKeyError
-  session.ts            # Session cookie names and lifetime, hasAuthenticatedSession()
+  encryption.ts         # AES-256-GCM (v3 with AAD; legacy v1/v2 read until LEGACY_SESSION_CUTOFF), ENCRYPTION_KEY checks, MissingEncryptionKeyError
+  session-envelope.ts   # Session envelope {v, typ, iat, exp, creds}: sealSession / openSession, SESSION_VERSION
+  session.ts            # Cookie names (__Host- in production), read/write/clear helpers, readSessionCookie, hasAuthenticatedSession()
   token-cache.ts        # LRU cache for Apple JWTs / Google access tokens
 
 /src/cli/               # pricingkit CLI: args, commands/, credentials (env only), redact, spec-file (YAML), mcp (MCP server); `apply` is its only write
@@ -88,8 +89,10 @@ CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm test`, `npm run typecheck` a
 ### Data Flow & State Management
 
 **No database** - stateless architecture:
-- Session credentials stored encrypted (AES-256-GCM) in HTTP-only cookies (24-hour expiry). Sessions are cookie-only; nothing is written server-side. Format v2 is `"v2." + base64(iv + ciphertext)` with the key derived once per process from `ENCRYPTION_KEY` by HKDF-SHA-256 (cached). Legacy cookies (base64(salt + iv + ciphertext), PBKDF2 100k per cookie) are still read, and `src/middleware/auth.ts` re-encrypts them as v2 on the request that reads them (best effort: a read-only cookie store keeps the old cookie working). Never drop the legacy read path while 24-hour-old cookies may exist from a pre-v2 deployment; the CHANGELOG schedules its removal two releases after the first tagged release with v2.
-- `ENCRYPTION_KEY` is required everywhere except `next dev`. Without it (outside `next dev`), creating a session throws `MissingEncryptionKeyError` and reading a session cookie returns null (treated as signed out); login checks `canStoreSessions()` before any store call. Only under `next dev` (`NODE_ENV=development`) is a plaintext base64 cookie allowed.
+- Sessions are cookie-only; nothing is written server-side. A session cookie is `"v3." + base64url(iv + ciphertext)`: AES-256-GCM over the envelope `{ v: SESSION_VERSION (default "1"), typ: "google" | "apple", iat, exp, creds }` (`session-envelope.ts`), with additional data `pricingkit/session/v3|<cookie base name>|<session version>`. The key is HKDF-SHA-256 over the decoded `ENCRYPTION_KEY` bytes, derived once per process. `openSession` checks the envelope after decryption: type, version, `exp - iat` at most 24 hours, `iat` not in the future, not expired, credential shape. `exp` is absolute: never extend it when re-writing a cookie (`sealSession(..., { exp })`). Google sessions keep `client_email`, `private_key_id`, `private_key`, `project_id` only; a cookie over 3800 bytes is refused (`CookieTooLargeError`), never written. Routes read and write cookies only through `src/lib/session.ts` (`readSessionCookie`, `writeSessionCookie`, `readAppCookie`, `writeCookie`, `clearCookie`), never `cookies().get/set/delete` directly.
+- Cookie names get the `__Host-` prefix in production (`cookieName()`; `Secure`, `Path=/`, no `Domain`); under `next dev` and in tests they are plain. Deleting means writing an expired cookie with the same attributes (`clearCookie`), since a plain delete can't replace a `__Host-` cookie.
+- Legacy cookies (v2: HKDF over the key text, no envelope; v1: PBKDF2 per cookie) and the old cookie names are read until `LEGACY_SESSION_CUTOFF` (2026-11-10, `encryption.ts`) and while `SESSION_VERSION` is unset, after a strict base64 and length check (no key derivation for junk), and re-written as v3 under the new name by `readSessionCookie` / `readAppCookie` (best effort), with `exp` = min(now + 24 h, cutoff). After the cutoff, delete the legacy path (`openLegacy`, the v2/v1 keys, `readCookie`'s old-name fallback).
+- `ENCRYPTION_KEY` is required everywhere except `next dev`, and must be base64/base64url of at least 32 bytes (`encryptionKeyProblem()`: `missing` | `weak`). Otherwise (outside `next dev`), creating a session throws `MissingEncryptionKeyError` (message from `encryptionKeyMessage()`) and reading one returns null (signed out); login checks `canStoreSessions()` before any store call. Under `next dev` (`NODE_ENV=development`) a weak key works with a warning, and without a key the envelope is stored unencrypted (`p3.`).
 - Short-lived store tokens (Apple JWTs, Google access tokens) are cached in memory in a 50-entry LRU keyed by a SHA-256 of the full credential, so users of a shared instance never share a token.
 - Exchange rates: in-memory cache with a 6-hour TTL; stale data is served if the API fails. On Node the client also tries `.exchange-rates.json` in the working directory. Cloudflare Workers has no filesystem, so that step silently no-ops and only the per-isolate memory cache applies.
 - Client auth state persisted to localStorage via Zustand
@@ -204,7 +207,8 @@ Touchpoints (all required, in order):
 ## Environment Variables
 
 ```
-ENCRYPTION_KEY              # Required outside `next dev`. Encrypts credentials in cookies (openssl rand -base64 32)
+ENCRYPTION_KEY              # Required outside `next dev`: base64 of >= 32 random bytes (openssl rand -base64 32). Encrypts session cookies
+SESSION_VERSION             # Optional: set or change it to sign everyone out (it is part of every session's authenticated data)
 OPEN_EXCHANGE_RATES_APP_ID  # Optional operator key for currency conversion; users can also save their own in Settings
 TRUSTED_CLIENT_IP_HEADER    # Optional: proxy header with the real client IP (cf-connecting-ip, x-real-ip, x-forwarded-for).
                             # Only set it when every request passes that proxy; never trust client IP headers otherwise.

@@ -5,10 +5,10 @@ import { useRouter, usePathname } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { Sidebar, Footer } from '@/components/layout';
-import { useAuthStore, useHasHydrated } from '@/store/auth-store';
+import { DASHBOARD_AUTH_VERIFIED_KEY, useAuthStore, useHasHydrated } from '@/store/auth-store';
 import { isPlatformRoute } from '@/lib/utils/platform-routes';
 
-const AUTH_VERIFIED_KEY = 'dashboard-auth-verified';
+const AUTH_VERIFIED_KEY = DASHBOARD_AUTH_VERIFIED_KEY;
 
 let prevBundleId: string | null = null;
 let prevPackageName: string | null = null;
