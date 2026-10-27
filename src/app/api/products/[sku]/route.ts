@@ -147,8 +147,9 @@ export async function PATCH(
       );
     }
 
+    // Unexpected failures: the details are logged above, not sent to the client
     return NextResponse.json(
-      { error: err.message || 'Failed to update product' },
+      { error: 'Failed to update product' },
       { status: 500 }
     );
   }
@@ -235,8 +236,9 @@ export async function DELETE(
       );
     }
 
+    // Unexpected failures: the details are logged above, not sent to the client
     return NextResponse.json(
-      { error: err.message || 'Failed to delete region price' },
+      { error: 'Failed to delete region price' },
       { status: 500 }
     );
   }

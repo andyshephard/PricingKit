@@ -63,7 +63,7 @@ export function csvProductType(product: ProductRef): PricesCsvProductType {
 
 /** Undo the export's formula guard: "'=x" -> "=x" (a "'" before anything else is kept) */
 function unguard(cell: string): string {
-  return /^'[=+\-@\t\r]/.test(cell) ? cell.slice(1) : cell;
+  return /^'[=+\-@\t\r\n\uFF1D\uFF0B\uFF20\uFF0D]/.test(cell) ? cell.slice(1) : cell;
 }
 
 export interface PricesCsvRow {
