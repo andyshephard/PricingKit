@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { defaultOfferBasis, serializeRun, type OfferPreviewRow, type StoreOffer } from '@/lib/pricing';
+import { defaultOfferBasis, serializeChangeSet, serializeRun, type OfferPreviewRow, type StoreOffer } from '@/lib/pricing';
 import {
   useApplyAppleOfferPlan,
   usePlanAppleOffer,
@@ -154,6 +154,11 @@ export function AppleOfferRuleDialog({
   const run = apply.data?.run;
   const runUrl = useMemo(() => (run ? URL.createObjectURL(new Blob([serializeRun(run)], { type: 'application/json' })) : undefined), [run]);
   useEffect(() => () => (runUrl ? URL.revokeObjectURL(runUrl) : undefined), [runUrl]);
+  const planUrl = useMemo(() => (result ? URL.createObjectURL(new Blob([serializeChangeSet(result.changeSet)], { type: 'application/json' })) : undefined), [result]);
+  useEffect(() => () => (planUrl ? URL.revokeObjectURL(planUrl) : undefined), [planUrl]);
+  // File names the CLI's defaults expect: <plan>.json, <plan>.run.json, <plan>.undo.json
+  const planFile = result ? `${result.changeSet.id}.json` : 'plan.json';
+  const runFile = result ? `${result.changeSet.id}.run.json` : 'run.json';
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -166,9 +171,8 @@ export function AppleOfferRuleDialog({
               : "A promotional offer priced at a percent of each territory's own current price, snapped to that territory's price points."}
           </DialogDescription>
           <p className="text-xs text-muted-foreground">
-            The web app only creates and re-prices promotional offers. The run log can be downloaded when the run ends, but it isn&apos;t saved, and a run
-            can&apos;t be resumed or undone here. For resumable or undoable runs, use the <span className="font-mono">pricingkit</span> CLI (
-            <span className="font-mono">plan</span>, <span className="font-mono">apply --resume</span>).
+            The web app only creates and re-prices promotional offers, and keeps nothing: it can&apos;t resume or undo a run. Download the plan and,
+            after applying, the run log; the <span className="font-mono">pricingkit</span> CLI can then resume the run or undo it (see the run result).
           </p>
         </DialogHeader>
 
@@ -251,6 +255,12 @@ export function AppleOfferRuleDialog({
                 <Badge>{entry.action === 'create' ? 'Create' : 'Update prices'}</Badge>
                 <Badge variant="secondary">{entry.changes.length} territories change</Badge>
                 {skipped.length > 0 && <Badge variant="outline">{skipped.length} skipped</Badge>}
+                {planUrl && (
+                  <a className="inline-flex items-center gap-1 text-sm underline" href={planUrl} download={planFile}>
+                    <Download className="h-4 w-4" />
+                    Download plan
+                  </a>
+                )}
               </div>
             )}
             {entry.derivation && <PreviewTable rows={entry.derivation.rows} changed={changed} />}
@@ -268,12 +278,30 @@ export function AppleOfferRuleDialog({
                     {n} {status}
                   </Badge>
                 ))}
+              {planUrl && (
+                <a className="inline-flex items-center gap-1 text-sm underline" href={planUrl} download={planFile}>
+                  <Download className="h-4 w-4" />
+                  Download plan
+                </a>
+              )}
               {runUrl && (
-                <a className="inline-flex items-center gap-1 text-sm underline" href={runUrl} download={`${run.id}.json`}>
+                <a className="inline-flex items-center gap-1 text-sm underline" href={runUrl} download={runFile}>
                   <Download className="h-4 w-4" />
                   Download run log
                 </a>
               )}
+            </div>
+            <div className="space-y-1 text-xs text-muted-foreground">
+              <p>Save both files now: nothing is kept after this dialog closes. With them, the CLI (App Store Connect key in the environment) can:</p>
+              {run.status !== 'completed' && (
+                <p>
+                  Resume: <span className="font-mono">pricingkit apply {planFile} --confirm {result?.hash} --resume {runFile}</span>
+                </p>
+              )}
+              <p>
+                Undo: <span className="font-mono">pricingkit undo {planFile} {runFile}</span>, review the undo plan it writes, then{' '}
+                <span className="font-mono">pricingkit apply {result?.changeSet.id}.undo.json --confirm &lt;its hash&gt; --force-delete</span>
+              </p>
             </div>
             {run.stoppedDetail && <p className="text-sm text-destructive">{run.stoppedDetail}</p>}
             {run.ops
@@ -303,7 +331,7 @@ export function AppleOfferRuleDialog({
             <DialogTitle>Apply this plan to App Store Connect?</DialogTitle>
             <DialogDescription>
               Exactly what the preview showed is applied. Each change is checked against App Store Connect first and skipped if already done. There is no
-              undo from the web app: download the run log afterwards, and use the CLI to undo or resume.
+              undo or resume in the web app: download the plan and the run log afterwards, and use the CLI for either.
             </DialogDescription>
           </DialogHeader>
           {entry && result && (

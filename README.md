@@ -209,10 +209,16 @@ const run = await applyChangeSet(plan.changeSet, { adapter: apple, budget, confi
   redeemed stay redeemed.
 
 On an Apple subscription page, the Offers card can create a promotional offer from a rule and
-re-price a drifted one, with the same preview, a confirm step and a run log to download. That is
-all the web flow does: promotional offer creates and re-prices only, the run log isn't saved, and
-there is no resume or undo from the web. Use the CLI (`pricingkit plan`, `apply --resume`, undo
-plans) for resumable or undoable runs and for every other offer kind.
+re-price a drifted one, with the same preview and a confirm step. That is all the web flow does:
+promotional offer creates and re-prices only. It keeps nothing and can't resume or undo, so
+download the plan (`<plan>.json`) and, after applying, the run log (`<plan>.run.json`) from the
+dialog. With them the CLI can:
+
+- resume an incomplete run: `pricingkit apply <plan>.json --confirm <hash> --resume <plan>.run.json`
+- undo it: `pricingkit undo <plan>.json <plan>.run.json` writes `<plan>.undo.json`; review it, then
+  `pricingkit apply <plan>.undo.json --confirm <its hash> --force-delete`
+
+Use the CLI for every other offer kind too.
 
 Before reading or writing a subscription, PricingKit checks it belongs to the plan's app (its
 group must be one of the app's subscription groups). App Store Connect API keys work across a
@@ -237,6 +243,7 @@ Only `apply` writes to a store, and only with `--confirm <plan hash>`.
 | `diff <plan.json>` | Human-readable summary of a plan: changes per product and territory with before, after and percent change, skipped territories by reason, warnings. No store requests. |
 | `offers` | An App Store subscription's introductory, promotional, offer code and win-back offers with each territory's price (`--kind` filters). |
 | `apply <plan.json> --confirm <hash>` | Applies an App Store offer plan. `--confirm` must be the plan's hash (shown by `plan` and `diff`). Saves the run log after every step (`--run-out`, default `<plan>.run.json`, never overwritten) and continues one with `--resume <run.json>`. Deleting offers needs `--force-delete`. |
+| `undo <plan.json> <run.json>` | Writes the plan that undoes a run (`--out`, default `<plan>.undo.json`, replaced only with `--force`) and prints its summary, hash and anything that can't be reversed. Offline: no credentials, no store requests. Apply it with `apply --confirm`, plus `--force-delete` when it deletes offers. |
 | `drift` | Checks an App Store offer against "`--percent` of each territory's current price" (`--basis perPeriod\|totalOverDuration`, `--snap nearest\|floor\|ceil`, `--threshold`) and prints a `pricingkit.offerDrift` report. `--territories GB,US` checks only those territories: the offer's others are listed in `outOfScope` and don't count against it. |
 
 ```bash
