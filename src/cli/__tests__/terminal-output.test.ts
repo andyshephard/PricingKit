@@ -93,6 +93,9 @@ describe('terminal output', () => {
     expect(escapeTerminal(`a${ESC}[2Jb\u009b31m‮\tc\nd\r\ne\rf\u0000`)).toBe('a\\x1B[2Jb\\x9B31m\\u202E\tc\nd\r\ne\\x0Df\\x00');
     expect(JSON.parse(escapeJsonForTerminal(JSON.stringify({ k: `x\u009by‮` })))).toEqual({ k: `x\u009by‮` });
     expect(escapeJsonForTerminal(JSON.stringify({ k: '\u009b' }))).toBe('{"k":"\\u009b"}');
+    // Zero-width characters that hide or split text
+    expect(escapeTerminal('a\u200bb\u200cc\u200dd\ufeffe\u061cf')).toBe('a\\u200Bb\\u200Cc\\u200Dd\\uFEFFe\\u061Cf');
+    expect(escapeJsonForTerminal(JSON.stringify({ k: 'x\u200by' }))).toBe('{"k":"x\\u200by"}');
   });
 
   it('diff of a base-price plan: escapes in the description, warnings, notes and skips are printed as text', async () => {

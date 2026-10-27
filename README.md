@@ -69,7 +69,7 @@ npm run preview   # build and run locally on the Workers runtime (reads .dev.var
 npm run deploy    # build and deploy with wrangler
 ```
 
-Set `ENCRYPTION_KEY` (and optionally `OPEN_EXCHANGE_RATES_APP_ID`) as Worker secrets, e.g. `npx --no-install wrangler secret put ENCRYPTION_KEY`. Exchange rates are cached for 6 hours in memory and, on Workers, in Cloudflare's shared cache (on Node, in `.exchange-rates.json`); a forced refresh never spends the operator key, only a user's own key from Settings.
+Set `ENCRYPTION_KEY` (and optionally `OPEN_EXCHANGE_RATES_APP_ID`) as Worker secrets, e.g. `npx --no-install wrangler secret put ENCRYPTION_KEY`. Exchange rates are cached for 6 hours in each isolate's memory; on Node also in `.exchange-rates.json`. On a Worker served from a custom domain they are also kept in Cloudflare's Cache API, which Cloudflare documents as working on custom domains and which holds entries per data center. Cloudflare doesn't document it for `*.workers.dev` addresses, so count on the in-memory cache only there. A forced refresh never spends the operator key, only a user's own key from Settings.
 
 ### Checks
 
@@ -731,8 +731,10 @@ registry has under that name and hands it your credentials. Tools:
 
 There is no apply tool. Arguments are typed and can't start with `-`. File paths are relative,
 use only letters, digits, `.`, `_`, `-` and `/`, have no `..` segments, nothing under `.git/`, and
-must resolve (following links) inside the server's working directory; `plan` writes only `.json`
-files and never replaces a file that isn't already a plan (or state) file. The command
+must resolve (following links) inside the server's working directory. Files read must be regular
+files (no FIFOs or devices) of at most 16 MB. `plan` writes only `.json` files, never into a folder or
+file whose name starts with `.` (such as `.github/` or `.env.json`, also through links), and never
+replaces a file that isn't already a plan (or state) file. The command
 `apply_command` returns is shell-quoted, and a `resume` log must belong to the plan.
 
 An agent relays what it likes, so the human step is built in: no tool returns a plan's confirm hash

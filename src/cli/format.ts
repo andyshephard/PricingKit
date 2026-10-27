@@ -10,9 +10,10 @@ import { compareDecimal, divideDecimal, isZeroDecimal, subtractDecimal, type Dec
 // Escaped, as visible \xNN / \uNNNN: C0 controls except newline and tab
 // (ESC starts every ANSI CSI and OSC sequence; a CR not followed by a newline
 // rewrites a line, while CRLF, as in CSV output, is left alone), DEL, the
-// C1 controls (U+009B is a one-byte CSI, U+009D an OSC), and the Unicode
-// line separators and bidirectional overrides that reorder what is shown.
-const TERMINAL_UNSAFE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]|\r(?!\n)/g;
+// C1 controls (U+009B is a one-byte CSI, U+009D an OSC), the Unicode line
+// separators and bidirectional overrides that reorder what is shown, and the
+// zero-width characters (U+200B-U+200D, U+FEFF, U+061C) that hide text.
+const TERMINAL_UNSAFE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]|\r(?!\n)/g;
 
 export function escapeTerminal(text: string): string {
   return text.replace(TERMINAL_UNSAFE, (c) => {
@@ -23,7 +24,7 @@ export function escapeTerminal(text: string): string {
 
 // JSON.stringify escapes C0 controls but leaves DEL, C1 and the Unicode
 // separators/overrides raw; inside a JSON string \uNNNN is equivalent.
-const JSON_UNSAFE = /[\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+const JSON_UNSAFE = /[\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g;
 
 /** JSON text with every terminal-unsafe character as a \uNNNN escape (same JSON value) */
 export function escapeJsonForTerminal(json: string): string {
