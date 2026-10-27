@@ -4,6 +4,7 @@ import { getCpiSeries, getPPPMultipliers } from '@/lib/world-bank/ppp';
 import {
   checkFreshness,
   cpiRatioSince,
+  latestCpiYear,
   DEFAULT_PPP_MAX_AGE_YEARS,
   pppStalenessAdjustment,
   REFERENCE_DATA,
@@ -196,8 +197,12 @@ export async function GET(request: Request) {
       const marketRate = exchangeRates.rates[currencyCode];
       const year = pppData.years?.[regionCode];
       if (year !== undefined && regionCode !== 'US') {
+        // The region and the US over the same years: up to the earlier of their latest CPI years
+        const endYear = cpi ? Math.min(latestCpiYear(cpi[regionCode], year) ?? -Infinity, latestCpiYear(cpi.US, year) ?? -Infinity) : undefined;
         const adjustment = pppStalenessAdjustment(year, currentYear, policy, {
-          ...(cpi ? { cpiRatio: cpiRatioSince(cpi[regionCode], year), baseCpiRatio: cpiRatioSince(cpi.US, year) } : {}),
+          ...(cpi && endYear !== undefined && Number.isFinite(endYear)
+            ? { cpiRatio: cpiRatioSince(cpi[regionCode], year, endYear), baseCpiRatio: cpiRatioSince(cpi.US, year, endYear) }
+            : {}),
         });
         if (!adjustment.ok) {
           // Too old to use: keep the static index entry for this region, flagged

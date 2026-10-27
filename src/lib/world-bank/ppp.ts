@@ -370,17 +370,51 @@ export async function getPPPMultiplier(regionCode: string): Promise<number> {
 /** Region -> year -> CPI (2010 = 100) */
 export type CpiSeries = Record<string, Record<number, number>>;
 
-let cachedCpi: { key: string; value: CpiSeries; fetchedAt: number } | null = null;
+/** How long a failed CPI fetch is remembered, so a World Bank outage isn't hit by every request */
+export const CPI_FAILURE_CACHE_MS = 5 * 60 * 1000;
+
+type CpiCacheEntry =
+  | { key: string; state: 'pending'; promise: Promise<CpiSeries> }
+  | { key: string; state: 'ok'; promise: Promise<CpiSeries>; at: number }
+  | { key: string; state: 'failed'; promise: Promise<CpiSeries>; at: number };
+let cpiCache: CpiCacheEntry | null = null;
+
+/** Test-only: forget cached CPI data */
+export function resetCpiCacheForTests(): void {
+  cpiCache = null;
+}
 
 /**
  * Consumer price index series from the World Bank's FP.CPI.TOTL
- * (2010 = 100), every country from `fromYear` to this year, in one request;
- * cached 24 hours. Turn into ratios with cpiRatioSince (pricing core).
+ * (2010 = 100), every country from `fromYear` to this year, in one request.
+ * Concurrent callers share one in-flight request; a result is cached 24
+ * hours, a failure 5 minutes (callers get the same error meanwhile). Turn
+ * the series into ratios with cpiRatioSince (pricing core).
  */
-export async function getCpiSeries(fromYear: number, now: Date = new Date()): Promise<CpiSeries> {
-  const currentYear = now.getUTCFullYear();
-  const key = `${fromYear}:${currentYear}`;
-  if (cachedCpi && cachedCpi.key === key && Date.now() - cachedCpi.fetchedAt < CACHE_DURATION_MS) return cachedCpi.value;
+export function getCpiSeries(fromYear: number, now: Date = new Date()): Promise<CpiSeries> {
+  const key = `${fromYear}:${now.getUTCFullYear()}`;
+  const cached = cpiCache;
+  if (cached && cached.key === key) {
+    if (cached.state === 'pending') return cached.promise;
+    const age = Date.now() - cached.at;
+    if (cached.state === 'ok' && age < CACHE_DURATION_MS) return cached.promise;
+    if (cached.state === 'failed' && age < CPI_FAILURE_CACHE_MS) return cached.promise;
+  }
+  const promise = fetchCpiSeries(fromYear, now.getUTCFullYear());
+  const entry: CpiCacheEntry = { key, state: 'pending', promise };
+  cpiCache = entry;
+  promise.then(
+    () => {
+      if (cpiCache === entry) cpiCache = { key, state: 'ok', promise, at: Date.now() };
+    },
+    () => {
+      if (cpiCache === entry) cpiCache = { key, state: 'failed', promise, at: Date.now() };
+    }
+  );
+  return promise;
+}
+
+async function fetchCpiSeries(fromYear: number, currentYear: number): Promise<CpiSeries> {
   const url = `https://api.worldbank.org/v2/country/all/indicator/FP.CPI.TOTL?format=json&per_page=20000&date=${fromYear}:${currentYear}`;
   const response = await fetch(url, { next: { revalidate: 86400 }, signal: AbortSignal.timeout(10000) } as RequestInit);
   if (!response.ok) throw new Error(`World Bank CPI request failed (${response.status})`);
@@ -392,6 +426,5 @@ export async function getCpiSeries(fromYear: number, now: Date = new Date()): Pr
     if (!region || typeof record.value !== 'number' || !Number.isFinite(record.value) || record.value <= 0) continue;
     (series[region] ??= {})[parseInt(record.date, 10)] = record.value;
   }
-  cachedCpi = { key, value: series, fetchedAt: Date.now() };
   return series;
 }

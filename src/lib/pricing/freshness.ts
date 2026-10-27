@@ -182,15 +182,22 @@ export function pppStalenessAdjustment(
   return { ok: true, factorRatio, stale: true, ageYears, note: `PPP data from ${dataYear} inflated by relative CPI x${factorRatio.toFixed(4)}` };
 }
 
+/** The latest year with a CPI value at or after `fromYear`; undefined if none */
+export function latestCpiYear(series: Record<number, number> | undefined, fromYear: number): number | undefined {
+  const years = Object.keys(series ?? {}).map(Number).filter((y) => y >= fromYear && series![y] > 0);
+  return years.length > 0 ? Math.max(...years) : undefined;
+}
+
 /**
- * CPI(latest year in the series) / CPI(fromYear), from a year -> index
- * series; undefined when either value is missing.
+ * CPI(toYear) / CPI(fromYear) from a year -> index series; undefined when
+ * either value is missing. Compare a territory with its base over the same
+ * years: pass the same toYear for both (the earlier of their latest years).
  */
-export function cpiRatioSince(series: Record<number, number> | undefined, fromYear: number): number | undefined {
+export function cpiRatioSince(series: Record<number, number> | undefined, fromYear: number, toYear?: number): number | undefined {
   if (!series) return undefined;
   const start = series[fromYear];
-  const years = Object.keys(series).map(Number).filter((y) => y >= fromYear);
-  if (!start || years.length === 0) return undefined;
-  const latest = series[Math.max(...years)];
-  return latest > 0 && start > 0 ? latest / start : undefined;
+  const endYear = toYear ?? latestCpiYear(series, fromYear);
+  if (!start || endYear === undefined) return undefined;
+  const end = series[endYear];
+  return end > 0 && start > 0 ? end / start : undefined;
 }

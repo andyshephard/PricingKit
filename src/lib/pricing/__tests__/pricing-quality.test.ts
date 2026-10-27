@@ -11,6 +11,7 @@ import {
   parseMultiplierText,
   relativeMultipliers,
   cpiRatioSince,
+  latestCpiYear,
   parsePricingSpec,
   PricingSpecError,
   pppStalenessAdjustment,
@@ -180,6 +181,11 @@ describe('multiplier tables typed in the web app', () => {
     expect(cpiRatioSince({ 2020: 100, 2021: 110, 2023: 150 }, 2020)).toBe(1.5);
     expect(cpiRatioSince({ 2021: 110 }, 2020)).toBeUndefined();
     expect(cpiRatioSince(undefined, 2020)).toBeUndefined();
+    // A common end year: the territory to 2021 when its base only has data to 2021
+    expect(cpiRatioSince({ 2020: 100, 2021: 110, 2023: 150 }, 2020, 2021)).toBe(1.1);
+    expect(cpiRatioSince({ 2020: 100, 2023: 150 }, 2020, 2021)).toBeUndefined();
+    expect(latestCpiYear({ 2019: 90, 2020: 100, 2022: 120 }, 2020)).toBe(2022);
+    expect(latestCpiYear({ 2019: 90 }, 2020)).toBeUndefined();
   });
 });
 
