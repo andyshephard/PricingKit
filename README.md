@@ -186,10 +186,10 @@ No command writes to a store. There is no `apply` command yet.
 | Command | What it does |
 | --- | --- |
 | `export` | Current (and scheduled) prices of an App Store subscription or a Google Play base plan, as a `pricingkit.state` snapshot. `--out <file>` also writes it. |
-| `plan --spec <file>` | Reads a pricing spec, snaps its targets to real store prices and writes the plan (`pricingkit.changeset`, default `pricingkit-plan.json`). A dry run: it only reads. `--state-out <file>` saves the prices it planned against. |
+| `plan --spec <file>` | Reads a pricing spec, snaps its targets to real store prices and writes the plan (`pricingkit.changeset`). A dry run: it only reads. The default file, `pricingkit-plan.json` (gitignored), is never replaced unless you pass `--force`; `--out <file>` names the file and replaces it. `--state-out <file>` saves the prices it planned against. |
 | `diff <plan.json>` | Human-readable summary of a plan: changes per product and territory with before, after and percent change, skipped territories by reason, warnings. No store requests. |
 | `offers` | An App Store subscription's introductory, promotional, offer code and win-back offers with each territory's price (`--kind` filters). |
-| `drift` | Checks an App Store offer against "`--percent` of each territory's current price" (`--basis perPeriod\|totalOverDuration`, `--snap nearest\|floor\|ceil`, `--threshold`, `--territories`) and prints a `pricingkit.offerDrift` report. |
+| `drift` | Checks an App Store offer against "`--percent` of each territory's current price" (`--basis perPeriod\|totalOverDuration`, `--snap nearest\|floor\|ceil`, `--threshold`) and prints a `pricingkit.offerDrift` report. `--territories GB,US` checks only those territories: the offer's others are listed in `outOfScope` and don't count against it. |
 
 ```bash
 export ASC_KEY_ID=... ASC_ISSUER_ID=... ASC_PRIVATE_KEY_PATH=~/keys/AuthKey_XXXX.p8
@@ -205,9 +205,10 @@ npx pricingkit drift --bundle-id com.example.app --subscription 1234567890 \
 **Shared options.** `--json` prints machine-readable JSON on stdout: the document itself
 (`pricingkit.state`, `pricingkit.changeset`, `pricingkit.planSummary`, `pricingkit.offers` or
 `pricingkit.offerDrift`), or `{"error": {"message", "code", "status"}}` on failure. Store client
-logs and the request count go to stderr. `--budget <n>` caps the store requests one run may send
-(default 3600, App Store Connect's hourly allowance). Every command runs inside a `RequestBudget`,
-and a spent budget stops the run with an error rather than a partial result.
+logs and the request count (when any requests were sent) go to stderr. `--budget <n>` caps the
+store requests one run may send (default 1000, leaving room within App Store Connect's 3600 per
+hour for anything else using the same key). Every command runs inside a `RequestBudget`, and a
+spent budget stops the run with an error rather than a partial result.
 
 **Exit codes**
 
@@ -215,18 +216,38 @@ and a spent budget stops the run with an error rather than a partial result.
 | --- | --- |
 | `0` | OK. For `plan` and `diff`: no changes. For `drift`: every territory matches. |
 | `1` | Error: bad arguments, invalid spec or plan, missing credentials, a store error, or a spent request budget. |
-| `2` | Something to act on: `plan`/`diff` found changes, or `drift` found the offer out of sync (any mismatch, missing, extra, unresolved or unreadable territory). |
+| `2` | Something to act on: `plan`/`diff` found changes, or `drift` found the offer out of sync (any mismatch, missing, extra, unresolved or unreadable territory among those checked). |
 
 **Credentials** come only from environment variables, never from flags or files in the repo:
 
 | Store | Variables |
 | --- | --- |
-| App Store Connect | `ASC_KEY_ID`, `ASC_ISSUER_ID`, and `ASC_PRIVATE_KEY` (the key's PEM text; literal `\n` is accepted) or `ASC_PRIVATE_KEY_PATH` (path to the key file). Select the app with `--bundle-id`. |
+| App Store Connect | `ASC_KEY_ID`, `ASC_ISSUER_ID`, and one of `ASC_PRIVATE_KEY` (the key's PEM text; literal `\n` is accepted), `ASC_PRIVATE_KEY_HEX` (the same text hex-encoded) or `ASC_PRIVATE_KEY_PATH` (path to the key file). Select the app with `--bundle-id`. |
 | Google Play | `GOOGLE_APPLICATION_CREDENTIALS` (path to a service account key file) or `GOOGLE_SERVICE_ACCOUNT_JSON` (the key JSON itself). Select the app with `--package-name`. |
 
-The CLI holds credentials in memory only: it never prints them, writes them to disk or logs
-request headers. As a backstop, everything it prints is scrubbed of the key material it loaded,
-PEM blocks, bearer tokens and JWTs.
+A key that can't be imported is refused up front with the variable's name. The CLI holds
+credentials in memory only: it never prints them, writes them to disk or logs request headers.
+As a backstop, everything it prints is scrubbed of the key material it loaded, the tokens it
+minted, PEM blocks, bearer tokens, Google access tokens and JWTs.
+
+**macOS Keychain.** Keep the App Store Connect key in the login Keychain instead of a file:
+
+```bash
+# Once: store the key file's text (multi-line) as a generic password
+security add-generic-password -s pricingkit-asc -a "$USER" -w "$(cat ~/Downloads/AuthKey_XXXX.p8)"
+# then delete the downloaded key file
+
+# Each session (or in a wrapper script)
+export ASC_KEY_ID=... ASC_ISSUER_ID=...
+export ASC_PRIVATE_KEY_HEX="$(security find-generic-password -s pricingkit-asc -a "$USER" -w)"
+npx pricingkit offers --bundle-id com.example.app --subscription 1234567890
+```
+
+`security find-generic-password -w` prints a secret that contains newlines (like a PEM key) as
+hex, which is why the recipe uses `ASC_PRIVATE_KEY_HEX`. If you stored the key on one line, it
+prints as text: use `ASC_PRIVATE_KEY` instead. To turn the hex back into text yourself, pipe it
+through `xxd -r -p`. Note that `add-generic-password -w <value>` puts the key on that command's
+argument list for a moment; run it on a machine you trust.
 
 **Pricing spec** (`pricingkit.spec`, version 1, JSON). `plan` reads the products' current prices,
 turns the targets into per-territory amounts and snaps them: on the App Store to each territory's
