@@ -218,7 +218,9 @@ ${SHARED_HELP}`,
   pricingkit plan --rules <rules.json> [--spec <base spec.json>] [--scheduled-base hold|now]
                   [--out <plan.json>] [--force]
 
-The spec is a pricingkit.spec (base prices) or a pricingkit.offerPlanSpec
+The spec is a pricingkit.spec (base prices: fixed prices, a percent of each
+territory's current price, or a strategy target spreading one base price by
+PPP, the Big Mac or Netflix index, or plain conversion) or a pricingkit.offerPlanSpec
 (offers: App Store offers to create or re-price, several products in one
 spec, each offer with its own key; or, for a Google Play app, play.offer
 offers to create, change or activate on base plans, previewed per region with

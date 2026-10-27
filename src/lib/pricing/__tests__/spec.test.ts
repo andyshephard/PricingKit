@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parsePricingSpec, PricingSpecError, specTargets, type PricingSpecProduct, type ProductPriceState } from '@/lib/pricing';
+import { calculateRegionalPrice, parsePricingSpec, PricingSpecError, specTargets, type PricingSpecProduct, type ProductPriceState } from '@/lib/pricing';
 
 const appleSub = { platform: 'apple', type: 'subscription', id: '1234567890' } as const;
 const playPlan = { platform: 'google', type: 'subscription', productId: 'pro', basePlanId: 'annual' } as const;
@@ -89,5 +89,63 @@ describe('specTargets', () => {
     expect(Object.keys(result.targets)).toEqual(['GB']);
     expect(result.targets.GB.amount).toBe('4.491');
     expect(result.skipped).toEqual([expect.objectContaining({ territory: 'FR', reason: 'NOT_CONFIGURED' })]);
+  });
+
+  describe('strategy', () => {
+    const ppp = (extra: object = {}): PricingSpecProduct['targets'] => ({ type: 'strategy', strategy: 'ppp', base: { territory: 'GB', amount: '4.99' }, ...extra }) as PricingSpecProduct['targets'];
+
+    it('spreads the base price with the core strategy, in each territory current currency', () => {
+      const result = specTargets({ product: appleSub, targets: ppp() }, state(appleSub));
+      // Exactly what calculateRegionalPrice gives (rounding "none" on Apple: snapping picks the price point)
+      const expected = (territory: string, currency: string, scale: number) =>
+        calculateRegionalPrice(4.99, territory, 'ppp', 'none', undefined, undefined, { [territory]: currency }, undefined, 'GBP', 'GB').rawPrice.toFixed(scale);
+      expect(result.targets.GB).toEqual({ currency: 'GBP', amount: '4.99' });
+      expect(result.targets.JP).toEqual({ currency: 'JPY', amount: String(Number(expected('JP', 'JPY', 0))) });
+      expect(result.targets.US.amount).toBe(String(Number(expected('US', 'USD', 2))));
+      expect(result.targets.DE.currency).toBe('EUR');
+      expect(result.skipped).toEqual([]);
+    });
+
+    it('rounds to price endings on Play by default, and takes the rounding the spec names', () => {
+      const play = specTargets({ product: playPlan, targets: ppp() }, state(playPlan));
+      expect(play.targets.US.amount).toMatch(/\.99$/);
+      const up = specTargets({ product: playPlan, targets: ppp({ rounding: 'none' }) }, state(playPlan));
+      expect(up.targets.US.amount).toBe(String(Number(calculateRegionalPrice(4.99, 'US', 'ppp', 'none', undefined, undefined, { US: 'USD' }, undefined, 'GBP', 'GB').rawPrice.toFixed(2))));
+    });
+
+    it('uses the spec exchange rates over the built-in ones, and only the listed territories', () => {
+      const direct = (rates?: Record<string, string>) =>
+        specTargets({ product: appleSub, targets: ppp({ strategy: 'direct', territories: ['US', 'FR'], ...(rates ? { exchangeRates: rates } : {}) }) }, state(appleSub));
+      const withRates = direct({ GBP: '0.5' });
+      expect(withRates.targets).toEqual({ US: { currency: 'USD', amount: '9.98' } });
+      expect(withRates.skipped).toEqual([expect.objectContaining({ territory: 'FR', reason: 'NOT_CONFIGURED' })]);
+      expect(direct().targets.US.amount).not.toBe('9.98');
+    });
+
+    it('skips territories it cannot price, and everything when the base currency is unknown', () => {
+      const odd: ProductPriceState = { ...state(appleSub), territories: { ...state(appleSub).territories, XX: { territory: 'XX', currency: 'XXX', current: null } } };
+      const result = specTargets({ product: appleSub, targets: ppp({ strategy: 'direct' }) }, odd);
+      expect(result.skipped).toEqual([expect.objectContaining({ territory: 'XX', reason: 'INVALID_TARGET', detail: expect.stringMatching(/exchange rate/) })]);
+      const noBase = specTargets({ product: appleSub, targets: ppp({ base: { territory: 'FR', amount: '4.99' }, territories: ['GB'] }) }, state(appleSub));
+      expect(noBase.targets).toEqual({});
+      expect(noBase.skipped).toEqual([expect.objectContaining({ territory: 'GB', reason: 'INVALID_TARGET', detail: expect.stringMatching(/give base\.currency/) })]);
+      const given = specTargets({ product: appleSub, targets: ppp({ base: { territory: 'FR', amount: '4.99', currency: 'EUR' }, territories: ['GB'] }) }, state(appleSub));
+      expect(Object.keys(given.targets)).toEqual(['GB']);
+    });
+
+    it('parses strategy targets and refuses what the core cannot price', () => {
+      expect(parsePricingSpec(spec([{ product: appleSub, targets: ppp({ rounding: 'nearest-99', exchangeRates: { EUR: '0.920' } }) }])).products[0].targets).toEqual({
+        type: 'strategy',
+        strategy: 'ppp',
+        base: { territory: 'GB', amount: '4.99' },
+        rounding: 'nearest-99',
+        exchangeRates: { EUR: '0.92' },
+      });
+      expect(problems(spec([{ product: appleSub, targets: ppp({ strategy: 'custom' }) }]))).toEqual([expect.stringMatching(/^products\.0\.targets\.strategy/)]);
+      expect(problems(spec([{ product: appleSub, targets: ppp({ rounding: 'nearest-tier' }) }]))).toEqual([expect.stringMatching(/^products\.0\.targets\.rounding/)]);
+      expect(problems(spec([{ product: appleSub, targets: ppp({ base: { territory: 'GB', amount: '0' } }) }]))).toEqual([expect.stringMatching(/above 0/)]);
+      expect(problems(spec([{ product: appleSub, targets: ppp({ base: { territory: 'GBR', amount: '1' } }) }]))).toEqual([expect.stringMatching(/alpha-2/)]);
+      expect(problems(spec([{ product: appleSub, targets: ppp({ exchangeRates: { EUR: 0.9 } }) }]))).toHaveLength(1);
+    });
   });
 });

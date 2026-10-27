@@ -16,14 +16,26 @@
 //     "snap": "nearest"
 //   }]
 // }
+//
+// Targets: "fixed" (prices per territory), "percentOfCurrent" (each
+// territory's current price times a percentage) or "strategy" (one base
+// price spread to every territory by a price-parity strategy from
+// strategies.ts: PPP, Big Mac or Netflix index, or plain currency
+// conversion), e.g.
+//   { "type": "strategy", "strategy": "ppp", "base": { "territory": "US", "amount": "9.99" },
+//     "rounding": "nearest-99" }
+// Strategy targets use the built-in indexes and, unless the spec gives
+// "exchangeRates" (units of each currency per US dollar), the built-in
+// fallback exchange rates, so a plan is reproducible offline.
 
 import { z } from 'zod';
 import { appRefSchema, productRefSchema, type PlanSkip } from './changeset';
-import { compareDecimal, divideDecimal, isDecimalString, multiplyDecimal, normalizeDecimal, type Decimal } from './decimal';
+import { compareDecimal, decimalFromNumber, decimalToNumber, divideDecimal, isDecimalString, multiplyDecimal, normalizeDecimal, type Decimal } from './decimal';
 import type { AppRef, ProductPriceState, ProductRef } from './model';
 import type { ResolveTarget } from './adapter';
 import { currencyScale } from './rounding';
 import type { SnapMode } from './snap';
+import { calculateRegionalPrice, type DynamicExchangeRates } from './strategies';
 
 export const PRICING_SPEC_KIND = 'pricingkit.spec' as const;
 export const PRICING_SPEC_SCHEMA_VERSION = 1 as const;
@@ -35,7 +47,29 @@ export type SpecTargets =
   /** These territories get exactly these prices (before snapping) */
   | { type: 'fixed'; prices: Record<string, SpecPrice> }
   /** Each territory's current price times percent/100 ("110" = a 10% rise) */
-  | { type: 'percentOfCurrent'; percent: Decimal; territories?: 'all' | string[] };
+  | { type: 'percentOfCurrent'; percent: Decimal; territories?: 'all' | string[] }
+  /** One base price spread to each territory by a pricing strategy (strategies.ts) */
+  | StrategyTargets;
+
+/** Strategies a spec can name: the price-parity indexes and plain conversion ("custom" needs per-territory multipliers, not yet supported) */
+export const SPEC_STRATEGIES = ['ppp', 'bigmac', 'netflix', 'direct'] as const;
+export type SpecStrategy = (typeof SPEC_STRATEGIES)[number];
+/** Rounding before snapping (rounding.ts); "nearest-tier" needs a tier ladder, which snapping to store prices replaces */
+export const SPEC_ROUNDINGS = ['none', 'nearest-99', 'round-up'] as const;
+export type SpecRounding = (typeof SPEC_ROUNDINGS)[number];
+
+export interface StrategyTargets {
+  type: 'strategy';
+  strategy: SpecStrategy;
+  /** The price in one territory every other price is derived from. Currency defaults to the territory's current one. */
+  base: { territory: string; amount: Decimal; currency?: string };
+  /** Default: "none" on the App Store (snapping picks the price point), "nearest-99" on Google Play */
+  rounding?: SpecRounding;
+  /** Territories to price (default: every territory the product is priced in now) */
+  territories?: 'all' | string[];
+  /** Units of each currency per US dollar; overrides the built-in fallback rates for those currencies */
+  exchangeRates?: Record<string, Decimal>;
+}
 
 export interface PricingSpecProduct {
   product: ProductRef;
@@ -71,7 +105,19 @@ const specPriceSchema = z.union([
   z.object({ amount: nonNegativeDecimal, currency: currencySchema }).strict(),
 ]);
 
+const positiveDecimal = decimalSchema.refine((v) => !isDecimalString(v) || compareDecimal(v, '0') > 0, { message: 'must be above 0' });
+
 const targetsSchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      type: z.literal('strategy'),
+      strategy: z.enum(SPEC_STRATEGIES),
+      base: z.object({ territory: territorySchema, amount: positiveDecimal, currency: currencySchema.optional() }).strict(),
+      rounding: z.enum(SPEC_ROUNDINGS).optional(),
+      territories: z.union([z.literal('all'), z.array(territorySchema).min(1)]).optional(),
+      exchangeRates: z.record(currencySchema, positiveDecimal).optional(),
+    })
+    .strict(),
   z.object({ type: z.literal('fixed'), prices: z.record(territorySchema, specPriceSchema) }).strict(),
   z
     .object({
@@ -199,6 +245,8 @@ export function specTargets(entry: PricingSpecProduct, state: ProductPriceState)
     return { targets, skipped };
   }
 
+  if (entry.targets.type === 'strategy') return strategyTargets(entry.targets, state, skip, targets, skipped);
+
   const { percent } = entry.targets;
   const wanted =
     entry.targets.territories === undefined || entry.targets.territories === 'all'
@@ -217,6 +265,52 @@ export function specTargets(entry: PricingSpecProduct, state: ProductPriceState)
     const scaled = multiplyDecimal(current.current.amount, percent);
     const scale = product.platform === 'apple' ? 8 : currencyScale(current.current.currency);
     targets[territory] = { currency: current.current.currency, amount: normalizeDecimal(divideDecimal(scaled, '100', scale)) };
+  }
+  return { targets, skipped };
+}
+
+/**
+ * Strategy targets: the base price spread to each territory with
+ * calculateRegionalPrice (the same maths as the web app's bulk pricing),
+ * in the currency the territory is priced in now. A territory with no
+ * price yet has no known currency and is skipped; so is one the strategy
+ * can't price (no exchange rate).
+ */
+function strategyTargets(
+  t: StrategyTargets,
+  state: ProductPriceState,
+  skip: (territory: string, reason: PlanSkip['reason'], detail: string) => void,
+  targets: Record<string, ResolveTarget>,
+  skipped: PlanSkip[]
+): SpecTargetResult {
+  const platform = state.product.platform;
+  const baseState = state.territories[t.base.territory];
+  const baseCurrency = t.base.currency ?? baseState?.current?.currency ?? (baseState?.currency || undefined);
+  const wanted = t.territories === undefined || t.territories === 'all' ? Object.keys(state.territories) : t.territories;
+  if (!baseCurrency) {
+    for (const territory of [...new Set(wanted)].sort()) {
+      skip(territory, 'INVALID_TARGET', `the base territory ${t.base.territory} has no price, so its currency is unknown; give base.currency`);
+    }
+    return { targets, skipped };
+  }
+  const rounding = t.rounding ?? (platform === 'apple' ? 'none' : 'nearest-99');
+  const rates: DynamicExchangeRates | undefined = t.exchangeRates
+    ? { base: 'USD', fetchedAt: '', rates: Object.fromEntries(Object.entries(t.exchangeRates).map(([c, r]) => [c, decimalToNumber(r)])) }
+    : undefined;
+  const baseAmount = decimalToNumber(t.base.amount);
+  for (const territory of [...new Set(wanted)].sort()) {
+    const current = state.territories[territory];
+    const currency = current?.currency || undefined;
+    if (!currency) {
+      skip(territory, 'NOT_CONFIGURED', 'territory has no price yet, so its currency is unknown');
+      continue;
+    }
+    const price = calculateRegionalPrice(baseAmount, territory, t.strategy, rounding, undefined, undefined, { [territory]: currency }, rates, baseCurrency, t.base.territory);
+    if (price.error || !Number.isFinite(price.rawPrice) || price.rawPrice <= 0) {
+      skip(territory, 'INVALID_TARGET', price.errorMessage ?? `the ${t.strategy} strategy gave no price`);
+      continue;
+    }
+    targets[territory] = { currency, amount: normalizeDecimal(decimalFromNumber(price.rawPrice, currencyScale(currency))) };
   }
   return { targets, skipped };
 }
