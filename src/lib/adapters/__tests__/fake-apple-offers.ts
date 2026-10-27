@@ -2,7 +2,9 @@
 // App Store Connect API 4.5 responses (OpenAPI spec): offer lists without
 // prices, then each offer's prices with `territory` and
 // `subscriptionPricePoint` relationships and both resources included.
-// Pages link on with an absolute links.next URL, like Apple's.
+// Pages link on with an absolute links.next URL, like Apple's. This read shape
+// (strict relationships, free-trial prices without a price point, pagination)
+// has been confirmed against a real account with read-only runs.
 import type { RequestBudget } from '@/lib/utils/request-budget';
 
 export const OFFER_SUB_ID = '9000000002';

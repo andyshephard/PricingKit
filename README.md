@@ -91,7 +91,7 @@ CI runs all three on every pull request. See [CONTRIBUTING.md](CONTRIBUTING.md) 
 bin/pricingkit.mjs        # CLI launcher (runs src/cli through tsx)
 examples/github-actions/  # Example workflows to copy (not run in this repo)
 src/
-├── cli/                  # pricingkit CLI: export, plan, diff, offers, drift (read-only)
+├── cli/                  # pricingkit CLI: export, plan, diff, offers, drift, apply (offer plans, --confirm)
 ├── app/
 │   ├── api/              # API routes (Google & Apple endpoints)
 │   ├── dashboard/        # Dashboard pages
@@ -169,11 +169,51 @@ const undo = buildUndoChangeSet(plan, run);               // itself a plan to re
   exists.
 
 Phase 1 covers base prices: Apple subscriptions, Google Play base plans and one-time products.
-Apple in-app purchases and offers come later; their op kinds are reserved in the format.
+
+### Apple subscription offers
+
+Offers use the same plan files. An offer op (`createOffer`, `updateOfferPrices`,
+`deactivateOffer`, `activateOffer`, `deleteOffer`) names the offer by its key (promotional offer
+code, offer code name, win-back offer ID) and carries the offer's terms and price in every
+territory before and after. Plan them from an offer spec; several products go in one spec, each
+with its own key (Apple needs promotional offer codes to be unique across a subscription group):
+
+```json
+{
+  "kind": "pricingkit.offerPlanSpec", "schemaVersion": 1, "app": { "bundleId": "com.example.app" },
+  "offers": [{
+    "id": "example_annual_50", "name": "Half off a year", "kind": "apple.promo",
+    "productRef": { "platform": "apple", "type": "subscription", "id": "1234567890" },
+    "mode": "PAY_UP_FRONT", "duration": "P1Y", "territories": "all", "syncWithBase": true,
+    "pricing": { "type": "percentOfCurrent", "percent": "50", "basis": "totalOverDuration", "snap": "nearest" }
+  }]
+}
+```
+
+```ts
+const plan = await apple.planOffers({ app, offers: spec.offers });   // reads only
+// plan.entries: per-territory preview, refusals; plan.hash: what an apply must confirm
+const run = await applyChangeSet(plan.changeSet, { adapter: apple, budget, confirm: plan.hash });
+```
+
+- Each territory's price is that territory's own current price times the rule, snapped to its own
+  price points. A pay-up-front offer's price covers its whole duration.
+- Applying needs `confirm` set to the plan's hash; nothing is read or sent otherwise.
+- Offers are found by key, so a create that errored but took effect is recognised on resume and
+  never sent twice. Introductory offers (one store resource per territory) resume territory by
+  territory, and territories with an overlapping introductory offer are left out.
+- The planner refuses what App Store Connect would refuse: an 11th promotional offer, changing an
+  existing offer's duration, mode or periods, re-pricing an offer code or win-back offer.
+- Deleting an offer needs `force: { deleteOffers: true }`: App Store Connect's API doesn't report
+  redemptions. Offer codes can't be deleted at all; undo deactivates them, and codes already
+  redeemed stay redeemed.
+
+On an Apple subscription page, the Offers card can create a promotional offer from a rule and
+re-price a drifted one, with the same preview, a confirm step and a downloadable run log.
 
 ## Command line: `pricingkit`
 
-A read-only CLI over the same core and adapters, for scripts, CI and agents. It runs from a
+A CLI over the same core and adapters, for scripts, CI and agents. It runs from a
 clone of this repo (TypeScript runs through `tsx`; there is no build step):
 
 ```bash
@@ -181,14 +221,15 @@ npm ci
 npx pricingkit --help
 ```
 
-No command writes to a store. There is no `apply` command yet.
+Only `apply` writes to a store, and only with `--confirm <plan hash>`.
 
 | Command | What it does |
 | --- | --- |
 | `export` | Current (and scheduled) prices of an App Store subscription or a Google Play base plan, as a `pricingkit.state` snapshot. `--out <file>` also writes it. |
-| `plan --spec <file>` | Reads a pricing spec, snaps its targets to real store prices and writes the plan (`pricingkit.changeset`). A dry run: it only reads. The default file, `pricingkit-plan.json` (gitignored), is never replaced unless you pass `--force`; `--out <file>` names the file and replaces it. `--state-out <file>` saves the prices it planned against. |
+| `plan --spec <file>` | With an offer plan spec (`pricingkit.offerPlanSpec`), plans creating or re-pricing App Store offers and prints the plan hash. Otherwise: reads a pricing spec, snaps its targets to real store prices and writes the plan (`pricingkit.changeset`). A dry run: it only reads. The default file, `pricingkit-plan.json` (gitignored), is never replaced unless you pass `--force`; `--out <file>` names the file and replaces it. `--state-out <file>` saves the prices it planned against. |
 | `diff <plan.json>` | Human-readable summary of a plan: changes per product and territory with before, after and percent change, skipped territories by reason, warnings. No store requests. |
 | `offers` | An App Store subscription's introductory, promotional, offer code and win-back offers with each territory's price (`--kind` filters). |
+| `apply <plan.json> --confirm <hash>` | Applies an App Store offer plan. `--confirm` must be the plan's hash (shown by `plan` and `diff`). Saves the run log after every step (`--run-out`, default `<plan>.run.json`, never overwritten) and continues one with `--resume <run.json>`. Deleting offers needs `--force-delete`. |
 | `drift` | Checks an App Store offer against "`--percent` of each territory's current price" (`--basis perPeriod\|totalOverDuration`, `--snap nearest\|floor\|ceil`, `--threshold`) and prints a `pricingkit.offerDrift` report. `--territories GB,US` checks only those territories: the offer's others are listed in `outOfScope` and don't count against it. |
 
 ```bash

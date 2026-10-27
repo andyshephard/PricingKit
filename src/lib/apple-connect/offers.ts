@@ -76,7 +76,8 @@ type PriceRead =
   | { problem: string };
 
 /**
- * Read one offer price entry strictly. A free trial has no price point; any
+ * Read one offer price entry strictly. A free trial has no price point
+ * (confirmed against a real account: every free-trial territory reads that way); any
  * other mode needs one.
  */
 function readPrice(
