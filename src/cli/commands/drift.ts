@@ -1,4 +1,5 @@
 import {
+  describePlayRegionPrice,
   InvalidOfferRulesError,
   InvalidOfferSpecError,
   OfferRuleError,
@@ -7,10 +8,12 @@ import {
   type OfferDriftReport,
   type OfferRules,
   type PercentOfCurrentRule,
+  type PlayOfferDriftReport,
+  type ProductRef,
   type RulesDriftReport,
 } from '@/lib/pricing';
-import { appSelection, stringFlag } from '../args';
-import { appleAdapter, readInputFile, type CommandContext, type CommandResult } from '../context';
+import { appSelection, stringFlag, type AppSelection } from '../args';
+import { appleAdapter, playAdapter, readInputFile, type CommandContext, type CommandResult } from '../context';
 import { CliError, EXIT_CHANGES, EXIT_ERROR, EXIT_OK, UsageError, type ExitCode } from '../errors';
 import { describeCounts, money, table } from '../format';
 import { productFromFlags } from './export';
@@ -28,7 +31,43 @@ function parseTerritories(value: string | undefined): 'all' | string[] | undefin
   return [...new Set(list)];
 }
 
-export function formatDriftReport(report: OfferDriftReport): string {
+function productLabel(product: ProductRef): string {
+  return product.platform === 'apple' ? product.id : product.type === 'subscription' ? `${product.productId}/${product.basePlanId}` : product.productId;
+}
+
+export function formatPlayDriftReport(report: PlayOfferDriftReport): string {
+  const r = report.rule;
+  const rule =
+    r.type === 'percentOfCurrent'
+      ? `${r.percent}% of each region's base price${r.basis ? `, ${r.basis}` : ''} (a Play price per region)`
+      : r.type === 'play.relativeDiscount'
+        ? `${r.fraction} relative discount (follows the base price by itself)`
+        : r.type === 'play.absoluteDiscount'
+          ? 'a fixed amount off per region'
+          : 'fixed prices per region';
+  const lines = [
+    `Play offer ${report.offer.key} (${report.offer.state}), phase ${report.phase} of: ${report.offer.phases.join('; ')}; billing period ${report.billingPeriod}`,
+    `Eligibility: ${report.offer.eligibility}; tags: ${report.offer.tags.join(', ') || 'none'}`,
+    `Rule: ${rule}`,
+    `${report.inSync ? 'In sync' : 'DRIFT'}: ${describeCounts(report.summary as unknown as Record<string, number>)}`,
+  ];
+  const drifted = report.territories.filter((t) => t.status !== 'match');
+  if (drifted.length > 0) {
+    lines.push(
+      table([
+        ['Region', 'Status', 'Offer', 'Rule gives', 'Reason'],
+        ...drifted.map((t) => [t.territory, t.status, describePlayRegionPrice(t.actual), describePlayRegionPrice(t.expected), t.reason ?? '']),
+      ])
+    );
+  }
+  if (report.outOfScope?.length) lines.push(`Not checked (outside the rule's regions): ${report.outOfScope.join(', ')}`);
+  for (const p of report.problems ?? []) lines.push(`problem: ${p}`);
+  for (const w of report.warnings ?? []) lines.push(`warning: ${w.territory}: ${w.message}`);
+  return lines.join('\n');
+}
+
+export function formatDriftReport(report: OfferDriftReport | PlayOfferDriftReport): string {
+  if (report.kind === 'pricingkit.playOfferDrift') return formatPlayDriftReport(report);
   const r = report.rule;
   const lines = [
     `Offer ${report.offer.kind} ${report.offer.key} (${report.offer.mode} ${report.offer.duration}), billing period ${report.billingPeriod}`,
@@ -54,6 +93,8 @@ export async function driftCommand(ctx: CommandContext): Promise<CommandResult> 
   const rulesPath = stringFlag(ctx.flags, 'rules');
   if (rulesPath) return rulesDriftCommand(ctx, rulesPath);
   const app = appSelection(ctx.flags)!;
+  if (app.platform === 'google') return playDriftCommand(ctx, app);
+  if (ctx.flags['relative-discount'] !== undefined) throw new UsageError('--relative-discount is for Google Play offers');
   appleOnly(app, 'drift');
   const product = productFromFlags(app, ctx.flags);
   const kind = parseOfferKind(stringFlag(ctx.flags, 'kind', true));
@@ -98,7 +139,55 @@ export async function driftCommand(ctx: CommandContext): Promise<CommandResult> 
 // ---------------------------------------------------------------------------
 // pricingkit drift --rules: every offer in a rules file, one report
 
-const SINGLE_OFFER_FLAGS = ['subscription', 'kind', 'offer', 'percent', 'basis', 'snap', 'threshold', 'territories'];
+/** One Play offer, checked as a one-rule rules file: --percent (a price per region) or --relative-discount */
+async function playDriftCommand(ctx: CommandContext, app: Extract<AppSelection, { platform: 'google' }>): Promise<CommandResult> {
+  const productId = stringFlag(ctx.flags, 'subscription', true);
+  const basePlanId = stringFlag(ctx.flags, 'base-plan', true);
+  const offer = stringFlag(ctx.flags, 'offer', true);
+  const kind = stringFlag(ctx.flags, 'kind');
+  if (kind !== undefined && kind !== 'play.offer') throw new UsageError('On Google Play, --kind can only be play.offer');
+  const percent = stringFlag(ctx.flags, 'percent');
+  const fraction = stringFlag(ctx.flags, 'relative-discount');
+  if ((percent === undefined) === (fraction === undefined)) throw new UsageError('Give one of --percent <n> (a price per region) or --relative-discount <0..1> (Play\'s native discount)');
+  const basis = stringFlag(ctx.flags, 'basis');
+  const threshold = stringFlag(ctx.flags, 'threshold');
+  const territories = parseTerritories(stringFlag(ctx.flags, 'territories'));
+  if (basis !== undefined && !(BASES as readonly string[]).includes(basis)) throw new UsageError(`--basis must be one of ${BASES.join(', ')}`);
+  if (basis !== undefined && fraction !== undefined) throw new UsageError('--basis goes with --percent');
+  if (threshold !== undefined && !/^(0(\.\d{1,4})?|1)$/.test(threshold)) throw new UsageError('--threshold is a fraction between 0 and 1, e.g. 0.05');
+  if (ctx.flags.snap !== undefined) throw new UsageError("--snap doesn't apply on Google Play: Play's own price conversion makes each target a valid price");
+  const product: ProductRef = { platform: 'google', type: 'subscription', productId, basePlanId };
+  const rulesInput = {
+    kind: 'pricingkit.offerRules',
+    schemaVersion: 1,
+    app: { packageName: app.packageName },
+    offers: [
+      {
+        product,
+        kind: 'play.offer',
+        key: offer,
+        pricing: percent !== undefined ? { type: 'percentOfCurrent', percent, ...(basis ? { basis } : {}), snap: 'nearest' } : { type: 'play.relativeDiscount', fraction },
+        ...(territories ? { territories } : {}),
+        ...(threshold ? { deviationThreshold: threshold } : {}),
+        syncWithBase: false,
+      },
+    ],
+  };
+  let rules: OfferRules;
+  try {
+    rules = parseOfferRules(rulesInput);
+  } catch (error) {
+    if (error instanceof InvalidOfferRulesError) throw new UsageError(`Invalid rule: ${error.problems.map((p) => p.replace(/^offers\.0\.?/, '')).join('; ')}`);
+    throw error;
+  }
+  const adapter = await playAdapter(ctx, app.packageName);
+  const [entry] = (await adapter.checkRulesDrift(rules)).offers;
+  if (entry.status === 'notFound') throw new CliError(`No Play offer "${offer}" on base plan ${productId}/${basePlanId}`, 'NOT_FOUND');
+  if (entry.status === 'error' || !entry.report) throw new CliError(entry.error?.message ?? 'The offer could not be checked', entry.error?.code ?? 'OFFER_RULE');
+  return { exitCode: entry.report.inSync ? EXIT_OK : EXIT_CHANGES, json: entry.report, text: formatDriftReport(entry.report) };
+}
+
+const SINGLE_OFFER_FLAGS = ['subscription', 'base-plan', 'kind', 'offer', 'percent', 'relative-discount', 'basis', 'snap', 'threshold', 'territories'];
 
 /**
  * 2 when any offer drifted or is missing (the report says which), otherwise
@@ -123,12 +212,12 @@ export function formatRulesDriftReport(report: RulesDriftReport): string {
     ...(errors.length > 0
       ? [
           `ERRORS: ${errors.length} ${errors.length === 1 ? 'offer' : 'offers'} could not be checked${status === 'DRIFT' ? ' (the exit code reports the drift; fix these too)' : ''}:`,
-          ...errors.map((o) => `  ${o.product.platform === 'apple' ? o.product.id : ''} ${o.kind} "${o.key}": ${o.error?.message ?? 'unknown error'}`),
+          ...errors.map((o) => `  ${productLabel(o.product)} ${o.kind} "${o.key}": ${o.error?.message ?? 'unknown error'}`),
         ]
       : []),
     table(
       report.offers.map((o) => [
-        o.product.platform === 'apple' ? o.product.id : '',
+        productLabel(o.product),
         o.kind,
         o.key,
         o.status,
@@ -143,6 +232,11 @@ export function formatRulesDriftReport(report: RulesDriftReport): string {
   return lines.join('\n');
 }
 
+/** Does the --bundle-id / --package-name on the command line name this app? */
+export function sameApp(selected: AppSelection, app: OfferRules['app']): boolean {
+  return selected.platform === 'apple' ? 'bundleId' in app && app.bundleId === selected.bundleId : 'packageName' in app && app.packageName === selected.packageName;
+}
+
 async function rulesDriftCommand(ctx: CommandContext, rulesPath: string): Promise<CommandResult> {
   const extra = SINGLE_OFFER_FLAGS.filter((f) => ctx.flags[f] !== undefined);
   if (extra.length > 0) throw new UsageError(`--rules checks the offers and rules in the file; drop ${extra.map((f) => `--${f}`).join(', ')}`);
@@ -154,12 +248,11 @@ async function rulesDriftCommand(ctx: CommandContext, rulesPath: string): Promis
     if (error instanceof InvalidOfferRulesError) throw new CliError(error.message, 'INVALID_RULES');
     throw error;
   }
-  const bundleId = (rules.app as { bundleId: string }).bundleId;
   const selected = appSelection(ctx.flags, false);
-  if (selected && !(selected.platform === 'apple' && selected.bundleId === bundleId)) {
+  if (selected && !sameApp(selected, rules.app)) {
     throw new UsageError('The app given on the command line is not the app in the rules file');
   }
-  const adapter = await appleAdapter(ctx, bundleId);
+  const adapter = 'bundleId' in rules.app ? await appleAdapter(ctx, rules.app.bundleId) : await playAdapter(ctx, rules.app.packageName);
   const report = await adapter.checkRulesDrift(rules);
   return { exitCode: rulesDriftExitCode(report), json: report, text: formatRulesDriftReport(report) };
 }

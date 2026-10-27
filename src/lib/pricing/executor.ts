@@ -39,7 +39,7 @@ import {
 import { mapWithConcurrency } from './concurrency';
 import { describePrice, productKey, samePrice, type PriceValue, type ProductPriceState } from './model';
 import type { ApplyContext, BudgetView, OfferApplyContext, OpResponse, PlatformAdapter } from './adapter';
-import { classifyOfferOp, isOfferOp, offerKindLabel, type OfferOp } from './offer-ops';
+import { classifyOfferOp, isOfferOp, offerKindLabel, type AnyOfferOp } from './offer-ops';
 import type { StoreOffer } from './offers';
 import { assertRunMatches, createRun, type ApplyRun, type OpError, type OpRecord } from './run';
 
@@ -106,7 +106,7 @@ export interface ApplyOptions {
 
 type ReadyItem =
   | { offer: false; op: BasePriceOp; context: ApplyContext }
-  | { offer: true; op: OfferOp; context: OfferApplyContext };
+  | { offer: true; op: AnyOfferOp; context: OfferApplyContext };
 
 function toOpError(error: unknown): OpError {
   if (error && typeof error === 'object') {
@@ -185,6 +185,8 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
     }
   }
   const today = () => now().slice(0, 10);
+  // The plan must be for the adapter's app (e.g. a plan for another package or bundle ID is refused before anything is read)
+  await adapter.verifyApp?.(changeSet.app);
 
   let run: ApplyRun;
   if (options.run) {
@@ -349,7 +351,10 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
               observedOffer: result.observed,
               finishedAt: now(),
               error: {
-                message: `Not deleted: the store doesn't report whether anyone redeemed the ${offerKindLabel(op.target.offer.kind)} "${op.target.offer.key}". Apply with force.deleteOffers to delete it anyway.`,
+                message:
+                  op.platform === 'google'
+                    ? `Not deleted: deleting the draft Play offer "${op.target.offer.key}" is irreversible. Apply with force.deleteOffers to delete it anyway.`
+                    : `Not deleted: the store doesn't report whether anyone redeemed the ${offerKindLabel(op.target.offer.kind)} "${op.target.offer.key}". Apply with force.deleteOffers to delete it anyway.`,
                 code: REDEMPTIONS_UNCHECKED,
                 retryable: false,
               },

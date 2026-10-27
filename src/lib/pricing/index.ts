@@ -22,4 +22,7 @@ export * from './offer-derivation';
 export * from './offer-ops';
 export * from './offer-plan';
 export * from './offer-sync';
+export * from './play-offers';
+export * from './play-offer-plan';
+export * from './play-offer-sync';
 export * from './spec';

@@ -57,7 +57,13 @@ export async function undoCommand(ctx: CommandContext): Promise<CommandResult> {
       ? [
           'Review it, then apply it with:',
           `  pricingkit apply ${out} --confirm <the plan hash above>${deletes ? ' --force-delete' : ''}`,
-          ...(deletes ? ["--force-delete is needed because App Store Connect's API doesn't report whether anyone redeemed an offer."] : []),
+          ...(deletes
+            ? [
+                'bundleId' in undo.app
+                  ? "--force-delete is needed because App Store Connect's API doesn't report whether anyone redeemed an offer."
+                  : '--force-delete is needed because deleting a draft Play offer is irreversible.',
+              ]
+            : []),
         ]
       : ['Nothing to undo: the run changed nothing that can be reversed.']),
   ].join('\n');

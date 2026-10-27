@@ -3,9 +3,9 @@
 
 import type { BasePriceOp } from './changeset';
 import type { InverseResult } from './inverse';
-import type { OfferOp, OfferState } from './offer-ops';
+import type { AnyOfferOp, AnyOfferState } from './offer-ops';
 import type { StoreOffer } from './offers';
-import type { Platform, ProductPriceState, ProductRef, TerritoryPriceState } from './model';
+import type { AppRef, Platform, ProductPriceState, ProductRef, TerritoryPriceState } from './model';
 import type { SnapMode } from './snap';
 
 export interface ResolveTarget {
@@ -82,23 +82,30 @@ export interface PlatformAdapter {
    */
   verifyProduct?(product: ProductRef): Promise<void>;
 
+  /**
+   * Optional: throw unless a plan for `app` may be applied through this
+   * adapter (the adapter's credentials or session are for that app). The
+   * executor calls it once, before reading or writing anything.
+   */
+  verifyApp?(app: AppRef): void | Promise<void>;
+
   // Offers (optional: an adapter without them refuses offer ops)
 
   /** Every offer of a product, as the store reports it now */
   fetchOffers?(product: ProductRef): Promise<StoreOffer[]>;
   /** Apply one offer op. The executor has already checked the offer is at op.before (or, for intro offers, which territories are pending). */
-  applyOffer?(op: OfferOp, context: OfferApplyContext): Promise<OpResponse>;
+  applyOffer?(op: AnyOfferOp, context: OfferApplyContext): Promise<OpResponse>;
   /** Most requests applying this offer op can send (default 1) */
-  offerRequestsNeeded?(op: OfferOp, context: OfferApplyContext): number;
+  offerRequestsNeeded?(op: AnyOfferOp, context: OfferApplyContext): number;
 }
 
 /** What the executor tells an adapter when it applies an offer op */
 export interface OfferApplyContext {
   /** The offer as read right before applying (null when it doesn't exist) */
-  observed: OfferState | null;
+  observed: AnyOfferState | null;
   /** The store's own record of the offer (IDs of the offer and its prices); absent for intro offers and creates */
   offer?: StoreOffer;
-  /** Intro offers: the territories still to write */
+  /** Intro offers: the territories still to write. Play creates: ['activate'] when only the activation is left. */
   pending?: string[];
   /** Intro offers: store resource ID per territory */
   storeRefs?: Record<string, string>;

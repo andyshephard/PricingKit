@@ -23,11 +23,15 @@ import {
   type OfferRules,
   type OfferSyncPlan,
   type ScheduledBasePolicy,
+  describePlayRegionPrice,
+  type OfferPlanEntry,
+  type ProductRef,
 } from '@/lib/pricing';
 import { appSelection, stringFlag } from '../args';
 import { appleAdapter, playAdapter, readInputFile, readOnly, writeOutputFile, type CommandContext, type CommandResult, type PriceReader } from '../context';
 import { CliError, EXIT_CHANGES, EXIT_ERROR, EXIT_OK, UsageError } from '../errors';
 import { formatPlanSummary, summarizeChangeSet } from './diff';
+import { sameApp } from './drift';
 import { table } from '../format';
 
 export const DEFAULT_PLAN_FILE = 'pricingkit-plan.json';
@@ -142,11 +146,58 @@ export interface OfferPlanner {
   planOffers(input: { app: OfferPlanSpec['app']; offers: OfferPlanSpec['offers']; createdAt?: string; description?: string }): Promise<OfferPlan>;
 }
 
+function productLabel(product: ProductRef): string {
+  return product.platform === 'apple' ? product.id : product.type === 'subscription' ? `${product.productId}/${product.basePlanId}` : product.productId;
+}
+
+const ACTIONS: Record<OfferPlanEntry['action'], string> = {
+  create: 'create',
+  updatePrices: 'change prices',
+  update: 'change',
+  activate: 'activate',
+  none: 'no change',
+  refused: 'refused',
+};
+
+/** A Play offer's preview: what it will be (eligibility, phases, tags) and, per region, base price, offer price and discount */
+export function formatPlayOfferPreview(entry: OfferPlanEntry): string[] {
+  const p = entry.play;
+  if (!p) return [];
+  const lines = [
+    '',
+    `Play offer ${p.offerId} on ${productLabel(entry.product)}: ${ACTIONS[entry.action]}${entry.opId ? ` (${entry.opId})` : ''}, ${p.state} once applied`,
+    `  Eligibility: ${p.eligibility}`,
+    `  Phases: ${p.phases.join('; ')}`,
+    `  Tags: ${p.tags.length ? p.tags.join(', ') : 'none'}`,
+    ...(p.regionsVersion ? [`  Regions version: ${p.regionsVersion}`] : []),
+  ];
+  if (p.rows.length > 0) {
+    lines.push(
+      table([
+        ['Region', 'Base price', 'Over the phase', 'Offer', 'Offer price', 'Discount', 'New subscribers', 'Notes'],
+        ...p.rows.map((r) => [
+          r.region,
+          r.basePrice ? `${r.basePrice} ${r.currency}` : '-',
+          r.proratedBase ? `${r.proratedBase} ${r.currency}` : '-',
+          describePlayRegionPrice(r.config ?? undefined),
+          r.offerPrice !== null ? `${r.estimated ? '~' : ''}${r.offerPrice} ${r.currency}` : '-',
+          r.discount !== null ? `${r.discount} ${r.currency}${r.discountPercent !== null ? ` (${r.discountPercent}%)` : ''}` : '-',
+          r.newSubscriberAvailability ? 'yes' : 'no',
+          r.flags.map((f) => `${f.severity === 'error' ? 'SKIPPED: ' : ''}${f.message}`).join('; '),
+        ]),
+      ])
+    );
+    if (p.rows.some((r) => r.estimated)) lines.push('  ~ Play works discounted prices out itself; these are estimates.');
+  }
+  return lines;
+}
+
 export function formatOfferPlan(plan: OfferPlan): string {
   const lines = [formatPlanSummary(summarizeChangeSet(plan.changeSet))];
   for (const entry of plan.entries) {
-    const where = `${entry.product.platform === 'apple' ? entry.product.id : ''} ${entry.kind} ${entry.key}`;
-    if (entry.action === 'none') lines.push('', `${where}: already matches its rule`);
+    lines.push(...formatPlayOfferPreview(entry));
+    const where = `${productLabel(entry.product)} ${entry.kind} ${entry.key}`;
+    if (entry.action === 'none') lines.push('', `${where}: already matches its spec`);
     for (const r of entry.refusals) lines.push('', `${where}: refused (${r.code}): ${r.message}`);
   }
   return lines.join('\n');
@@ -161,10 +212,10 @@ async function planOffersCommand(ctx: CommandContext, specText: string, out: str
     throw new CliError((error as Error).message, 'INVALID_SPEC');
   }
   const selected = appSelection(ctx.flags, false);
-  if (selected && !(selected.platform === 'apple' && 'bundleId' in spec.app && spec.app.bundleId === selected.bundleId)) {
+  if (selected && !sameApp(selected, spec.app)) {
     throw new UsageError('The app given on the command line is not the app in the spec');
   }
-  const adapter = await appleAdapter(ctx, (spec.app as { bundleId: string }).bundleId);
+  const adapter = 'bundleId' in spec.app ? await appleAdapter(ctx, spec.app.bundleId) : await playAdapter(ctx, spec.app.packageName);
   const planner: OfferPlanner = { planOffers: (input) => adapter.planOffers(input) };
   const plan = await planner.planOffers({ app: spec.app, offers: spec.offers, createdAt: ctx.now().toISOString(), ...(spec.description ? { description: spec.description } : {}) });
   if (plan.hash !== changeSetHash(plan.changeSet)) throw new CliError('Internal error: plan hash mismatch');
@@ -198,15 +249,17 @@ const SCHEDULED_BASE: Record<string, ScheduledBasePolicy> = { hold: 'hold', now:
 export function formatSyncPlan(plan: OfferSyncPlan): string {
   const lines = [formatPlanSummary(summarizeChangeSet(plan.changeSet)), '', 'Offers in the rules file:'];
   const rows = plan.entries.map((e) => {
-    const product = e.product.platform === 'apple' ? e.product.id : '';
+    const product = productLabel(e.product);
     const what =
       e.action === 'updatePrices'
-        ? `${e.opId}: re-price ${e.changes.length} territories (${e.pricedAgainst === 'planTargets' ? "against this plan's base prices" : 'against current base prices'})`
+        ? `${e.opId}: re-price ${e.play ? `${new Set(e.play.changes.map((c) => c.region)).size} regions` : `${e.changes.length} territories`} (${e.pricedAgainst === 'planTargets' ? "against this plan's base prices" : 'against current base prices'})`
         : e.action === 'none'
           ? `in step with its rule${e.pricedAgainst === 'planTargets' ? " at this plan's base prices" : ''}`
           : e.action === 'notSynced'
             ? 'syncWithBase is false: not synced (drift still checks it)'
-            : `needs manual action (${e.manual?.code})`;
+            : e.action === 'followsBase'
+              ? 'follows base automatically (Play relative discount)'
+              : `needs manual action (${e.manual?.code})`;
     return [product, e.kind, e.key, what];
   });
   lines.push(table(rows));
@@ -227,11 +280,12 @@ async function planSyncCommand(ctx: CommandContext, rulesPath: string, specPath:
     if (error instanceof InvalidOfferRulesError) throw new CliError(error.message, 'INVALID_RULES');
     throw error;
   }
-  const bundleId = (rules.app as { bundleId: string }).bundleId;
   const selected = appSelection(ctx.flags, false);
-  if (selected && !(selected.platform === 'apple' && selected.bundleId === bundleId)) {
+  if (selected && !sameApp(selected, rules.app)) {
     throw new UsageError('The app given on the command line is not the app in the rules file');
   }
+  const play = 'packageName' in rules.app;
+  if (play && ctx.flags['scheduled-base'] !== undefined) throw new UsageError('--scheduled-base is for App Store plans (Google Play has no scheduled base prices)');
 
   let spec: PricingSpec | undefined;
   if (specPath) {
@@ -245,12 +299,10 @@ async function planSyncCommand(ctx: CommandContext, rulesPath: string, specPath:
       if (error instanceof CliError) throw error;
       throw new CliError((error as Error).message, 'INVALID_SPEC');
     }
-    if (!('bundleId' in spec.app) || spec.app.bundleId !== bundleId) {
-      throw new UsageError('The spec and the rules file are for different apps (sync supports App Store apps only in this version)');
-    }
+    if (JSON.stringify(spec.app) !== JSON.stringify(rules.app)) throw new UsageError('The spec and the rules file are for different apps');
   }
 
-  const adapter = await appleAdapter(ctx, bundleId);
+  const adapter = 'bundleId' in rules.app ? await appleAdapter(ctx, rules.app.bundleId) : await playAdapter(ctx, rules.app.packageName);
   const createdAt = ctx.now().toISOString();
   const basePlan = spec ? await planFromSpec(spec, readOnly(adapter), createdAt) : undefined;
   const planner: OfferSyncPlanner = { planOfferSync: (input) => adapter.planOfferSync(input) };

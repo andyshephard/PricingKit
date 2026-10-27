@@ -10,6 +10,7 @@ import { normalizeDecimal } from './decimal';
 import { canonicalJson, fnv1a64, priceValueSchema, productRefSchema, appRefSchema, territorySchema } from './refs';
 import { checkOfferOpRules, describeOfferOp, isOfferOp, isOfferOpKind, offerOpSchema, offerTargetKey, type OfferOp, type OfferOpKind } from './offer-ops';
 import { OFFER_KINDS, type OfferKind } from './offers';
+import type { PlayOfferOp } from './play-offers';
 import {
   describePrice,
   productKey,
@@ -35,7 +36,7 @@ export type BasePriceOpKind = (typeof BASE_PRICE_OP_KINDS)[number];
 export const RESERVED_OP_KINDS = ['setAvailability', 'migrateCohort'] as const;
 export type ReservedOpKind = (typeof RESERVED_OP_KINDS)[number];
 
-export { OFFER_OP_KINDS, type OfferOp, type OfferOpKind } from './offer-ops';
+export { OFFER_OP_KINDS, type AnyOfferOp, type OfferOp, type OfferOpKind } from './offer-ops';
 
 export type ChangeOpKind = BasePriceOpKind | OfferOpKind | ReservedOpKind;
 
@@ -84,7 +85,7 @@ export interface ReservedOp {
 }
 
 /** An op a ChangeSet can hold: a base-price op or an offer op */
-export type ChangeOp = BasePriceOp | OfferOp;
+export type ChangeOp = BasePriceOp | OfferOp | PlayOfferOp;
 
 /** An op before it is numbered (Omit that keeps each member of a union) */
 export type WithoutId<T> = T extends unknown ? Omit<T, 'id'> : never;

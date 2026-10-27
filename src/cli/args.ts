@@ -33,15 +33,17 @@ const OPTIONS: Record<CommandName, OptionSpec> = {
     force: { type: 'boolean' },
   },
   diff: { ...COMMON, plan: { type: 'string' } },
-  offers: { ...COMMON, ...APP, subscription: { type: 'string' }, kind: { type: 'string' } },
+  offers: { ...COMMON, ...APP, subscription: { type: 'string' }, 'base-plan': { type: 'string' }, kind: { type: 'string' } },
   drift: {
     ...COMMON,
     ...APP,
     rules: { type: 'string' },
     subscription: { type: 'string' },
+    'base-plan': { type: 'string' },
     kind: { type: 'string' },
     offer: { type: 'string' },
     percent: { type: 'string' },
+    'relative-discount': { type: 'string' },
     basis: { type: 'string' },
     snap: { type: 'string' },
     threshold: { type: 'string' },
@@ -162,10 +164,12 @@ Commands:
   plan     Turn a pricing spec into a plan (ChangeSet); with --rules, keep offers in step with
            base prices. A dry run: never writes to a store
   diff     Human-readable summary of a plan file
-  offers   List an App Store subscription's offers with their prices per territory
-  drift    Check App Store offers against their percent-of-current rules (one offer, or every
-           offer in a rules file with --rules)
-  apply    Apply a reviewed App Store offer plan (needs --confirm <plan hash>); saves the run log
+  offers   List a subscription's offers: App Store offers with their prices per territory, or
+           Google Play offers with their phases, eligibility, tags and regions
+  drift    Check offers against their rules (one offer, or every offer in a rules file with
+           --rules); App Store and Google Play
+  apply    Apply a reviewed offer plan, App Store or Google Play (needs --confirm <plan hash>);
+           saves the run log
   undo     Turn a plan and its run log into an undo plan (offline), to review and apply
 
 ${SHARED_HELP}
@@ -199,10 +203,13 @@ ${SHARED_HELP}`,
                   [--out <plan.json>] [--force]
 
 The spec is a pricingkit.spec (base prices) or a pricingkit.offerPlanSpec
-(App Store offers: create or re-price, several products in one spec, each
-offer with its own key). For an offer plan the output also lists refused
-offers and the plan hash to pass to "pricingkit apply --confirm"; exit code 1
-when an offer was refused.
+(offers: App Store offers to create or re-price, several products in one
+spec, each offer with its own key; or, for a Google Play app, play.offer
+offers to create, change or activate on base plans, previewed per region with
+base price, offer price and discount, plus each offer's eligibility, phases
+and tags). For an offer plan the output also lists refused offers and the
+plan hash to pass to "pricingkit apply --confirm"; exit code 1 when an offer
+was refused.
 
 Reads the products in the spec, turns its targets into per-territory prices,
 snaps them to valid store prices and writes the ChangeSet (default
@@ -214,18 +221,20 @@ The app comes from the spec; --bundle-id or --package-name, if given, must match
 
 Exit code 2 when the plan has ops, 0 when everything is already at target.
 
-With --rules (a pricingkit.offerRules file: existing App Store offers and the
-percent-of-current rule each follows), plans keeping every offer marked
-syncWithBase in step:
+With --rules (a pricingkit.offerRules file: existing offers and the rule each
+follows), plans keeping every offer marked syncWithBase in step:
   --rules alone           re-derives the offers against current base prices
                           (on demand, e.g. after a base price change)
   --rules with --spec     plans the base-price spec AND re-derives the offers
                           against the prices that plan sets, in one plan: base
                           ops first, then offer ops that wait for them
-Only promotional offers can be re-priced. Offer codes, win-back and
-introductory offers whose prices no longer match are listed under "Needs
-manual action" with what to do; PricingKit never deletes or re-creates an
-offer. Base prices scheduled for a later date (spec startDate) are held by
+On the App Store only promotional offers can be re-priced. Offer codes,
+win-back and introductory offers whose prices no longer match are listed
+under "Needs manual action" with what to do; PricingKit never deletes or
+re-creates an offer. On Google Play, offers priced at a percent of the base
+price or at fixed prices get their phase prices re-written; offers with a
+relative discount follow the base price by themselves ("follows base
+automatically"). Base prices scheduled for a later date (spec startDate) are held by
 default: offer prices change as soon as they are applied, so those
 territories keep their offer price and are listed for a sync on or after the
 date (the offer's other territories are still re-priced). --scheduled-base now re-prices
@@ -233,7 +242,7 @@ them now, against the scheduled prices, with a warning.
 "pricingkit apply" applies offer-only plans; a plan that also changes base
 prices is refused there (change base prices in the web app, then run
 "plan --rules" on its own). Exit code 2 when the plan has ops or manual
-actions. App Store only.
+actions.
 
 ${SHARED_HELP}`,
   diff: `Usage:
@@ -249,10 +258,15 @@ Exit code 2 when the plan has ops or manual actions.
 ${SHARED_HELP}`,
   offers: `Usage:
   pricingkit offers --bundle-id <id> --subscription <subscription id> [--kind <kind>]
+  pricingkit offers --package-name <name> --subscription <product id> [--base-plan <id>]
 
-Lists the subscription's introductory, promotional, offer code and win-back
-offers with each territory's price. --kind filters: apple.intro, apple.promo,
-apple.offerCode, apple.winBack. App Store only.
+App Store: lists the subscription's introductory, promotional, offer code and
+win-back offers with each territory's price. --kind filters: apple.intro,
+apple.promo, apple.offerCode, apple.winBack.
+Google Play: lists the offers of one base plan (or, without --base-plan, of
+every base plan of the subscription) with their state, eligibility, tags and
+each phase's price per region. Anything Play returns that PricingKit can't
+read exactly is listed as a problem.
 
 ${SHARED_HELP}`,
   drift: `Usage:
@@ -261,11 +275,20 @@ ${SHARED_HELP}`,
                    --kind <kind> --offer <offer id or key> --percent <n>
                    [--basis perPeriod|totalOverDuration] [--snap nearest|floor|ceil]
                    [--threshold <0..1>] [--territories all|GB,US,...]
+  pricingkit drift --package-name <name> --subscription <product id> --base-plan <id>
+                   --offer <offer id> (--percent <n> | --relative-discount <0..1>)
+                   [--basis perPeriod|totalOverDuration] [--threshold <0..1>]
+                   [--territories all|GB,US,...]
 
 Checks every territory's offer price against "percent of that territory's
 current price, snapped to its price points" and prints a pricingkit.offerDrift
 report. Without --basis, a pay-up-front offer is checked over its whole
-duration and any other offer per billing period. App Store only.
+duration and any other offer per billing period.
+On Google Play, --percent checks a phase priced at that percent of each
+region's base price (made a valid price by Play's own conversion; about one
+request per region), and --relative-discount checks that every region has
+Play's native discount of that fraction ("0.5" = 50% off), which follows the
+base price by itself. A pricingkit.playOfferDrift report is printed.
 With --territories, only those territories are checked; the offer's other
 territories are listed as outOfScope and don't affect the result.
 
@@ -277,8 +300,8 @@ comes from the file) and prints one pricingkit.rulesDrift report with each
 offer's pricingkit.offerDrift report. Exit code 2 when any offer drifted or
 doesn't exist, otherwise 1 when an offer couldn't be checked (e.g. a rule on a
 free trial), otherwise 0. The text report starts with DRIFT, NOT CHECKED or
-In sync and lists offers that couldn't be checked right below, with drift too. App Store offers only: Google Play offers aren't
-supported yet.
+In sync and lists offers that couldn't be checked right below, with drift too.
+A rules file for a Google Play app (packageName) checks its Play offers.
 
 ${SHARED_HELP}`,
   apply: `Usage:
@@ -286,16 +309,16 @@ ${SHARED_HELP}`,
   pricingkit apply <plan.json> --confirm <plan hash> --resume <run.json>
                    [--force-delete]
 
-Applies an App Store offer plan (made by "pricingkit plan" with an offer plan
-spec). --confirm must be the plan's hash, as printed by "plan" and "diff":
-any other value refuses the whole run before anything is read or sent.
-Each op is checked against App Store Connect first: one already done is
-skipped, one whose offer changed since the plan was made fails with nothing
-sent. The run log (pricingkit.applyRun) is saved after every step to
+Applies an offer plan (made by "pricingkit plan" with an offer plan spec or
+--rules), App Store or Google Play: the app comes from the plan.
+--confirm must be the plan's hash, as printed by "plan" and "diff": any
+other value refuses the whole run before anything is read or sent. Each op
+is checked against the store first: one already done is skipped, one whose
+offer changed since the plan was made fails with nothing sent. The run log (pricingkit.applyRun) is saved after every step to
 --run-out (default <plan>.run.json, next to the plan file), written atomically. An existing log is
 never replaced unless you pass --force (or resume it in place); resume a
-failed or interrupted run with --resume. Deleting an offer needs --force-delete, because
-App Store Connect doesn't report redemptions.
+failed or interrupted run with --resume. Deleting an offer needs --force-delete: App Store
+Connect doesn't report redemptions, and a deleted Play offer (drafts only) is gone for good.
 
 Exit code 0 when every op is done, 1 otherwise (the log says which).
 

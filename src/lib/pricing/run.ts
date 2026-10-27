@@ -18,7 +18,7 @@ import {
 } from './changeset';
 import { numberOps } from './diff';
 import { invertOp } from './inverse';
-import { invertOfferOp, isOfferOp, offerStateSchema, type OfferOp, type OfferState } from './offer-ops';
+import { anyOfferStateSchema, invertOfferOp, isOfferOp, type AnyOfferState } from './offer-ops';
 import { appRefSchema, priceValueSchema } from './changeset';
 import type { AppRef, PriceValue } from './model';
 
@@ -57,7 +57,7 @@ export interface OpRecord {
   /** The price found in the territory right before the op was applied or skipped */
   observed?: PriceValue | null;
   /** Offer ops: the offer found right before the op was applied or skipped */
-  observedOffer?: OfferState | null;
+  observedOffer?: AnyOfferState | null;
   /** Set when the run re-read the store after applying (verify option) */
   verified?: boolean;
   /** The op was applied but something needs attention (from the adapter's response) */
@@ -135,7 +135,7 @@ const opRecordSchema = z
       .optional(),
     response: z.record(z.string(), z.unknown()).optional(),
     observed: priceValueSchema.nullable().optional(),
-    observedOffer: offerStateSchema.nullable().optional(),
+    observedOffer: anyOfferStateSchema.nullable().optional(),
     verified: z.boolean().optional(),
     warning: z.string().optional(),
   })
@@ -231,12 +231,15 @@ export function buildUndoChangeSet(
     // A failed offer op may still have taken effect (a create that answered 5xx or timed out).
     // It is left out only when its one and only attempt was refused (4xx) with nothing recorded as
     // written: after a timeout, a later 409 may mean the first attempt took effect.
+    // Something recorded as written (intro resources created, a Play offer created before its activation failed) is never "refused"
+    const wrote = Boolean(createdIds) || record.response?.created === true;
     const refused =
-      record.attempts === 1 && record.error?.status !== undefined && record.error.status >= 400 && record.error.status < 500 && !createdIds;
+      record.attempts === 1 && record.error?.status !== undefined && record.error.status >= 400 && record.error.status < 500 && !wrote;
     const mayHaveApplied = record.status === 'ok' || (isOfferOp(op) && record.status === 'failed' && record.attempts > 0 && !refused);
     if (!mayHaveApplied) continue;
     if (isOfferOp(op)) {
-      const inverse = invertOfferOp(op as OfferOp, createdIds ? { createdIds } : {});
+      const activated = record.response?.activated;
+      const inverse = invertOfferOp(op, { ...(createdIds ? { createdIds } : {}), ...(typeof activated === 'boolean' ? { activated } : {}) });
       if (inverse.notReversible) notReversible.push({ opId: op.id, reason: inverse.notReversible });
       if (inverse.op) {
         if (inverse.caveat) {

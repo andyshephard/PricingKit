@@ -1,7 +1,14 @@
 import {
+  changedPlayRegions,
   changedTerritories,
   changeSetHash,
+  describePlayPhase,
+  describePlayRegionPrice,
+  describePlayTargeting,
   isOfferOp,
+  isPlayOfferOp,
+  type PlayOfferOp,
+  type PlayPhaseRegionPrice,
   parseChangeSet,
   productKey,
   type AppRef,
@@ -57,6 +64,8 @@ export interface PlanSummary {
   notReversible: NonNullable<ChangeSet['notReversible']>;
   /** Offers that need a person (sync plans): the store can't re-price them, or they were held */
   manualActions: ManualAction[];
+  /** Google Play offer ops: what each offer is after the op (eligibility, phases, tags, state) */
+  playOffers: Array<{ opId: string; kind: string; product: string; offerId: string; stateBefore: string | null; stateAfter: string | null; eligibility: string; phases: string[]; tags: string[] }>;
 }
 
 /** A plan's contents, grouped by product, for reviewers and machines. */
@@ -66,7 +75,7 @@ export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
     const key = productKey(op.target.product);
     if (!products.has(key)) products.set(key, { product: op.target.product, key, ops: [] });
     if (isOfferOp(op)) {
-      products.get(key)!.ops.push(...offerRows(op));
+      products.get(key)!.ops.push(...(isPlayOfferOp(op) ? playOfferRows(op) : offerRows(op)));
       continue;
     }
     const change = percentChange(op.before, op.after);
@@ -98,7 +107,52 @@ export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
     warnings: changeSet.warnings ?? [],
     notReversible: changeSet.notReversible ?? [],
     manualActions: changeSet.manualActions ?? [],
+    playOffers: changeSet.ops.filter(isOfferOp).filter(isPlayOfferOp).map((op) => {
+      const state = (op.after ?? op.before)!;
+      return {
+        opId: op.id,
+        kind: op.kind,
+        product: productKey(op.target.product),
+        offerId: op.target.offer.key,
+        stateBefore: op.before?.state ?? null,
+        stateAfter: op.after?.state ?? null,
+        eligibility: describePlayTargeting(state.targeting),
+        phases: state.phases.map(describePlayPhase),
+        tags: state.tags,
+      };
+    }),
   };
+}
+
+const playPrice = (p: PlayPhaseRegionPrice | undefined): PriceValue | null => (p && p.type === 'price' ? { currency: p.currency, amount: p.amount } : null);
+
+/** One row per region and phase whose offer price changes; one row for an op that changes no price (state, eligibility, tags) */
+function playOfferRows(op: PlayOfferOp): PlanSummary['products'][number]['ops'] {
+  const offer = { kind: op.target.offer.kind, key: op.target.offer.key };
+  const deps = op.dependsOn?.length ? { dependsOn: op.dependsOn } : {};
+  const before = op.before;
+  const after = op.after;
+  const regions = op.kind === 'deleteOffer' ? Object.keys(before?.regions ?? {}).sort() : before && after ? changedPlayRegions(before, after) : Object.keys(after?.regions ?? {}).sort();
+  if (regions.length === 0) {
+    const notes: string[] = [];
+    if (before?.state !== after?.state) notes.push(`state: ${before?.state ?? 'none'} -> ${after?.state ?? 'deleted'}`);
+    if (before && after && JSON.stringify(before.targeting) !== JSON.stringify(after.targeting)) notes.push(`eligibility: ${describePlayTargeting(after.targeting)}`);
+    if (before && after && before.tags.join() !== after.tags.join()) notes.push(`tags: ${after.tags.join(', ') || 'none'}`);
+    return [{ id: op.id, kind: op.kind, territory: '-', offer, before: null, after: null, note: notes.join('; ') || op.note || '', ...deps }];
+  }
+  const phases = Math.max(before?.phases.length ?? 0, after?.phases.length ?? 0);
+  const rows: PlanSummary['products'][number]['ops'] = [];
+  for (const region of regions) {
+    for (let i = 0; i < phases; i++) {
+      const b = before?.phases[i]?.regions[region];
+      const a = after?.phases[i]?.regions[region];
+      if (before && after && JSON.stringify(b) === JSON.stringify(a)) continue;
+      const change = percentChange(playPrice(b), playPrice(a));
+      const note = `phase ${i + 1}: ${describePlayRegionPrice(b)} -> ${describePlayRegionPrice(a)}`;
+      rows.push({ id: op.id, kind: op.kind, territory: region, offer, before: playPrice(b), after: playPrice(a), ...(change ? { change } : {}), note, ...deps });
+    }
+  }
+  return rows;
 }
 
 const offerPrice = (p: OfferTerritoryPrice | undefined): PriceValue | null =>
@@ -154,7 +208,7 @@ export function formatPlanSummary(summary: PlanSummary): string {
             op.offer ? `${op.kind} ${op.offer.kind} ${op.offer.key}` : op.kind,
             priceCell(op.before),
             priceCell(op.after),
-            op.change ?? (op.territory === '-' ? op.note ?? '' : ''),
+            op.change ?? (op.territory === '-' || op.offer?.kind === 'play.offer' ? op.note ?? '' : ''),
           ]),
         ])
       );
@@ -162,6 +216,16 @@ export function formatPlanSummary(summary: PlanSummary): string {
       if (waits.length > 0) lines.push(`  Applied only once its base prices are: ${waits.join('; ')}`);
     }
   };
+  if (summary.playOffers.length > 0) {
+    lines.push('', 'Play offers:');
+    for (const o of summary.playOffers) {
+      const state = o.stateBefore === o.stateAfter ? o.stateAfter ?? '' : `${o.stateBefore ?? 'new'} -> ${o.stateAfter ?? 'deleted'}`;
+      lines.push(`  ${o.opId} ${o.kind} ${o.offerId} on ${o.product} (${state})`);
+      lines.push(`    Eligibility: ${o.eligibility}`);
+      lines.push(`    Phases: ${o.phases.join('; ')}`);
+      lines.push(`    Tags: ${o.tags.length ? o.tags.join(', ') : 'none'}`);
+    }
+  }
   if (summary.byGroup.basePrices > 0 && summary.byGroup.offers > 0) {
     // A plan with both: base prices go first, and offers derived from them wait for them
     lines.push('', `Base prices (${summary.byGroup.basePrices} changes, applied first)`);

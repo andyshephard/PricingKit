@@ -56,7 +56,7 @@ describe('pricingkit drift --rules', () => {
     expect(r.code).toBe(2);
     expect(r.stdout).toMatch(/DRIFT: 2 offers: 1 in sync, 1 drifted, 0 not found, 0 not checkable/);
     expect(r.stdout).toMatch(/9600000002\s+apple\.promo\s+example_annual_alt_50\s+drifted/);
-    expect(r.stdout).toMatch(/Not checked: Google Play offers/);
+    expect(r.stdout).not.toMatch(/Not checked/);
     const json = await run(['drift', '--rules', 'rules.json', '--json'], { env, cwd: tmp.dir });
     const report = JSON.parse(json.stdout);
     expect(report).toMatchObject({ kind: 'pricingkit.rulesDrift', inSync: false, summary: { offers: 2, inSync: 1, drifted: 1 } });
@@ -96,7 +96,7 @@ describe('pricingkit drift --rules', () => {
     expect(bad.code).toBe(1);
     expect(JSON.parse(bad.stdout).error.code).toBe('INVALID_RULES');
     writeJson('play.json', { ...rulesFile(promoRules), app: { packageName: BUNDLE } });
-    expect((await run(['drift', '--rules', 'play.json'], { env, cwd: tmp.dir })).stderr).toMatch(/Google Play offers aren't supported yet/);
+    expect((await run(['drift', '--rules', 'play.json'], { env, cwd: tmp.dir })).stderr).toMatch(/a Google Play app \(packageName\) has play\.offer rules only/);
     const other = await run(['drift', '--rules', 'rules.json', '--bundle-id', 'com.example.other'], { env, cwd: tmp.dir });
     expect(other.stderr).toMatch(/not the app in the rules file/);
     expect(appleApiRequest).not.toHaveBeenCalled();

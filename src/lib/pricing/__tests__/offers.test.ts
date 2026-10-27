@@ -87,17 +87,25 @@ describe('parseOfferSpec', () => {
     ).toEqual([]);
   });
 
-  it('keeps room for Play offers', () => {
-    expect(
-      problems({
-        ...promo,
-        kind: 'play.offer',
-        productRef: { platform: 'google', type: 'subscription', productId: 'com.example.pro', basePlanId: 'annual' },
-        pricing: { type: 'play.relativeDiscount', fraction: '0.5' },
-        eligibility: { type: 'play.targeting', rule: {} },
-        tags: ['example-tag'],
-      })
-    ).toEqual([]);
+  it('accepts Play offers with eligibility, tags and Play pricing', () => {
+    const play = {
+      ...promo,
+      id: 'annual-half-off',
+      kind: 'play.offer',
+      productRef: { platform: 'google', type: 'subscription', productId: 'com.example.pro', basePlanId: 'annual' },
+      pricing: { type: 'play.relativeDiscount', fraction: '0.5' },
+      eligibility: { type: 'play.targeting', rule: { type: 'developerDetermined' } },
+      tags: ['rc-customer-center', 'rc-ignore-offer'],
+    };
+    expect(problems(play)).toEqual([]);
+    expect(problems({ ...play, eligibility: { type: 'play.targeting', rule: { type: 'acquisition', scope: 'anySubscriptionInApp' } } })).toEqual([]);
+    // Play's rules: no underscores in offer IDs, eligibility always spelled out, tag format, discount range, no dates
+    expect(problems({ ...play, id: 'annual_half' }).join()).toMatch(/Play offer ID/);
+    expect(problems({ ...play, eligibility: undefined }).join()).toMatch(/needs eligibility/);
+    expect(problems({ ...play, tags: ['Bad_Tag'] }).join()).toMatch(/lower-case letters, digits and hyphens/);
+    expect(problems({ ...play, pricing: { type: 'play.relativeDiscount', fraction: '1.5' } }).join()).toMatch(/above 0 and below 1/);
+    expect(problems({ ...play, schedule: { start: '2030-01-01' } }).join()).toMatch(/no start or end date/);
+    expect(problems({ ...play, eligibility: { type: 'play.targeting', rule: {} } }).join()).toMatch(/eligibility\.rule/);
   });
 
   it('refuses a free trial with a price and a price with a free trial', () => {

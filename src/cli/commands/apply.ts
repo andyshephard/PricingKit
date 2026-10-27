@@ -1,4 +1,5 @@
-// pricingkit apply: the CLI's only write. Applies an offer plan file, only
+// pricingkit apply: the CLI's only write. Applies an offer plan file (App
+// Store or Google Play, the app named in the plan), only
 // with --confirm set to the plan's hash (what `pricingkit diff` and `plan`
 // print), and saves the run log after every step so a failed or interrupted
 // run can be resumed with --resume and undone later.
@@ -18,7 +19,7 @@ import {
   type ChangeSet,
 } from '@/lib/pricing';
 import { stringFlag } from '../args';
-import { appleAdapter, readInputFile, writeOutputFileAtomic, type CommandContext, type CommandResult } from '../context';
+import { appleAdapter, playAdapter, readInputFile, writeOutputFileAtomic, type CommandContext, type CommandResult } from '../context';
 import { CliError, EXIT_ERROR, EXIT_OK, UsageError } from '../errors';
 
 /**
@@ -58,7 +59,6 @@ export async function applyCommand(ctx: CommandContext): Promise<CommandResult> 
     // Never print the right hash here: it must come from reviewing the plan
     throw new CliError(`--confirm doesn't match this plan. Review it with "pricingkit diff ${planPath}" and confirm the hash shown there.`, 'CONFIRM_MISMATCH');
   }
-  if (!('bundleId' in changeSet.app)) throw new UsageError('apply supports App Store offer plans only in this version');
   const notOffer = changeSet.ops.find((op) => !isOfferOp(op));
   if (notOffer) {
     // Base-price writes wait until the Apple base-price assumptions are confirmed on a test app (see CLAUDE.md)
@@ -77,7 +77,8 @@ export async function applyCommand(ctx: CommandContext): Promise<CommandResult> 
     }
   }
 
-  const adapter = await appleAdapter(ctx, changeSet.app.bundleId);
+  // The adapter is for the plan's own app; the executor checks the plan against it again (APP_MISMATCH)
+  const adapter = 'bundleId' in changeSet.app ? await appleAdapter(ctx, changeSet.app.bundleId) : await playAdapter(ctx, changeSet.app.packageName);
   let saved = '';
   const run = await applyChangeSet(changeSet, {
     adapter,

@@ -49,6 +49,9 @@ import {
   type OfferApplyContext,
   type OfferLifecycleInput,
   type OfferOp,
+  type AnyOfferOp,
+  type OfferState,
+  isPlayOfferOp,
   type OfferPlan,
   type OfferPlanInput,
   type OfferSpec,
@@ -664,6 +667,11 @@ export class AppleAdapter implements PlatformAdapter {
     return checkRulesDrift({ app: rules.app, rules: rules.offers, products, now: (this.now?.() ?? new Date()).toISOString() });
   }
 
+  /** The executor's app check: the plan must be for the credentials' app (bundle ID) */
+  verifyApp(app: AppRef): void {
+    this.assertApp(app);
+  }
+
   private assertApp(app: AppRef): void {
     if (!('bundleId' in app) || (this.credentials.bundleId && app.bundleId !== this.credentials.bundleId)) {
       throw new ApiError(`The plan is for ${'bundleId' in app ? app.bundleId : app.packageName}, but the session is for ${this.credentials.bundleId}`, {
@@ -679,12 +687,14 @@ export class AppleAdapter implements PlatformAdapter {
   // Offer writes (called by the executor after it has checked the offer's state)
 
   /** An intro offer op sends one request per pending territory; every other offer op one */
-  offerRequestsNeeded(op: OfferOp, context: OfferApplyContext): number {
+  offerRequestsNeeded(op: AnyOfferOp, context: OfferApplyContext): number {
+    if (isPlayOfferOp(op)) return 1;
     if (op.target.offer.kind === 'apple.intro') return Math.max(1, context.pending?.length ?? Object.keys((op.after ?? op.before)!.prices).length);
     return 1;
   }
 
-  async applyOffer(op: OfferOp, context: OfferApplyContext): Promise<OpResponse> {
+  async applyOffer(op: AnyOfferOp, context: OfferApplyContext): Promise<OpResponse> {
+    if (isPlayOfferOp(op)) throw unsupported('The Apple adapter applies App Store offer ops only');
     const id = subscriptionId(op.target.product);
     try {
       switch (op.target.offer.kind) {
@@ -696,6 +706,8 @@ export class AppleAdapter implements PlatformAdapter {
           return await this.applyOfferCode(id, op, context);
         case 'apple.winBack':
           return await this.applyWinBack(id, op, context);
+        default:
+          throw unsupported(`Unknown offer kind ${op.target.offer.kind}`);
       }
     } catch (error) {
       throw explainOfferRefusal(error, op);
@@ -730,7 +742,7 @@ export class AppleAdapter implements PlatformAdapter {
       case 'updateOfferPrices': {
         const offerId = this.storeId(op, context);
         const refs = context.offer?.priceRefs ?? {};
-        const observed = context.observed?.prices ?? {};
+        const observed = (context.observed as OfferState | null)?.prices ?? {};
         const keep: string[] = [];
         const add: Record<string, OfferTerritoryPrice> = {};
         for (const [territory, price] of Object.entries(op.after!.prices)) {

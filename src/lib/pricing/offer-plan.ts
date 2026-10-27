@@ -33,7 +33,7 @@ import {
   storeOfferToState,
   windowsOverlap,
   type OfferOp,
-  type OfferOpKind,
+  type AppleOfferOpKind,
   type OfferState,
 } from './offer-ops';
 import {
@@ -41,11 +41,13 @@ import {
   parseOfferSpec,
   type AppleOfferKind,
   type BillingPeriod,
+  type OfferKind,
   type OfferSpec,
   type OfferTerritoryPrice,
   type StoreOffer,
 } from './offers';
 import { appRefSchema } from './refs';
+import type { PlayOfferPreview } from './play-offer-plan';
 
 // ---------------------------------------------------------------------------
 // The spec file: several offers (e.g. one per product) planned together
@@ -80,7 +82,8 @@ export class InvalidOfferPlanSpecError extends Error {
 
 /**
  * Validate an offer plan spec (JSON text or object). Besides each offer's
- * own rules: Apple offers only, and no two offers of one kind may share a key,
+ * own rules: offers of the app's store only (Apple offers for a bundleId,
+ * play.offer for a packageName), and no two offers of one kind may share a key,
  * because Apple needs promotional offer codes and offer code names to be
  * unique across a subscription group (give each product its own code).
  */
@@ -105,12 +108,20 @@ export function parseOfferPlanSpec(input: string | unknown): OfferPlanSpec {
     } catch (error) {
       problems.push(...((error as { problems?: string[] }).problems ?? [String(error)]).map((p) => `offers.${i}: ${p}`));
     }
-    if (!offer.kind.startsWith('apple.')) problems.push(`offers.${i}: only Apple offers can be planned in this version`);
+    const play = 'packageName' in spec.app;
+    if (play && offer.kind !== 'play.offer') problems.push(`offers.${i}: a Google Play app (packageName) plans play.offer offers only`);
+    if (!play && !offer.kind.startsWith('apple.')) problems.push(`offers.${i}: an App Store app (bundleId) plans Apple offers only`);
   });
-  if ('packageName' in spec.app) problems.push('app: offer plans are for Apple apps (bundleId) in this version');
   const seen = new Map<string, number>();
   spec.offers.forEach((offer, i) => {
     if (offer.kind === 'apple.intro') return;
+    if (offer.kind === 'play.offer') {
+      // An offer ID is unique within its base plan
+      const key = `${productKey(offer.productRef)}|${offer.id}`;
+      if (seen.has(key)) problems.push(`offers.${i}: "${offer.id}" is also used by offers.${seen.get(key)} on the same base plan; Play offer IDs are unique per base plan`);
+      else seen.set(key, i);
+      return;
+    }
     const key = `${offer.kind}|${offer.id}`;
     if (seen.has(key)) {
       problems.push(`offers.${i}: "${offer.id}" is also used by offers.${seen.get(key)}; Apple needs ${offerKindLabel(offer.kind as AppleOfferKind)} keys to be unique across a subscription group, so give each product its own`);
@@ -148,14 +159,14 @@ export type OfferRefusalCode =
 
 export interface OfferPlanEntry {
   product: ProductRef;
-  kind: AppleOfferKind;
+  kind: OfferKind;
   /** The spec's id */
   specId: string;
   /** The key the op targets (the spec's id; intro offers: their terms key) */
   key: string;
   name?: string;
-  /** What the plan does with this offer */
-  action: 'create' | 'updatePrices' | 'none' | 'refused';
+  /** What the plan does with this offer (update and activate: Google Play only) */
+  action: 'create' | 'updatePrices' | 'update' | 'activate' | 'none' | 'refused';
   /** The op's id in the ChangeSet, when there is one */
   opId?: string;
   /** Per-territory derivation (percent-of-current rules): current price, exact target, snapped price, flags */
@@ -164,6 +175,8 @@ export interface OfferPlanEntry {
   changes: Array<{ territory: string; before: OfferTerritoryPrice | null; after: OfferTerritoryPrice }>;
   refusals: Array<{ code: OfferRefusalCode; message: string }>;
   warnings: string[];
+  /** Google Play offers: eligibility, phases, tags and the per-region preview (base price, offer price, discount) */
+  play?: PlayOfferPreview;
 }
 
 export interface OfferPlan {
@@ -296,7 +309,7 @@ function targetState(spec: OfferSpec, prices: Record<string, OfferTerritoryPrice
   };
 }
 
-function makeOp(kind: OfferOpKind, product: ProductRef, before: OfferState | null, after: OfferState | null, note?: string): Omit<OfferOp, 'id'> {
+function makeOp(kind: AppleOfferOpKind, product: ProductRef, before: OfferState | null, after: OfferState | null, note?: string): Omit<OfferOp, 'id'> {
   const offer = (after ?? before)!;
   const op: Omit<OfferOp, 'id' | 'idempotencyKey'> = {
     kind,

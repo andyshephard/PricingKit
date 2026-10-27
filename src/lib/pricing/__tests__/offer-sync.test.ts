@@ -107,10 +107,10 @@ describe('parseOfferRules', () => {
     expect(rules.offers[0].pricing).toEqual({ type: 'percentOfCurrent', percent: '50', basis: 'totalOverDuration', snap: 'nearest' });
     const noBasis = structuredClone(validRules) as { offers: Array<{ pricing: Record<string, unknown> }> };
     delete noBasis.offers[0].pricing.basis;
-    expect(parseOfferRules(noBasis).offers[0].pricing.basis).toBeUndefined();
+    expect((parseOfferRules(noBasis).offers[0].pricing as { basis?: string }).basis).toBeUndefined();
   });
 
-  it('refuses Google Play rules (no Play offer support yet), duplicates, bad percents and thresholds', () => {
+  it('refuses Play rules in an App Store file, duplicates, bad percents and thresholds', () => {
     const bad = structuredClone(validRules) as Record<string, unknown> & { offers: Array<Record<string, unknown>> };
     bad.offers.push({ ...bad.offers[0] });
     bad.offers.push({ ...bad.offers[0], key: 'x', pricing: { type: 'percentOfCurrent', percent: '150', snap: 'nearest' } });
@@ -125,9 +125,9 @@ describe('parseOfferRules', () => {
       expect(problems).toMatch(/offers\.1: the same offer is also offers\.0/);
       expect(problems).toMatch(/offers\.2\.pricing: percent: percent must be above 0 and below 100/);
       expect(problems).toMatch(/offers\.3\.deviationThreshold/);
-      expect(problems).toMatch(/offers\.4: Google Play offers aren't supported yet/);
+      expect(problems).toMatch(/offers\.4: an App Store app \(bundleId\) has Apple offer rules only/);
     }
-    expect(() => parseOfferRules({ ...validRules, app: { packageName: 'com.example.app' } })).toThrow(/Google Play offers aren't supported yet/);
+    expect(() => parseOfferRules({ ...validRules, app: { packageName: 'com.example.app' } })).toThrow(/a Google Play app \(packageName\) has play\.offer rules only/);
     expect(() => parseOfferRules({ ...validRules, offers: [{ ...validRules.offers[0], extra: 1 }] })).toThrow(InvalidOfferRulesError);
     expect(() => parseOfferRules({ ...validRules, offers: [{ ...validRules.offers[0], syncWithBase: undefined }] })).toThrow(/syncWithBase/);
   });
@@ -329,7 +329,7 @@ describe('checkRulesDrift', () => {
     ]);
     expect(report.offers[1].report!.territories.find((t) => t.territory === 'US')).toMatchObject({ status: 'mismatch' });
     expect(report.offers[3].error).toMatchObject({ code: 'OFFER_RULE', message: expect.stringMatching(/free trial/) });
-    expect(report.notChecked?.[0]).toMatch(/Google Play/);
+    expect(report.notChecked).toBeUndefined();
   });
 
   it('a rules file whose offers all match is in sync', () => {

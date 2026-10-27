@@ -9,11 +9,19 @@ import { compareDecimal, isDecimalString, normalizeDecimal, type Decimal } from 
 import type { ProductRef } from './model';
 import { productRefSchema } from './refs';
 import type { SnapMode } from './snap';
+import {
+  MAX_PLAY_OFFER_TAGS,
+  PLAY_OFFER_ID_PATTERN,
+  PLAY_OFFER_TAG_PATTERN,
+  playTargetingSchema,
+  type PlayStoreOfferDetails,
+  type PlayTargeting,
+} from './play-offers';
 
 export const OFFER_SPEC_SCHEMA_VERSION = 1 as const;
 
 export const APPLE_OFFER_KINDS = ['apple.intro', 'apple.promo', 'apple.offerCode', 'apple.winBack'] as const;
-/** play.offer is modelled so specs stay forward compatible; nothing reads or derives it yet (Phase 3) */
+/** play.offer: a Google Play subscription offer on one base plan (play-offers.ts) */
 export const OFFER_KINDS = [...APPLE_OFFER_KINDS, 'play.offer'] as const;
 export type AppleOfferKind = (typeof APPLE_OFFER_KINDS)[number];
 export type OfferKind = (typeof OFFER_KINDS)[number];
@@ -136,8 +144,8 @@ export type OfferEligibility =
       timeSinceLastSubscribedInMonths: { minimum: number; maximum: number };
       waitBetweenOffersInMonths?: number;
     }
-  /** Reserved for Phase 3 (Play targeting rules); not interpreted yet */
-  | { type: 'play.targeting'; rule: Record<string, unknown> };
+  /** Google Play: an acquisition or upgrade rule, or developer-determined (no rule) */
+  | { type: 'play.targeting'; rule: PlayTargeting };
 
 const ELIGIBILITY_FOR_KIND: Record<OfferKind, OfferEligibility['type'][]> = {
   'apple.intro': ['apple.intro'],
@@ -154,6 +162,14 @@ export const APPLE_WIN_BACK_PRIORITIES = ['HIGH', 'NORMAL'] as const;
 export const APPLE_WIN_BACK_PROMOTION_INTENTS = ['NOT_PROMOTED', 'USE_AUTO_GENERATED_ASSETS'] as const;
 export type AppleWinBackPriority = (typeof APPLE_WIN_BACK_PRIORITIES)[number];
 export type AppleWinBackPromotionIntent = (typeof APPLE_WIN_BACK_PROMOTION_INTENTS)[number];
+
+/** Google Play-only settings */
+export interface PlayOfferSettings {
+  /** State to leave a created offer in: ACTIVE (default; created, then activated) or DRAFT */
+  state?: 'ACTIVE' | 'DRAFT';
+  /** regionsVersion.version for create and patch; default: the version Play's price conversion reports */
+  regionsVersion?: string;
+}
 
 /** Apple-only settings that some offer kinds need when they are created */
 export interface AppleOfferSettings {
@@ -182,7 +198,7 @@ export interface OfferSpec {
   periods?: number;
   pricing: OfferPricingRule;
   eligibility?: OfferEligibility;
-  /** Play offer tags (Phase 3) */
+  /** Play offer tags (offerTags), e.g. "rc-customer-center" */
   tags?: string[];
   /** YYYY-MM-DD */
   schedule?: { start?: string; end?: string };
@@ -190,6 +206,7 @@ export interface OfferSpec {
   /** Re-derive the offer when base prices change (sync engine, Phase 4) */
   syncWithBase: boolean;
   apple?: AppleOfferSettings;
+  play?: PlayOfferSettings;
 }
 
 const decimalSchema = z
@@ -245,7 +262,7 @@ export const eligibilitySchema = z.discriminatedUnion('type', [
       waitBetweenOffersInMonths: monthsSchema.optional(),
     })
     .strict(),
-  z.object({ type: z.literal('play.targeting'), rule: z.record(z.string(), z.unknown()) }).strict(),
+  z.object({ type: z.literal('play.targeting'), rule: playTargetingSchema }).strict(),
 ]);
 
 export const offerSpecSchema = z
@@ -268,6 +285,13 @@ export const offerSpecSchema = z
         priority: z.enum(APPLE_WIN_BACK_PRIORITIES).optional(),
         promotionIntent: z.enum(APPLE_WIN_BACK_PROMOTION_INTENTS).optional(),
         autoRenewEnabled: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    play: z
+      .object({
+        state: z.enum(['ACTIVE', 'DRAFT']).optional(),
+        regionsVersion: z.string().min(1).max(40).optional(),
       })
       .strict()
       .optional(),
@@ -306,12 +330,37 @@ function crossCheck(spec: OfferSpec): string[] {
   }
   if (spec.tags?.length && apple) problems.push('tags are Play-only (offerTags)');
   if (spec.apple && !apple) problems.push('apple settings need an Apple offer kind');
+  if (spec.play && apple) problems.push('play settings need a play.offer kind');
+  if (!apple) problems.push(...playCrossCheck(spec));
   if ((spec.apple?.priority || spec.apple?.promotionIntent) && spec.kind !== 'apple.winBack') problems.push('priority and promotionIntent are win-back settings');
   if (spec.apple?.autoRenewEnabled !== undefined && spec.kind !== 'apple.offerCode') problems.push('autoRenewEnabled is an offer code setting');
   if (spec.schedule?.start && spec.schedule.end && spec.schedule.start > spec.schedule.end) problems.push('schedule.start is after schedule.end');
   if (spec.pricing.type === 'fixed' && spec.territories !== 'all') {
     const missing = spec.territories.filter((t) => !(t in (spec.pricing as { prices: Record<string, Decimal> }).prices));
     if (missing.length) problems.push(`fixed pricing has no price for ${missing.join(', ')}`);
+  }
+  return problems;
+}
+
+function playCrossCheck(spec: OfferSpec): string[] {
+  const problems: string[] = [];
+  if (!PLAY_OFFER_ID_PATTERN.test(spec.id)) problems.push(`id "${spec.id}" is a Play offer ID: lower-case letters, digits and hyphens, starting with a letter or digit, at most 63 characters`);
+  if (spec.eligibility?.type !== 'play.targeting') {
+    problems.push('a Play offer needs eligibility { type: "play.targeting", rule: ... } (rule type developerDetermined, acquisition or upgrade); PricingKit never assumes one');
+  }
+  const tags = spec.tags ?? [];
+  if (tags.length > MAX_PLAY_OFFER_TAGS) problems.push(`Play allows at most ${MAX_PLAY_OFFER_TAGS} offer tags`);
+  for (const tag of tags) if (!PLAY_OFFER_TAG_PATTERN.test(tag)) problems.push(`tag "${tag}": lower-case letters, digits and hyphens only, at most 20 characters`);
+  if (new Set(tags).size !== tags.length) problems.push('tags must be unique');
+  if (spec.schedule) problems.push('Play offers have no start or end date; leave schedule out (activate and deactivate them instead)');
+  if (spec.pricing.type === 'play.relativeDiscount') {
+    const f = spec.pricing.fraction;
+    if (isDecimalString(f) && (compareDecimal(f, '0') <= 0 || compareDecimal(f, '1') >= 0)) problems.push('play.relativeDiscount fraction is the share taken off, above 0 and below 1 ("0.5" = 50% off)');
+  }
+  if (spec.pricing.type === 'play.absoluteDiscount' && spec.territories !== 'all') {
+    const amounts = spec.pricing.amounts;
+    const missing = spec.territories.filter((t) => !(t in amounts));
+    if (missing.length) problems.push(`play.absoluteDiscount has no amount for ${missing.join(', ')}`);
   }
   return problems;
 }
@@ -381,4 +430,10 @@ export interface StoreOffer {
   storeRefs?: Record<string, string>;
   /** Per-territory store IDs of the offer's price entries (Apple promo, offer code and win-back prices) */
   priceRefs?: Record<string, string>;
+  /**
+   * Google Play offers: the offer as Play describes it (phases, targeting,
+   * tags, regions, state). Play offers keep `mode`/`duration` null and
+   * `prices` empty: their prices live per phase in here.
+   */
+  play?: PlayStoreOfferDetails;
 }

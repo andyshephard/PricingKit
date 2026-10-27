@@ -31,10 +31,22 @@ import {
   type AppleWinBackPromotionIntent,
   type OfferDuration,
   type OfferEligibility,
+  type OfferKind,
   type OfferMode,
   type OfferTerritoryPrice,
   type StoreOffer,
 } from './offers';
+import {
+  checkPlayOfferOpRules,
+  classifyPlayOfferOp,
+  describePlayOfferOp,
+  invertPlayOfferOp,
+  PLAY_OFFER_OP_KINDS,
+  playOfferOpSchema,
+  playOfferStateSchema,
+  type PlayOfferOp,
+  type PlayOfferState,
+} from './play-offers';
 import { canonicalJson, currencySchema, decimalSchema, fnv1a64, productRefSchema, territorySchema } from './refs';
 
 /**
@@ -45,7 +57,10 @@ import { canonicalJson, currencySchema, decimalSchema, fnv1a64, productRefSchema
  * activateOffer      - undo a deactivation (offer code active=true; restore the end date)
  * deleteOffer        - delete the offer (needs force: redemptions can't be checked)
  */
-export const OFFER_OP_KINDS = ['createOffer', 'updateOfferPrices', 'deactivateOffer', 'activateOffer', 'deleteOffer'] as const;
+export const APPLE_OFFER_OP_KINDS = ['createOffer', 'updateOfferPrices', 'deactivateOffer', 'activateOffer', 'deleteOffer'] as const;
+export type AppleOfferOpKind = (typeof APPLE_OFFER_OP_KINDS)[number];
+/** Every offer op kind: Apple's, plus updateOffer (Google Play: patch phases, targeting, tags) */
+export const OFFER_OP_KINDS = [...APPLE_OFFER_OP_KINDS, 'updateOffer'] as const;
 export type OfferOpKind = (typeof OFFER_OP_KINDS)[number];
 
 /**
@@ -89,7 +104,7 @@ export interface OfferState {
 export interface OfferOp {
   /** Unique within the ChangeSet, e.g. "op-0001" */
   id: string;
-  kind: OfferOpKind;
+  kind: AppleOfferOpKind;
   platform: Platform;
   target: { product: ProductRef; offer: { kind: AppleOfferKind; key: string } };
   /** The offer this op expects to find; null = no such offer */
@@ -106,6 +121,13 @@ export interface OfferOp {
    */
   dependsOn?: string[];
 }
+
+/** An App Store offer op (the name predates Google Play offers) */
+export type AppleOfferOp = OfferOp;
+/** An offer op of either store: App Store (OfferOp) or Google Play (PlayOfferOp, play-offers.ts) */
+export type AnyOfferOp = OfferOp | PlayOfferOp;
+/** The offer state of either store */
+export type AnyOfferState = OfferState | PlayOfferState;
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be a date, YYYY-MM-DD');
 
@@ -138,10 +160,10 @@ export const offerStateSchema = z
   })
   .strict();
 
-export const offerOpSchema = z
+export const appleOfferOpSchema = z
   .object({
     id: z.string().min(1),
-    kind: z.enum(OFFER_OP_KINDS),
+    kind: z.enum(APPLE_OFFER_OP_KINDS),
     platform: z.enum(['apple', 'google']),
     target: z
       .object({
@@ -157,16 +179,37 @@ export const offerOpSchema = z
   })
   .strict();
 
-export function isOfferOpKind(kind: string): kind is OfferOpKind {
-  return (OFFER_OP_KINDS as readonly string[]).includes(kind);
+/** An offer op of either store, told apart by `platform` */
+export const offerOpSchema = z.unknown().transform((value, ctx) => {
+  const platform = value && typeof value === 'object' ? (value as { platform?: unknown }).platform : undefined;
+  const schema = platform === 'google' ? playOfferOpSchema : appleOfferOpSchema;
+  const result = schema.safeParse(value);
+  if (result.success) return result.data as AnyOfferOp;
+  for (const issue of result.error.issues) ctx.addIssue({ code: 'custom', message: issue.message, path: issue.path as Array<string | number> });
+  return z.NEVER;
+});
+
+/** An offer state of either store (run logs) */
+export const anyOfferStateSchema = z.union([offerStateSchema, playOfferStateSchema]);
+
+export function isPlayOfferOp(op: AnyOfferOp): op is PlayOfferOp {
+  return op.platform === 'google';
 }
 
-export function isOfferOp(op: { kind: string }): op is OfferOp {
+export function isAppleOfferOp(op: AnyOfferOp): op is OfferOp {
+  return op.platform !== 'google';
+}
+
+export function isOfferOpKind(kind: string): kind is OfferOpKind {
+  return (OFFER_OP_KINDS as readonly string[]).includes(kind) || (PLAY_OFFER_OP_KINDS as readonly string[]).includes(kind);
+}
+
+export function isOfferOp(op: { kind: string }): op is AnyOfferOp {
   return isOfferOpKind(op.kind);
 }
 
 /** Stable identity of an offer across a change set: product + offer kind + key */
-export function offerTargetKey(op: Pick<OfferOp, 'target'>): string {
+export function offerTargetKey(op: Pick<AnyOfferOp, 'target'>): string {
   return `${productKey(op.target.product)}|${op.target.offer.kind}|${op.target.offer.key}`;
 }
 
@@ -174,7 +217,7 @@ export function offerTargetKey(op: Pick<OfferOp, 'target'>): string {
  * Deterministic key for "this change": op kind, product, offer and a hash of
  * the end state (the deleted state for deleteOffer).
  */
-export function computeOfferIdempotencyKey(op: Pick<OfferOp, 'kind' | 'target' | 'before' | 'after'>): string {
+export function computeOfferIdempotencyKey(op: Pick<OfferOp, 'kind' | 'target' | 'before' | 'after'> | Pick<PlayOfferOp, 'kind' | 'target' | 'before' | 'after'>): string {
   const subject = op.kind === 'deleteOffer' ? op.before : op.after;
   return [op.kind, offerTargetKey(op), fnv1a64(canonicalJson(subject ?? null))].join('|');
 }
@@ -194,11 +237,12 @@ const KIND_LABEL: Record<AppleOfferKind, string> = {
   'apple.winBack': 'win-back offer',
 };
 
-export function offerKindLabel(kind: AppleOfferKind): string {
-  return KIND_LABEL[kind];
+export function offerKindLabel(kind: OfferKind): string {
+  return kind === 'play.offer' ? 'Play offer' : KIND_LABEL[kind];
 }
 
-export function describeOfferOp(op: OfferOp): string {
+export function describeOfferOp(op: AnyOfferOp): string {
+  if (isPlayOfferOp(op)) return describePlayOfferOp(op);
   const what = `${KIND_LABEL[op.target.offer.kind]} "${op.target.offer.key}" on ${productKey(op.target.product)}`;
   const territories = Object.keys((op.after ?? op.before)?.prices ?? {}).length;
   return `${op.kind} ${what} (${territories} territories)`;
@@ -323,10 +367,10 @@ export function introEntriesByTerritory(offers: StoreOffer[]): Map<string, Intro
 
 export type OfferClassification =
   /** `found`: intro creates, the resource already in place in each done territory */
-  | { kind: 'atTarget'; observed: OfferState | null; found?: Record<string, string> }
-  /** `pending`: intro territories still to write (all of them for other kinds) */
-  | { kind: 'ready'; observed: OfferState | null; pending?: string[]; offer?: StoreOffer; storeRefs?: Record<string, string>; found?: Record<string, string> }
-  | { kind: 'drifted'; observed: OfferState | null; message: string };
+  | { kind: 'atTarget'; observed: AnyOfferState | null; found?: Record<string, string> }
+  /** `pending`: intro territories still to write (all of them for other kinds); Play: ['activate'] when only the activation is left */
+  | { kind: 'ready'; observed: AnyOfferState | null; pending?: string[]; offer?: StoreOffer; storeRefs?: Record<string, string>; found?: Record<string, string> }
+  | { kind: 'drifted'; observed: AnyOfferState | null; message: string };
 
 function locateKeyed(op: OfferOp, offers: StoreOffer[]): { offer?: StoreOffer; state: OfferState | null; problem?: string } {
   const { kind, key } = op.target.offer;
@@ -372,6 +416,8 @@ function classifyKeyed(op: OfferOp, offers: StoreOffer[]): OfferClassification {
 /** What a run already knows about an op: intro resources it created in earlier attempts */
 export interface OfferOpHistory {
   createdIds?: Record<string, string>;
+  /** Play creates: false when the run created the draft but its activation failed */
+  activated?: boolean;
 }
 
 function classifyIntro(op: OfferOp, offers: StoreOffer[], today: string, history: OfferOpHistory = {}): OfferClassification {
@@ -456,7 +502,8 @@ function classifyIntro(op: OfferOp, offers: StoreOffer[], today: string, history
 }
 
 /** Compare an offer op with the product's offers as read now. `today` is YYYY-MM-DD. */
-export function classifyOfferOp(op: OfferOp, offers: StoreOffer[], today: string, history: OfferOpHistory = {}): OfferClassification {
+export function classifyOfferOp(op: AnyOfferOp, offers: StoreOffer[], today: string, history: OfferOpHistory = {}): OfferClassification {
+  if (isPlayOfferOp(op)) return classifyPlayOfferOp(op, offers);
   return op.target.offer.kind === 'apple.intro' ? classifyIntro(op, offers, today, history) : classifyKeyed(op, offers);
 }
 
@@ -493,7 +540,8 @@ function checkState(where: string, state: OfferState, op: OfferOp, problems: str
 }
 
 /** Problems with one offer op; empty means valid */
-export function checkOfferOpRules(op: OfferOp, appPlatform: Platform): string[] {
+export function checkOfferOpRules(op: AnyOfferOp, appPlatform: Platform): string[] {
+  if (isPlayOfferOp(op)) return checkPlayOfferOpRules(op, appPlatform);
   const where = `op ${op.id}`;
   const problems: string[] = [];
   const { product } = op.target;
@@ -570,14 +618,14 @@ export function checkOfferOpRules(op: OfferOp, appPlatform: Platform): string[] 
 // Undo
 
 export type OfferInverse = {
-  op?: Omit<OfferOp, 'id'>;
+  op?: Omit<OfferOp, 'id'> | Omit<PlayOfferOp, 'id'>;
   /** What the inverse can't restore (e.g. codes already redeemed) */
   caveat?: string;
   /** Nothing can be done at all */
   notReversible?: string;
 };
 
-function makeInverse(op: OfferOp, kind: OfferOpKind, before: OfferState | null, after: OfferState | null): Omit<OfferOp, 'id'> {
+function makeInverse(op: OfferOp, kind: AppleOfferOpKind, before: OfferState | null, after: OfferState | null): Omit<OfferOp, 'id'> {
   const inverse: Omit<OfferOp, 'id' | 'idempotencyKey'> = { kind, platform: op.platform, target: op.target, before, after, note: `undo of ${op.id}` };
   return { ...inverse, idempotencyKey: computeOfferIdempotencyKey(inverse) };
 }
@@ -587,7 +635,8 @@ function makeInverse(op: OfferOp, kind: OfferOpKind, before: OfferState | null, 
  * `history.createdIds` (from the run log) limits undoing an intro create to
  * the resources the run created; without it no intro territory is deleted.
  */
-export function invertOfferOp(op: OfferOp, history: OfferOpHistory = {}): OfferInverse {
+export function invertOfferOp(op: AnyOfferOp, history: OfferOpHistory = {}): OfferInverse {
+  if (isPlayOfferOp(op)) return invertPlayOfferOp(op, history);
   const kind = op.target.offer.kind;
   switch (op.kind) {
     case 'createOffer':

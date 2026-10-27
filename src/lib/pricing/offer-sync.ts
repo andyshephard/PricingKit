@@ -61,6 +61,8 @@ import {
 } from './offers';
 import { appRefSchema, productRefSchema } from './refs';
 import type { SnapMode } from './snap';
+import type { PlayOfferPreview, PlayPreviewRow } from './play-offer-plan';
+import type { PlayOfferDriftReport } from './play-offer-sync';
 
 // ---------------------------------------------------------------------------
 // The rules file
@@ -76,14 +78,29 @@ export interface OfferRulePricing {
   snap: SnapMode;
 }
 
+/**
+ * Google Play rules: percentOfCurrent (written as fixed prices, re-derived
+ * when base prices change), fixed prices, or Play's native discounts. A
+ * relative discount follows the base price by itself; an absolute discount
+ * keeps the same amount off it.
+ */
+export type PlayRulePricing =
+  | OfferRulePricing
+  | { type: 'fixed'; prices: Record<string, Decimal> }
+  | { type: 'play.relativeDiscount'; fraction: Decimal }
+  | { type: 'play.absoluteDiscount'; amounts: Record<string, Decimal> };
+
 /** One existing offer and the rule its prices follow */
 export interface OfferRule {
-  /** The offer's product (Apple: the subscription, by numeric ID) */
+  /** The offer's product (Apple: the subscription, by numeric ID; Play: the base plan) */
   product: ProductRef;
   kind: OfferKind;
-  /** The offer's key as `pricingkit offers` lists it (promo offer code, offer code name, win-back offer ID, intro key) or its store ID */
+  /** The offer's key as `pricingkit offers` lists it (promo offer code, offer code name, win-back offer ID, intro key, Play offer ID) or its store ID */
   key: string;
-  pricing: OfferRulePricing;
+  /** App Store offers: percentOfCurrent only. Play offers: any PlayRulePricing. */
+  pricing: OfferRulePricing | PlayRulePricing;
+  /** Play offers with two phases: which phase (1 or 2) the rule prices. Default: the offer's only priced phase. */
+  phase?: number;
   /** Territories the rule covers (default: all of the offer's) */
   territories?: 'all' | string[];
   /** Re-derive the offer when base prices change. false: drift checks it, sync leaves it alone. */
@@ -112,14 +129,20 @@ const offerRuleSchema = z
     product: productRefSchema,
     kind: z.enum(OFFER_KINDS),
     key: z.string().min(1).max(200),
-    pricing: z
-      .object({
-        type: z.literal('percentOfCurrent'),
-        percent: decimalSchema,
-        basis: z.enum(['perPeriod', 'totalOverDuration']).optional(),
-        snap: z.enum(['nearest', 'floor', 'ceil']),
-      })
-      .strict(),
+    pricing: z.discriminatedUnion('type', [
+      z
+        .object({
+          type: z.literal('percentOfCurrent'),
+          percent: decimalSchema,
+          basis: z.enum(['perPeriod', 'totalOverDuration']).optional(),
+          snap: z.enum(['nearest', 'floor', 'ceil']),
+        })
+        .strict(),
+      z.object({ type: z.literal('fixed'), prices: z.record(territorySchema, decimalSchema) }).strict(),
+      z.object({ type: z.literal('play.relativeDiscount'), fraction: decimalSchema }).strict(),
+      z.object({ type: z.literal('play.absoluteDiscount'), amounts: z.record(territorySchema, decimalSchema) }).strict(),
+    ]),
+    phase: z.number().int().min(1).max(2).optional(),
     territories: z.union([z.literal('all'), z.array(territorySchema).min(1)]).optional(),
     syncWithBase: z.boolean(),
     deviationThreshold: decimalSchema.optional(),
@@ -144,12 +167,11 @@ export class InvalidOfferRulesError extends Error {
   }
 }
 
-const PLAY_NOT_YET = "Google Play offers aren't supported yet: PricingKit doesn't read Play offers until Phase 3, so a rules file covers App Store offers only";
-
 /**
  * Validate an offer rules file (JSON text or object). Besides the schema:
- * App Store apps and Apple subscription offers only (Play offers come with
- * Phase 3), each offer listed once, and a valid percent-of-current rule.
+ * offers of the app's store only (Apple subscription offers for a bundleId,
+ * play.offer on base plans for a packageName), each offer listed once, and a
+ * valid rule (App Store: percent-of-current only).
  */
 export function parseOfferRules(input: string | unknown): OfferRules {
   let raw: unknown = input;
@@ -167,19 +189,32 @@ export function parseOfferRules(input: string | unknown): OfferRules {
   }
   const rules = parsed.data as OfferRules;
   const problems: string[] = [];
-  if (!('bundleId' in rules.app)) problems.push(`app: ${PLAY_NOT_YET}`);
+  const play = 'packageName' in rules.app;
   const seen = new Map<string, number>();
   rules.offers.forEach((rule, i) => {
     const where = `offers.${i}`;
-    if (rule.kind === 'play.offer' || rule.product.platform !== 'apple') {
-      problems.push(`${where}: ${PLAY_NOT_YET}`);
-    } else if (rule.product.type !== 'subscription') {
-      problems.push(`${where}: offers belong to subscriptions; product.type must be "subscription"`);
+    if (play) {
+      if (rule.kind !== 'play.offer') problems.push(`${where}: a Google Play app (packageName) has play.offer rules only`);
+      if (rule.product.platform !== 'google' || rule.product.type !== 'subscription') problems.push(`${where}: a Play offer's product is its base plan: { "platform": "google", "type": "subscription", "productId", "basePlanId" }`);
+    } else {
+      if (rule.kind === 'play.offer' || rule.product.platform !== 'apple') problems.push(`${where}: an App Store app (bundleId) has Apple offer rules only`);
+      else if (rule.product.type !== 'subscription') problems.push(`${where}: offers belong to subscriptions; product.type must be "subscription"`);
+      if (rule.pricing.type !== 'percentOfCurrent') problems.push(`${where}.pricing: App Store offer rules are percentOfCurrent (${rule.pricing.type} is Play-only)`);
+      if (rule.phase !== undefined) problems.push(`${where}.phase: phases are Play-only`);
     }
-    try {
-      parsePercentOfCurrentRule({ ...rule.pricing, basis: rule.pricing.basis ?? 'perPeriod' });
-    } catch (error) {
-      problems.push(...((error as { problems?: string[] }).problems ?? [(error as Error).message]).map((p) => `${where}.pricing: ${p}`));
+    const pricing = rule.pricing;
+    if (pricing.type === 'percentOfCurrent') {
+      try {
+        parsePercentOfCurrentRule({ ...pricing, basis: pricing.basis ?? 'perPeriod' });
+      } catch (error) {
+        problems.push(...((error as { problems?: string[] }).problems ?? [(error as Error).message]).map((p) => `${where}.pricing: ${p}`));
+      }
+    } else if (pricing.type === 'play.relativeDiscount') {
+      if (compareDecimal(pricing.fraction, '0') <= 0 || compareDecimal(pricing.fraction, '1') >= 0) problems.push(`${where}.pricing.fraction: the share taken off, above 0 and below 1 ("0.5" = 50% off)`);
+    } else {
+      const amounts = pricing.type === 'fixed' ? pricing.prices : pricing.amounts;
+      if (Object.keys(amounts).length === 0) problems.push(`${where}.pricing: list at least one region`);
+      for (const [region, amount] of Object.entries(amounts)) if (compareDecimal(amount, '0') <= 0) problems.push(`${where}.pricing: ${region} must be above 0`);
     }
     if (rule.deviationThreshold !== undefined && (compareDecimal(rule.deviationThreshold, '0') < 0 || compareDecimal(rule.deviationThreshold, '1') > 0)) {
       problems.push(`${where}.deviationThreshold: must be a fraction from 0 to 1, e.g. "0.05"`);
@@ -208,7 +243,8 @@ export function findRuleOffer(rule: Pick<OfferRule, 'kind' | 'key'>, offers: Sto
 }
 
 /** The complete rule for an offer: a missing basis follows the offer's mode */
-export function resolveOfferRule(pricing: OfferRulePricing, offer: Pick<StoreOffer, 'mode'>): PercentOfCurrentRule {
+export function resolveOfferRule(pricing: OfferRulePricing | PlayRulePricing, offer: Pick<StoreOffer, 'mode'>): PercentOfCurrentRule {
+  if (pricing.type !== 'percentOfCurrent') throw new OfferRuleError(`${pricing.type} rules are Play-only`);
   return { type: 'percentOfCurrent', percent: pricing.percent, basis: pricing.basis ?? defaultOfferBasis(offer.mode), snap: pricing.snap };
 }
 
@@ -297,12 +333,15 @@ export interface OfferSyncEntry {
    * none         - its prices already match the rule
    * manual       - see `manual`
    * notSynced    - syncWithBase is false: drift checks it, sync leaves it alone
+   * followsBase  - Play relative discount: the offer follows the base price by itself
    */
-  action: 'updatePrices' | 'none' | 'manual' | 'notSynced';
+  action: 'updatePrices' | 'none' | 'manual' | 'notSynced' | 'followsBase';
   opId?: string;
   /** The base prices the offer was derived against: the plan's targets, or today's prices */
   pricedAgainst: 'planTargets' | 'currentPrices';
   rule?: PercentOfCurrentRule;
+  /** Play offers: the rule, the phase it prices and the per-region preview */
+  play?: { rule: PlayRulePricing; phase: number; rows: PlayPreviewRow[]; changes: PlayOfferPreview['changes'] };
   derivation?: OfferDerivation;
   /** Territories whose offer price the plan changes */
   changes: Array<{ territory: string; before: OfferTerritoryPrice | null; after: OfferTerritoryPrice }>;
@@ -580,7 +619,7 @@ export interface RulesDriftEntry {
    * error    - the rule can't be checked against this offer (`error`)
    */
   status: 'inSync' | 'drifted' | 'notFound' | 'error';
-  report?: OfferDriftReport;
+  report?: OfferDriftReport | PlayOfferDriftReport;
   error?: { message: string; code: string };
 }
 
@@ -662,6 +701,5 @@ export function checkRulesDrift(input: RulesDriftInput): RulesDriftReport {
     inSync: offers.every((o) => o.status === 'inSync'),
     summary: { offers: offers.length, inSync: count('inSync'), drifted: count('drifted'), notFound: count('notFound'), errors: count('error') },
     offers,
-    notChecked: ['Google Play offers: not supported until Play offer support lands (Phase 3); rules files cover App Store offers only'],
   };
 }

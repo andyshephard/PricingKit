@@ -304,8 +304,8 @@ describe('offers', () => {
     expect(none.offers).toEqual([]);
   });
 
-  it('is App Store only and checks --kind', async () => {
-    expect((await run(['offers', '--package-name', PKG, '--subscription', 'pro'], { env: googleEnv })).stderr).toMatch(/App Store only/);
+  it('checks --kind and keeps --base-plan for Google Play', async () => {
+    expect((await run(['offers', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID, '--base-plan', 'annual'], { env: appleEnv })).stderr).toMatch(/--base-plan is for Google Play only/);
     expect((await run(['offers', '--bundle-id', BUNDLE, '--subscription', OFFER_SUB_ID, '--kind', 'promo'], { env: appleEnv })).code).toBe(1);
   });
 });
