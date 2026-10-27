@@ -69,7 +69,7 @@ npm run preview   # build and run locally on the Workers runtime (reads .dev.var
 npm run deploy    # build and deploy with wrangler
 ```
 
-Set `ENCRYPTION_KEY` (and optionally `OPEN_EXCHANGE_RATES_APP_ID`) as Worker secrets, e.g. `npx wrangler secret put ENCRYPTION_KEY`. Workers have no filesystem, so exchange rates are cached in memory only; on Node they are also cached in `.exchange-rates.json`.
+Set `ENCRYPTION_KEY` (and optionally `OPEN_EXCHANGE_RATES_APP_ID`) as Worker secrets, e.g. `npx --no-install wrangler secret put ENCRYPTION_KEY`. Workers have no filesystem, so exchange rates are cached in memory only; on Node they are also cached in `.exchange-rates.json`.
 
 ### Checks
 
@@ -311,9 +311,9 @@ spelled out: PricingKit never assumes one.
 
 ```bash
 export GOOGLE_APPLICATION_CREDENTIALS=~/keys/service-account.json
-npx pricingkit offers --package-name com.example.app --subscription com.example.pro [--base-plan annual]
-npx pricingkit plan --spec play-offers.json --out play-plan.json
-npx pricingkit apply play-plan.json --confirm <hash>
+pricingkit offers --package-name com.example.app --subscription com.example.pro [--base-plan annual]
+pricingkit plan --spec play-offers.json --out play-plan.json
+pricingkit apply play-plan.json --confirm <hash>
 ```
 
 The web app lists a subscription's Play offers (read-only) on its page under the base plans.
@@ -406,12 +406,22 @@ const sync = await apple.planOfferSync({ rules, base: basePlan, states }); // re
 ## Command line: `pricingkit`
 
 A CLI over the same core and adapters, for scripts, CI and agents. It runs from a
-clone of this repo (TypeScript runs through `tsx`; there is no build step):
+clone of this repo (TypeScript runs through `tsx`; there is no build step) and is not
+published to npm:
 
 ```bash
-npm ci
-npx pricingkit --help
+cd /path/to/pricingkit && npm ci
+alias pricingkit="node /path/to/pricingkit/bin/pricingkit.mjs"   # or put that line in a script on your PATH
+pricingkit --help
 ```
+
+The examples below run `pricingkit` that way. From another folder you can also use
+`npm exec --prefix /path/to/pricingkit --no-install pricingkit -- <command>`.
+
+**Never run `npx pricingkit` outside the clone.** Where no local `pricingkit` is installed, `npx`
+downloads a package of that name from the npm registry and runs it with your store credentials
+in its environment, and that package is not this project. Inside the clone,
+`npx --no-install pricingkit` is safe: `--no-install` refuses to download anything.
 
 Only `apply` writes to a store, and only with `--confirm <plan hash>`.
 
@@ -437,14 +447,14 @@ files are always JSON.
 ```bash
 export ASC_KEY_ID=... ASC_ISSUER_ID=... ASC_PRIVATE_KEY_PATH=~/keys/AuthKey_XXXX.p8
 
-npx pricingkit export --bundle-id com.example.app --subscription 1234567890 --out state.json
-npx pricingkit plan --spec pricing.json --out plan.json
-npx pricingkit diff plan.json
-npx pricingkit offers --bundle-id com.example.app --subscription 1234567890
-npx pricingkit plan --spec pricing.yaml --rules offer-rules.yaml --out plan.json
-npx pricingkit apply plan.json --confirm <hash from diff> --allow-base-prices
-npx pricingkit export --bundle-id com.example.app --in-app com.example.app.coins
-npx pricingkit offer deactivate --bundle-id com.example.app --subscription 1234567890 \
+pricingkit export --bundle-id com.example.app --subscription 1234567890 --out state.json
+pricingkit plan --spec pricing.json --out plan.json
+pricingkit diff plan.json
+pricingkit offers --bundle-id com.example.app --subscription 1234567890
+pricingkit plan --spec pricing.yaml --rules offer-rules.yaml --out plan.json
+pricingkit apply plan.json --confirm <hash from diff> --allow-base-prices
+pricingkit export --bundle-id com.example.app --in-app com.example.app.coins
+pricingkit offer deactivate --bundle-id com.example.app --subscription 1234567890 \
   --kind apple.offerCode --offer SPRING50 --out end-spring.json
 ```
 
@@ -674,7 +684,7 @@ web app's `/api/ppp` applies the same policy per country with live World Bank ye
 Bank CPI (FP.CPI.TOTL) relative to the US.
 
 **Apple tier table.** The web app's Apple previews use a static price tier table. Regenerate it with
-`npx tsx scripts/fetch-apple-price-tiers.ts --iap <in-app purchase ID>` (needs App Store Connect
+`npx --no-install tsx scripts/fetch-apple-price-tiers.ts --iap <in-app purchase ID>` (needs App Store Connect
 credentials in the CLI's `ASC_*` variables; read-only; `--dry-run` to check without writing), then
 review the diff.
 
@@ -682,8 +692,27 @@ review the diff.
 
 `pricingkit mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio,
 for agents that should read prices and plan changes but never apply them. Add it to your MCP
-client's configuration as a command (`npx pricingkit mcp`, started in the folder holding your
-spec and rules files, with the credentials in its environment). Tools:
+client's configuration as a command that runs the launcher in your clone by its absolute path,
+started in the folder holding your spec and rules files, with the credentials in its environment:
+
+```json
+{
+  "mcpServers": {
+    "pricingkit": {
+      "command": "node",
+      "args": ["/path/to/pricingkit/bin/pricingkit.mjs", "mcp"],
+      "cwd": "/path/to/your/pricing-files",
+      "env": {
+        "PRICINGKIT_EXPECT_BUNDLE_ID": "com.example.app",
+        "ASC_KEY_ID": "...", "ASC_ISSUER_ID": "...", "ASC_PRIVATE_KEY_PATH": "/path/to/your-key-file"
+      }
+    }
+  }
+}
+```
+
+Don't configure it as `npx pricingkit mcp`: outside the clone that downloads whatever the npm
+registry has under that name and hands it your credentials. Tools:
 
 | Tool | What it does |
 | --- | --- |
@@ -740,7 +769,7 @@ security add-generic-password -s pricingkit-asc -a "$USER" -w "$(cat ~/Downloads
 # Each session (or in a wrapper script)
 export ASC_KEY_ID=... ASC_ISSUER_ID=...
 export ASC_PRIVATE_KEY_HEX="$(security find-generic-password -s pricingkit-asc -a "$USER" -w)"
-npx pricingkit offers --bundle-id com.example.app --subscription 1234567890
+pricingkit offers --bundle-id com.example.app --subscription 1234567890
 ```
 
 `security find-generic-password -w` prints a secret that contains newlines (like a PEM key) as
