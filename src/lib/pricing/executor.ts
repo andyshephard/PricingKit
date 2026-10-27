@@ -110,7 +110,9 @@ type ReadyItem =
 
 function toOpError(error: unknown): OpError {
   if (error && typeof error === 'object') {
-    const e = error as { message?: unknown; status?: unknown; statusCode?: unknown; code?: unknown; retryable?: unknown; detail?: unknown };
+    const e = error as { message?: unknown; status?: unknown; statusCode?: unknown; code?: unknown; retryable?: unknown; detail?: unknown; attempts?: unknown; cause?: unknown };
+    // Client-side attempts, on the error or on the error it explains (adapters wrap store errors)
+    const attempts = typeof e.attempts === 'number' ? e.attempts : typeof (e.cause as { attempts?: unknown } | undefined)?.attempts === 'number' ? (e.cause as { attempts: number }).attempts : undefined;
     const message =
       typeof e.detail === 'string' && e.detail ? e.detail : typeof e.message === 'string' && e.message ? e.message : 'Unknown error';
     const status = typeof e.status === 'number' ? e.status : typeof e.statusCode === 'number' ? e.statusCode : undefined;
@@ -119,6 +121,7 @@ function toOpError(error: unknown): OpError {
       ...(status !== undefined ? { status } : {}),
       ...(typeof e.code === 'string' || typeof e.code === 'number' ? { code: e.code } : {}),
       ...(typeof e.retryable === 'boolean' ? { retryable: e.retryable } : {}),
+      ...(attempts !== undefined && Number.isInteger(attempts) && attempts >= 1 ? { clientAttempts: attempts } : {}),
     };
   }
   return { message: typeof error === 'string' ? error : 'Unknown error' };

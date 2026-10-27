@@ -103,6 +103,7 @@ describe('parseOfferSpec', () => {
     expect(problems({ ...play, id: 'annual_half' }).join()).toMatch(/Play offer ID/);
     expect(problems({ ...play, eligibility: undefined }).join()).toMatch(/needs eligibility/);
     expect(problems({ ...play, tags: ['Bad_Tag'] }).join()).toMatch(/lower-case letters, digits and hyphens/);
+    expect(problems({ ...play, tags: ['9-lives'] }).join()).toMatch(/starts with a lower-case letter/);
     expect(problems({ ...play, pricing: { type: 'play.relativeDiscount', fraction: '1.5' } }).join()).toMatch(/above 0 and below 1/);
     expect(problems({ ...play, schedule: { start: '2030-01-01' } }).join()).toMatch(/no start or end date/);
     expect(problems({ ...play, eligibility: { type: 'play.targeting', rule: {} } }).join()).toMatch(/eligibility\.rule/);

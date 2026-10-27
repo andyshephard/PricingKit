@@ -416,8 +416,10 @@ function classifyKeyed(op: OfferOp, offers: StoreOffer[]): OfferClassification {
 /** What a run already knows about an op: intro resources it created in earlier attempts */
 export interface OfferOpHistory {
   createdIds?: Record<string, string>;
-  /** Play creates: false when the run created the draft but its activation failed */
-  activated?: boolean;
+  /** The op's record failed (Play creates: what the run log says was sent decides the undo) */
+  failed?: boolean;
+  /** The op's recorded store response (Play creates: createSent, created, activationSent, activated) */
+  response?: Record<string, unknown>;
 }
 
 function classifyIntro(op: OfferOp, offers: StoreOffer[], today: string, history: OfferOpHistory = {}): OfferClassification {

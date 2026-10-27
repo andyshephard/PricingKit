@@ -94,6 +94,9 @@ describe('parsePlayOffer', () => {
     expect(parsePlayOffer({ ...base, offerTags: [{ tag: 'a' }, { tag: 'a' }] }).problems?.join()).toMatch(/listed twice/);
     expect(parsePlayOffer({ ...base, regionalConfigs: [...(base.regionalConfigs as object[]), { regionCode: 'US' }] }).territoryProblems?.US).toMatch(/listed twice/);
     expect(parsePlayOffer(base, { productId: 'com.example.other' }).problems?.join()).toMatch(/belongs to subscription/);
+    const two = twoPhaseOfferResource();
+    (two.phases as Array<Record<string, unknown>>)[0].otherRegionsConfig = { free: { unexpected: true } };
+    expect(parsePlayOffer(two).problems?.join()).toMatch(/otherRegionsConfig\.free is not an empty object/);
   });
 
   it('builds the resource Play takes from the model, and reads it back unchanged', () => {

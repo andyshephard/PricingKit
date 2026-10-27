@@ -71,12 +71,28 @@ export async function writeOutputFileAtomic(ctx: CommandContext, path: string, c
   return full;
 }
 
+/**
+ * Optional pins: PRICINGKIT_EXPECT_BUNDLE_ID / PRICINGKIT_EXPECT_PACKAGE name
+ * the only app this environment may touch (e.g. a CI job for one app). Any
+ * other app, from a flag, a spec, a rules file or a plan, is refused before
+ * credentials are loaded or anything is sent.
+ */
+export function assertExpectedApp(ctx: Pick<CommandContext, 'env'>, app: { bundleId: string } | { packageName: string }): void {
+  const [variable, expected, actual] =
+    'bundleId' in app ? ['PRICINGKIT_EXPECT_BUNDLE_ID', ctx.env.PRICINGKIT_EXPECT_BUNDLE_ID, app.bundleId] : ['PRICINGKIT_EXPECT_PACKAGE', ctx.env.PRICINGKIT_EXPECT_PACKAGE, app.packageName];
+  if (expected !== undefined && expected.trim() !== '' && expected.trim() !== actual) {
+    throw new CliError(`${actual} is not the app ${variable} allows (${expected.trim()}); nothing was read or sent`, 'APP_NOT_EXPECTED');
+  }
+}
+
 export async function appleAdapter(ctx: CommandContext, bundleId: string): Promise<AppleAdapter> {
+  assertExpectedApp(ctx, { bundleId });
   const credentials = await appleCredentialsFromEnv(ctx.env, bundleId, ctx.redactor);
   return new AppleAdapter({ credentials, budget: ctx.budget, now: ctx.now });
 }
 
 export async function playAdapter(ctx: CommandContext, packageName: string): Promise<PlayAdapter> {
+  assertExpectedApp(ctx, { packageName });
   const credentials = await googleCredentialsFromEnv(ctx.env, ctx.redactor);
   return new PlayAdapter({ credentials, packageName, budget: ctx.budget });
 }
@@ -88,11 +104,14 @@ export async function playAdapter(ctx: CommandContext, packageName: string): Pro
 export interface PriceReader {
   fetchState(product: ProductRef): Promise<ProductPriceState>;
   resolvePricePoints(product: ProductRef, targets: Record<string, ResolveTarget>, options?: { mode?: SnapMode }): Promise<ResolveResult>;
+  /** Google Play: the regions version to record in a base-price plan (read-only price conversion) */
+  fetchRegionsVersion?(): Promise<string | undefined>;
 }
 
 export function readOnly(adapter: PriceReader): PriceReader {
   return {
     fetchState: (product) => adapter.fetchState(product),
     resolvePricePoints: (product, targets, options) => adapter.resolvePricePoints(product, targets, options),
+    ...(adapter.fetchRegionsVersion ? { fetchRegionsVersion: () => adapter.fetchRegionsVersion!() } : {}),
   };
 }

@@ -30,8 +30,13 @@ import type { StoreOffer } from './offers';
 export const MAX_PLAY_OFFER_PHASES = 2;
 /** SubscriptionOffer.offerTags: "up to 20 custom tags" */
 export const MAX_PLAY_OFFER_TAGS = 20;
-/** OfferTag.tag: RFC-1034, lower-case letters, digits and hyphens, at most 20 characters */
-export const PLAY_OFFER_TAG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,18}[a-z0-9])?$/;
+/**
+ * OfferTag.tag: "Must conform with RFC-1034. That is, this string can only
+ * contain lower-case letters (a-z), numbers (0-9), and hyphens (-), and be at
+ * most 20 characters." RFC 1034 labels also start with a letter and don't end
+ * with a hyphen.
+ */
+export const PLAY_OFFER_TAG_PATTERN = /^[a-z](?:[a-z0-9-]{0,18}[a-z0-9])?$/;
 /**
  * offerId format. The discovery document says only "unique within the base
  * plan"; this pattern (lower-case letters, digits and hyphens, starting with
@@ -193,7 +198,7 @@ export const playTargetingSchema = z.discriminatedUnion('type', [
     .strict(),
 ]);
 
-export const playOfferTagSchema = z.string().regex(PLAY_OFFER_TAG_PATTERN, 'an offer tag has lower-case letters, digits and hyphens only, at most 20 characters');
+export const playOfferTagSchema = z.string().regex(PLAY_OFFER_TAG_PATTERN, 'an offer tag starts with a lower-case letter and has lower-case letters, digits and hyphens only, at most 20 characters');
 
 export const playOfferStateSchema = z
   .object({
@@ -237,6 +242,8 @@ export function playOfferStateProblems(state: PlayOfferState): string[] {
     if (!isPlayDuration(phase.duration)) problems.push(`phase ${i + 1}: duration ${phase.duration} is not a single-unit ISO 8601 duration`);
   });
   if (new Set(state.tags).size !== state.tags.length) problems.push('offer tags must be unique');
+  for (const tag of state.tags) if (!PLAY_OFFER_TAG_PATTERN.test(tag)) problems.push(`offer tag "${tag}" must start with a lower-case letter and have lower-case letters, digits and hyphens only (at most 20)`);
+  if (state.tags.length > MAX_PLAY_OFFER_TAGS) problems.push(`at most ${MAX_PLAY_OFFER_TAGS} offer tags`);
   if (state.tags.some((t, i) => i > 0 && state.tags[i - 1] > t)) problems.push('offer tags must be sorted');
   const t = state.targeting;
   if (t.type === 'acquisition' && typeof t.scope === 'object') problems.push('an acquisition rule takes the scope anySubscriptionInApp or thisSubscription');
@@ -612,14 +619,28 @@ function makePlayInverse(op: PlayOfferOp, kind: PlayOfferOpKind, before: PlayOff
 }
 
 /** The op that restores what a Play offer op changed, and what it can't restore */
-export function invertPlayOfferOp(op: PlayOfferOp, history: { activated?: boolean } = {}): PlayOfferInverse {
+export function invertPlayOfferOp(op: PlayOfferOp, history: { failed?: boolean; response?: Record<string, unknown> } = {}): PlayOfferInverse {
   switch (op.kind) {
     case 'createOffer': {
       const after = op.after!;
-      if (after.state === 'DRAFT' || history.activated === false) {
-        // Created as a draft, or created but never activated: the draft can be deleted
-        if (after.state !== 'DRAFT') return { op: makePlayInverse(op, 'deleteOffer', { ...after, state: 'DRAFT' }, null), caveat: 'The run created the offer but did not activate it; undo deletes the draft (irreversible, needs force).' };
-        return { op: makePlayInverse(op, 'deleteOffer', after, null), caveat: 'Deleting the draft offer is irreversible and needs force.' };
+      const deleteDraft = (caveat: string): PlayOfferInverse => ({ op: makePlayInverse(op, 'deleteOffer', { ...after, state: 'DRAFT' }, null), caveat });
+      if (after.state === 'DRAFT') return deleteDraft('Deleting the draft offer is irreversible and needs force.');
+      if (history.failed) {
+        // The op failed: what the run log says was sent decides what may exist
+        const r = history.response ?? {};
+        if (r.activationSent !== true) {
+          if (r.createSent !== true && r.created !== true) {
+            return { notReversible: "The run log doesn't say how far this create got. If the offer exists in Play Console, deactivate it when active or delete it when it is a draft." };
+          }
+          return deleteDraft(
+            "The create failed before any activation was sent, so the offer is at most a draft: undo deletes that draft (irreversible, needs force). If the create didn't take effect, the undo op finds nothing and is skipped."
+          );
+        }
+        if (r.activated === false) return deleteDraft('The run created the offer but Play refused to activate it; undo deletes the draft (irreversible, needs force).');
+        return {
+          notReversible:
+            'The activation got no answer, so the offer may be ACTIVE or still a draft. Check it (pricingkit offers or Play Console): deactivate it if it is active, delete it if it is a draft.',
+        };
       }
       return {
         op: makePlayInverse(op, 'deactivateOffer', after, { ...after, state: 'INACTIVE' }),

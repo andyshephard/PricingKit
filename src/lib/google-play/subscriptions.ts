@@ -1,4 +1,6 @@
 import { googlePlayFetch } from './client';
+import { convertRegionPrices } from './pricing';
+import { ApiError } from '../utils/api-error';
 import type { RequestContext } from '../utils/request-budget';
 import type {
   ServiceAccountCredentials,
@@ -23,24 +25,51 @@ interface SubscriptionUpdateRequestBody {
   basePlans?: BasePlan[];
 }
 
-/**
- * Fallback regions version, used ONLY when the subscription resource we fetched
- * has no `regionsVersion` of its own. Format: YYYY/MM.
- *
- * Google requires `regionsVersion.version` on every base plan price PATCH. We
- * always prefer the version the resource already reports so a price edit never
- * silently migrates the product onto a newer region set.
- */
-export const FALLBACK_SUBSCRIPTION_REGIONS_VERSION = '2025/03';
+/** Where a base plan PATCH gets `regionsVersion.version` from */
+export interface RegionsVersionOptions {
+  /** The version to send (e.g. the one recorded in a reviewed plan) */
+  regionsVersion?: string;
+}
 
-function resolveRegionsVersion(subscription: GoogleApiSubscription, productId: string): string {
-  if (subscription.regionsVersion?.version) {
-    return subscription.regionsVersion.version;
+/**
+ * Play's current regions version, from a price conversion's `regionVersion`
+ * (a read-only POST). The Subscription resource has no regionsVersion field
+ * in the Android Publisher v3 discovery document, so it can't come from there.
+ * Undefined when Play reports none.
+ */
+export async function fetchCurrentRegionsVersion(
+  credentials: ServiceAccountCredentials,
+  packageName: string,
+  ctx: RequestContext = {}
+): Promise<string | undefined> {
+  const response = await convertRegionPrices(credentials, packageName, { currencyCode: 'USD', units: '1' }, ctx);
+  const version = response?.regionVersion?.version;
+  return typeof version === 'string' && version ? version : undefined;
+}
+
+/**
+ * `regionsVersion.version` for a base plan PATCH, which Google requires:
+ * the caller's (a plan's recorded version), else one the resource reports
+ * (none does today), else Play's current one from a price conversion. Never a
+ * hard-coded guess: if Play reports none, the edit is refused.
+ */
+async function resolveRegionsVersion(
+  credentials: ServiceAccountCredentials,
+  packageName: string,
+  subscription: GoogleApiSubscription,
+  options: RegionsVersionOptions,
+  ctx: RequestContext
+): Promise<string> {
+  const version = options.regionsVersion ?? subscription.regionsVersion?.version ?? (await fetchCurrentRegionsVersion(credentials, packageName, ctx));
+  if (!version) {
+    throw new ApiError('Google Play reported no regions version, which a base plan price edit needs; nothing was changed', {
+      status: 422,
+      code: 'NO_REGIONS_VERSION',
+      platform: 'google',
+      retryable: false,
+    });
   }
-  console.warn(
-    `Subscription ${productId} has no regionsVersion; falling back to ${FALLBACK_SUBSCRIPTION_REGIONS_VERSION}`
-  );
-  return FALLBACK_SUBSCRIPTION_REGIONS_VERSION;
+  return version;
 }
 
 async function patchBasePlanRegionalConfigs(
@@ -50,8 +79,10 @@ async function patchBasePlanRegionalConfigs(
   subscription: GoogleApiSubscription,
   basePlanId: string,
   regionalConfigs: RegionalBasePlanConfig[],
-  ctx: RequestContext = {}
+  ctx: RequestContext = {},
+  options: RegionsVersionOptions = {}
 ): Promise<GoogleApiSubscription> {
+  const regionsVersion = await resolveRegionsVersion(credentials, packageName, subscription, options, ctx);
   // Only the target base plan's regionalConfigs change. Every other field
   // (including otherRegionsConfig) and every other base plan is sent back
   // exactly as fetched, because updateMask=basePlans replaces the whole list.
@@ -72,7 +103,7 @@ async function patchBasePlanRegionalConfigs(
       budget: ctx.budget,
       method: 'PATCH',
       query: {
-        'regionsVersion.version': resolveRegionsVersion(subscription, productId),
+        'regionsVersion.version': regionsVersion,
         updateMask: 'basePlans',
       },
       body: requestBody,
@@ -124,12 +155,6 @@ export async function getSubscription(
       { budget: ctx.budget }
     );
 
-    if (subscription.regionsVersion) {
-      console.log(`Subscription ${productId} regionsVersion:`, subscription.regionsVersion);
-    } else {
-      console.warn(`Subscription ${productId} has no regionsVersion in API response`);
-    }
-
     return subscription;
   } catch (error: unknown) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 404) {
@@ -159,7 +184,8 @@ export async function updateBasePlanPrices(
   productId: string,
   basePlanId: string,
   regionalConfigs: RegionalBasePlanConfig[],
-  ctx: RequestContext = {}
+  ctx: RequestContext = {},
+  options: RegionsVersionOptions = {}
 ): Promise<BasePlan> {
   const subscription = await getSubscription(credentials, packageName, productId, ctx);
   if (!subscription) {
@@ -210,7 +236,8 @@ export async function updateBasePlanPrices(
     subscription,
     basePlanId,
     updatedConfigs,
-    ctx
+    ctx,
+    options
   );
 
   return response.basePlans?.find(bp => bp.basePlanId === basePlanId) || basePlan;
@@ -222,7 +249,8 @@ export async function deleteBasePlanRegionPrice(
   productId: string,
   basePlanId: string,
   regionCode: string,
-  ctx: RequestContext = {}
+  ctx: RequestContext = {},
+  options: RegionsVersionOptions = {}
 ): Promise<BasePlan> {
   const subscription = await getSubscription(credentials, packageName, productId, ctx);
   if (!subscription) {
@@ -255,7 +283,8 @@ export async function deleteBasePlanRegionPrice(
     subscription,
     basePlanId,
     filteredConfigs,
-    ctx
+    ctx,
+    options
   );
 
   return response.basePlans?.find(bp => bp.basePlanId === basePlanId) || basePlan;

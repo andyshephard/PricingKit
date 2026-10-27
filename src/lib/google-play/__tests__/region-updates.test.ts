@@ -9,7 +9,6 @@ import { googlePlayFetch } from '../client';
 import {
   updateBasePlanPrices,
   deleteBasePlanRegionPrice,
-  FALLBACK_SUBSCRIPTION_REGIONS_VERSION,
 } from '../subscriptions';
 import {
   updateInAppProductPrices,
@@ -150,12 +149,38 @@ describe('updateBasePlanPrices', () => {
     expect(patchCall().query['regionsVersion.version']).toBe('2023/11');
   });
 
-  it('falls back to the fallback regionsVersion only when the resource has none', async () => {
-    serve(subscriptionFixture({ regionsVersion: undefined }));
+  it("uses Play's current regions version (from a price conversion) when the resource has none, never a hard-coded one", async () => {
+    // Play's Subscription resource has no regionsVersion field (discovery document)
+    const resource = JSON.stringify(subscriptionFixture({ regionsVersion: undefined }));
+    fetchMock.mockImplementation(async (_creds, path, options) => {
+      if (options?.method === 'PATCH') return options.body as never;
+      if (path.endsWith('/pricing:convertRegionPrices')) return { convertedRegionPrices: {}, regionVersion: { version: '2025/10' } } as never;
+      return JSON.parse(resource);
+    });
     await updateBasePlanPrices(credentials, 'com.example.app', 'premium', 'monthly', [
       { regionCode: 'JP', price: { currencyCode: 'JPY', units: '1500' } },
     ]);
-    expect(patchCall().query['regionsVersion.version']).toBe(FALLBACK_SUBSCRIPTION_REGIONS_VERSION);
+    expect(patchCall().query['regionsVersion.version']).toBe('2025/10');
+  });
+
+  it('sends the regions version it is given (a reviewed plan records one), without asking Play', async () => {
+    serve(subscriptionFixture({ regionsVersion: undefined }));
+    await updateBasePlanPrices(credentials, 'com.example.app', 'premium', 'monthly', [{ regionCode: 'JP', price: { currencyCode: 'JPY', units: '1500' } }], {}, { regionsVersion: '2024/02' });
+    expect(patchCall().query['regionsVersion.version']).toBe('2024/02');
+    expect(fetchMock.mock.calls.some((c) => String(c[1]).endsWith(':convertRegionPrices'))).toBe(false);
+  });
+
+  it('refuses the edit, sending nothing, when Play reports no regions version', async () => {
+    const resource = JSON.stringify(subscriptionFixture({ regionsVersion: undefined }));
+    fetchMock.mockImplementation(async (_creds, path, options) => {
+      if (options?.method === 'PATCH') return options.body as never;
+      if (path.endsWith('/pricing:convertRegionPrices')) return { convertedRegionPrices: {} } as never;
+      return JSON.parse(resource);
+    });
+    await expect(
+      updateBasePlanPrices(credentials, 'com.example.app', 'premium', 'monthly', [{ regionCode: 'JP', price: { currencyCode: 'JPY', units: '1500' } }])
+    ).rejects.toMatchObject({ code: 'NO_REGIONS_VERSION' });
+    expect(fetchMock.mock.calls.some((c) => (c as Call)[2]?.method === 'PATCH')).toBe(false);
   });
 
   it("surfaces Google's rejection unchanged", async () => {

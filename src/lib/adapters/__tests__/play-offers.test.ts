@@ -157,21 +157,51 @@ describe('Phase 3 criterion: plan, preview and apply the two offers', () => {
 describe('resume, partial writes and conflicts', () => {
   it('resumes a create whose activation failed by activating only, and undoes the draft by deleting it', async () => {
     const plan = await adapter().planOffers({ app, offers: [retentionSpec], createdAt: NOW });
-    store.failNext((c) => c.path.endsWith(':activate'), 503);
+    store.failNext((c) => c.path.endsWith(':activate'), 400);
     const first = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash });
     expect(first.status).toBe('incomplete');
-    expect(first.ops[0]).toMatchObject({ status: 'failed', attempts: 1, response: { created: true, activated: false } });
+    expect(first.ops[0]).toMatchObject({ status: 'failed', attempts: 1, response: { createSent: true, created: true, activationSent: true, activated: false } });
     expect(store.offer('annual', 'annual-half-off')!.state).toBe('DRAFT');
 
-    // Undo of the partial run deletes the draft the run left
+    // Undo of the partial run deletes the draft the run left (never "deactivates" an offer that isn't active)
     const undo = buildUndoChangeSet(plan.changeSet, first);
     expect(undo.ops).toMatchObject([{ kind: 'deleteOffer', before: { state: 'DRAFT' } }]);
+    const unforced = await applyChangeSet(undo, { adapter: adapter(), confirm: changeSetHash(undo) });
+    expect(unforced.ops[0].error?.code).toBe('REDEMPTIONS_UNCHECKED');
 
     const writes = store.writes().length;
     const resumed = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash, run: first });
     expect(resumed.status).toBe('completed');
     expect(store.writes().slice(writes)).toEqual([`POST ${PRODUCT}/basePlans/annual/offers/annual-half-off:activate`]);
     expect(store.offer('annual', 'annual-half-off')!.state).toBe('ACTIVE');
+  });
+
+  it('an activation without an answer leaves the state unknown: undo lists it instead of guessing', async () => {
+    const plan = await adapter().planOffers({ app, offers: [retentionSpec], createdAt: NOW });
+    store.failNext((c) => c.path.endsWith(':activate'), 503, { tookEffect: true });
+    const run = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash });
+    expect(run.ops[0]).toMatchObject({ status: 'failed', response: { activationSent: true, activated: 'unknown' } });
+    // The client sent the activation once: no retry after a 5xx
+    expect(store.writes().filter((w) => w.endsWith(':activate'))).toHaveLength(1);
+    const undo = buildUndoChangeSet(plan.changeSet, run);
+    expect(undo.ops).toEqual([]);
+    expect(undo.notReversible?.[0].reason).toMatch(/may be ACTIVE or still a draft/);
+    // A resume finds it active and confirms it
+    const resumed = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash, run });
+    expect(resumed.ops[0]).toMatchObject({ status: 'ok', response: { confirmedOnResume: true } });
+  });
+
+  it('keeps a create that failed in undo whatever the status (it may have applied); undo then deletes at most a draft', async () => {
+    const plan = await adapter().planOffers({ app, offers: [retentionSpec], createdAt: NOW });
+    // A 400 to the one create request: undo still lists a delete of the (possible) draft, which is skipped if absent
+    store.failNext((c) => c.method === 'POST' && c.path.endsWith('/offers'), 400);
+    const run = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash });
+    expect(run.ops[0]).toMatchObject({ status: 'failed', response: { createSent: true, activationSent: false } });
+    const undo = buildUndoChangeSet(plan.changeSet, run);
+    expect(undo.ops).toMatchObject([{ kind: 'deleteOffer', before: { state: 'DRAFT' } }]);
+    const undone = await applyChangeSet(undo, { adapter: adapter(), confirm: changeSetHash(undo), force: { deleteOffers: true } });
+    expect(undone.ops[0]).toMatchObject({ status: 'skipped', skipReason: 'ALREADY_AT_TARGET' });
+    expect(store.writes().filter((w) => w.startsWith('DELETE'))).toEqual([]);
   });
 
   it('treats a create that answered 409 as done only when the offer that exists is exactly the planned one', async () => {
@@ -215,13 +245,34 @@ describe('resume, partial writes and conflicts', () => {
 describe('updates, activation and deletion', () => {
   it('patches tags and eligibility of an existing offer with an updateMask of the changed fields', async () => {
     store.seed('annual', retentionOfferResource());
-    const plan = await adapter().planOffers({ app, offers: [{ ...retentionSpec, tags: ['rc-customer-center'] }], createdAt: NOW });
+    // A re-price spec that leaves a tag out is refused: tags are never dropped silently
+    const repriced = await adapter().planOffers({ app, offers: [{ ...retentionSpec, pricing: { type: 'play.relativeDiscount', fraction: '0.4' }, tags: ['rc-customer-center'] }], createdAt: NOW });
+    expect(repriced.entries[0].refusals).toMatchObject([{ code: 'TAG_REMOVAL', message: expect.stringMatching(/rc-ignore-offer.*allowTagRemoval/) }]);
+    expect(repriced.changeSet.ops).toEqual([]);
+
+    const spec = { ...retentionSpec, tags: ['rc-customer-center'], play: { allowTagRemoval: true } };
+    const plan = await adapter().planOffers({ app, offers: [spec], createdAt: NOW });
     expect(plan.changeSet.ops).toMatchObject([{ kind: 'updateOffer' }]);
+    expect(plan.entries[0].warnings).toContain('removes tag rc-ignore-offer');
+    expect(plan.entries[0].play).toMatchObject({
+      before: { state: 'ACTIVE', tags: ['rc-customer-center', 'rc-ignore-offer'] },
+      tags: ['rc-customer-center'],
+      tagChanges: { added: [], removed: ['rc-ignore-offer'] },
+    });
     expect(plan.entries[0].warnings.join()).toMatch(/not confirmed/);
     await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash });
     const patch = store.calls.find((c) => c.method === 'PATCH')!;
     expect(patch.query).toEqual({ updateMask: 'offerTags', 'regionsVersion.version': '2025/03' });
     expect(store.offer('annual', 'annual-half-off')!.offerTags).toEqual([{ tag: 'rc-customer-center' }]);
+
+    // An eligibility change is named
+    const eligibility = await adapter().planOffers({
+      app,
+      offers: [{ ...spec, eligibility: { type: 'play.targeting', rule: { type: 'acquisition', scope: 'thisSubscription' } } }],
+      createdAt: NOW,
+    });
+    expect(eligibility.entries[0].warnings).toContain('eligibility Developer-determined (no Play eligibility rule; the app decides who sees it) → New customer acquisition: never had this subscription');
+    expect(eligibility.entries[0].play!.eligibilityChange).toBeDefined();
   });
 
   it('patches only prices for a price change, keeps regions the spec leaves out, and refuses changing phase terms', async () => {

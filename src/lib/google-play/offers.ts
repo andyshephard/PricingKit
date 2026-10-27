@@ -121,7 +121,12 @@ export async function getSubscriptionOffer(
 // ---------------------------------------------------------------------------
 // Writes
 
-/** POST .../offers?offerId=&regionsVersion.version= : creates the offer as DRAFT */
+/**
+ * POST .../offers?offerId=&regionsVersion.version= : creates the offer as
+ * DRAFT. Retried on 429 only: after a 5xx, a timeout or a network error the
+ * offer may exist, so the client never sends it again (the executor's next
+ * read, or a resume, decides).
+ */
 export async function createSubscriptionOffer(
   credentials: ServiceAccountCredentials,
   id: PlayOfferIdentity,
@@ -132,6 +137,7 @@ export async function createSubscriptionOffer(
   return googlePlayFetch<SubscriptionOfferResource>(credentials, offersPath(id.packageName, id.productId, id.basePlanId), {
     method: 'POST',
     budget: ctx.budget,
+    retryOnlyRateLimited: true,
     query: { offerId: body.offerId, 'regionsVersion.version': regionsVersion },
     body,
   });
@@ -155,7 +161,7 @@ export async function patchSubscriptionOffer(
   });
 }
 
-/** POST .../offers/{offerId}:activate or :deactivate (body: ActivateSubscriptionOfferRequest / Deactivate...) */
+/** POST .../offers/{offerId}:activate or :deactivate (body: ActivateSubscriptionOfferRequest / Deactivate...). Retried on 429 only. */
 export async function setSubscriptionOfferActive(
   credentials: ServiceAccountCredentials,
   id: PlayOfferIdentity,
@@ -166,6 +172,7 @@ export async function setSubscriptionOfferActive(
   return googlePlayFetch<SubscriptionOfferResource>(credentials, `${offerPath(id, offerId)}:${active ? 'activate' : 'deactivate'}`, {
     method: 'POST',
     budget: ctx.budget,
+    retryOnlyRateLimited: true,
     body: { packageName: id.packageName, productId: id.productId, basePlanId: id.basePlanId, offerId },
   });
 }
@@ -327,6 +334,7 @@ function readOtherRegionsPrice(config: unknown): PlayOtherRegionsPhasePrice | st
   if (set.length !== 1) return `otherRegionsConfig is priced ${set.length} ways`;
   switch (set[0]) {
     case 'free':
+      if (!isObject(config.free) || Object.keys(config.free).length > 0) return 'otherRegionsConfig.free is not an empty object';
       return { type: 'free' };
     case 'relativeDiscount': {
       const read = readFraction(config.relativeDiscount);

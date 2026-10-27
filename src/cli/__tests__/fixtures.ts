@@ -161,7 +161,7 @@ export class FakePlay {
       for (const [region, r] of Object.entries(REGIONS)) {
         converted[region] = { regionCode: region, price: money(r.currency, usd * r.perUsd), taxAmount: money(r.currency, 0) };
       }
-      return { convertedRegionPrices: converted };
+      return { convertedRegionPrices: converted, regionVersion: { version: '2025/10' } };
     }
     if (path.endsWith('/subscriptions/pro') && method === 'GET') return structuredClone(this.subscription);
     throw new Error(`FakePlay: unexpected ${method} ${path}`);

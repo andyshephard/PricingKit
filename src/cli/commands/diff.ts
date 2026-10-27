@@ -65,7 +65,23 @@ export interface PlanSummary {
   /** Offers that need a person (sync plans): the store can't re-price them, or they were held */
   manualActions: ManualAction[];
   /** Google Play offer ops: what each offer is after the op (eligibility, phases, tags, state) */
-  playOffers: Array<{ opId: string; kind: string; product: string; offerId: string; stateBefore: string | null; stateAfter: string | null; eligibility: string; phases: string[]; tags: string[] }>;
+  playOffers: Array<{
+    opId: string;
+    kind: string;
+    product: string;
+    offerId: string;
+    stateBefore: string | null;
+    stateAfter: string | null;
+    /** null for a create */
+    eligibilityBefore: string | null;
+    eligibility: string;
+    phases: string[];
+    /** null for a create */
+    tagsBefore: string[] | null;
+    tags: string[];
+    tagsAdded: string[];
+    tagsRemoved: string[];
+  }>;
 }
 
 /** A plan's contents, grouped by product, for reviewers and machines. */
@@ -109,6 +125,7 @@ export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
     manualActions: changeSet.manualActions ?? [],
     playOffers: changeSet.ops.filter(isOfferOp).filter(isPlayOfferOp).map((op) => {
       const state = (op.after ?? op.before)!;
+      const tagsBefore = op.before?.tags ?? null;
       return {
         opId: op.id,
         kind: op.kind,
@@ -116,9 +133,13 @@ export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
         offerId: op.target.offer.key,
         stateBefore: op.before?.state ?? null,
         stateAfter: op.after?.state ?? null,
+        eligibilityBefore: op.before ? describePlayTargeting(op.before.targeting) : null,
         eligibility: describePlayTargeting(state.targeting),
         phases: state.phases.map(describePlayPhase),
+        tagsBefore,
         tags: state.tags,
+        tagsAdded: op.after ? op.after.tags.filter((t) => !(tagsBefore ?? []).includes(t)) : [],
+        tagsRemoved: op.after && tagsBefore ? tagsBefore.filter((t) => !op.after!.tags.includes(t)) : [],
       };
     }),
   };
@@ -218,12 +239,15 @@ export function formatPlanSummary(summary: PlanSummary): string {
   };
   if (summary.playOffers.length > 0) {
     lines.push('', 'Play offers:');
+    const change = (before: string | null, after: string) => (before === null ? `${after} (new offer)` : before === after ? `${after} (unchanged)` : `${before} -> ${after}`);
+    const tags = (list: string[]) => (list.length ? list.join(', ') : 'none');
     for (const o of summary.playOffers) {
-      const state = o.stateBefore === o.stateAfter ? o.stateAfter ?? '' : `${o.stateBefore ?? 'new'} -> ${o.stateAfter ?? 'deleted'}`;
-      lines.push(`  ${o.opId} ${o.kind} ${o.offerId} on ${o.product} (${state})`);
-      lines.push(`    Eligibility: ${o.eligibility}`);
+      lines.push(`  ${o.opId} ${o.kind} ${o.offerId} on ${o.product}`);
+      lines.push(`    State: ${change(o.stateBefore, o.stateAfter ?? 'deleted')}`);
+      lines.push(`    Eligibility: ${change(o.eligibilityBefore, o.eligibility)}`);
       lines.push(`    Phases: ${o.phases.join('; ')}`);
-      lines.push(`    Tags: ${o.tags.length ? o.tags.join(', ') : 'none'}`);
+      const notes = [...o.tagsRemoved.map((t) => `removes ${t}`), ...(o.tagsBefore ? o.tagsAdded.map((t) => `adds ${t}`) : [])];
+      lines.push(`    Tags: ${change(o.tagsBefore ? tags(o.tagsBefore) : null, tags(o.tags))}${notes.length ? ` (${notes.join(', ')})` : ''}`);
     }
   }
   if (summary.byGroup.basePrices > 0 && summary.byGroup.offers > 0) {

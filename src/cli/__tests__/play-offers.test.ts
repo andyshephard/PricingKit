@@ -106,7 +106,7 @@ describe('pricingkit plan, diff, apply and undo with Play offers', () => {
     expect(r.code).toBe(2);
     expect(plan.ops.map((op) => op.kind)).toEqual(['createOffer', 'createOffer']);
     expect(r.stdout).toContain(`Plan hash: ${hash}`);
-    expect(r.stdout).toMatch(/Play offer annual-half-off on com\.example\.pro\/annual: create \(op-0001\), ACTIVE once applied/);
+    expect(r.stdout).toMatch(/Play offer annual-half-off on com\.example\.pro\/annual: create \(op-0001\)\n {2}State: ACTIVE \(new offer\)/);
     expect(r.stdout).toMatch(/Eligibility: Developer-determined/);
     expect(r.stdout).toMatch(/Eligibility: New customer acquisition: never had any subscription in the app/);
     expect(r.stdout).toMatch(/Tags: rc-customer-center, rc-ignore-offer/);
@@ -116,7 +116,7 @@ describe('pricingkit plan, diff, apply and undo with Play offers', () => {
 
     const diff = await run(['diff', 'plan.json'], { env: {}, cwd: tmp.dir });
     expect(diff.code).toBe(2);
-    expect(diff.stdout).toMatch(/Play offers:\n {2}op-0001 createOffer annual-half-off on google:subscription:com\.example\.pro\/annual \(new -> ACTIVE\)/);
+    expect(diff.stdout).toMatch(/Play offers:\n {2}op-0001 createOffer annual-half-off on google:subscription:com\.example\.pro\/annual\n {4}State: ACTIVE \(new offer\)/);
     expect(diff.stdout).toMatch(/phase 1: - -> 50% off/);
   });
 
@@ -154,6 +154,58 @@ describe('pricingkit plan, diff, apply and undo with Play offers', () => {
     const resumed = await run(['apply', 'plan.json', '--confirm', hash, '--resume', 'plan.run.json'], { env, cwd: tmp.dir });
     expect(resumed.code).toBe(0);
     expect(store.writes().filter((w) => w.endsWith('/offers'))).toHaveLength(2);
+  });
+
+  it('shows state, eligibility and tags before and after for a change, in the preview and in diff', async () => {
+    store.seed('annual', retentionOfferResource('DRAFT'));
+    const spec = structuredClone(offerSpec);
+    spec.offers = [{ ...spec.offers[0], tags: ['rc-customer-center'], eligibility: { type: 'play.targeting', rule: { type: 'acquisition', scope: 'thisSubscription' } } } as never];
+    writeJson('change.json', spec);
+    const refused = await run(['plan', '--spec', 'change.json', '--out', 'change-plan.json'], { env, cwd: tmp.dir });
+    expect(refused.code).toBe(1);
+    expect(refused.stdout).toMatch(/refused \(TAG_REMOVAL\)/);
+
+    (spec.offers[0] as Record<string, unknown>).play = { allowTagRemoval: true };
+    writeJson('change.json', spec);
+    const r = await run(['plan', '--spec', 'change.json', '--out', 'change-plan.json'], { env, cwd: tmp.dir });
+    expect(r.code).toBe(2);
+    expect(r.stdout).toMatch(/State: DRAFT \(unchanged\)/);
+    expect(r.stdout).toMatch(/Eligibility: Developer-determined .* -> New customer acquisition: never had this subscription/);
+    expect(r.stdout).toMatch(/Tags: rc-customer-center, rc-ignore-offer -> rc-customer-center \(removes rc-ignore-offer\)/);
+    expect(r.stdout).toMatch(/op-0001: removes tag rc-ignore-offer/);
+    const diff = await run(['diff', 'change-plan.json', '--json'], { env: {}, cwd: tmp.dir });
+    expect(JSON.parse(diff.stdout).playOffers[0]).toMatchObject({ stateBefore: 'DRAFT', stateAfter: 'DRAFT', tagsBefore: ['rc-customer-center', 'rc-ignore-offer'], tagsRemoved: ['rc-ignore-offer'], eligibilityBefore: expect.stringMatching(/^Developer-determined/) });
+    const text = await run(['diff', 'change-plan.json'], { env: {}, cwd: tmp.dir });
+    expect(text.stdout).toMatch(/Tags: rc-customer-center, rc-ignore-offer -> rc-customer-center \(removes rc-ignore-offer\)/);
+  });
+
+  it('exits 1 when Play prices a region further from its target than the threshold, leaving it out', async () => {
+    const spec = structuredClone(offerSpec);
+    // 33% of 59.99 = 19.80; the fake's Play price is 19.99 (1%); a 0.5% threshold refuses it
+    spec.offers = [{ ...spec.offers[0], id: 'annual-third', tags: [], pricing: { type: 'percentOfCurrent', percent: '33', basis: 'totalOverDuration', snap: 'nearest' }, territories: ['US'], play: { deviationThreshold: '0.005' } } as never];
+    writeJson('deviation.json', spec);
+    const r = await run(['plan', '--spec', 'deviation.json', '--out', 'deviation-plan.json'], { env, cwd: tmp.dir });
+    expect(r.code).toBe(1);
+    expect(r.stdout).toMatch(/ERROR: 1 region was left out because Play's price is further from the target/);
+    // The default threshold (5%) accepts it
+    (spec.offers[0] as Record<string, unknown>).play = undefined;
+    writeJson('deviation.json', spec);
+    expect((await run(['plan', '--spec', 'deviation.json', '--out', 'deviation-plan.json'], { env, cwd: tmp.dir })).code).toBe(2);
+  });
+
+  it('refuses any app but the pinned one (PRICINGKIT_EXPECT_PACKAGE / _BUNDLE_ID) before reading anything', async () => {
+    const { hash } = await planFile();
+    const reads = store.calls.length;
+    const pinned = await run(['apply', 'plan.json', '--confirm', hash, '--json'], { env: { ...env, PRICINGKIT_EXPECT_PACKAGE: 'com.example.other' }, cwd: tmp.dir });
+    expect(pinned.code).toBe(1);
+    expect(JSON.parse(pinned.stdout).error.code).toBe('APP_NOT_EXPECTED');
+    expect(store.calls).toHaveLength(reads);
+    const offers = await run(['offers', '--package-name', PKG, '--subscription', PRODUCT], { env: { ...env, PRICINGKIT_EXPECT_PACKAGE: 'com.example.other' }, cwd: tmp.dir });
+    expect(offers.code).toBe(1);
+    // The matching pin is fine; an App Store pin doesn't restrict Play
+    expect((await run(['offers', '--package-name', PKG, '--subscription', PRODUCT], { env: { ...env, PRICINGKIT_EXPECT_PACKAGE: PKG, PRICINGKIT_EXPECT_BUNDLE_ID: 'com.example.ios' }, cwd: tmp.dir })).code).toBe(0);
+    const apple = await run(['offers', '--bundle-id', 'com.example.app', '--subscription', '123'], { env: { PRICINGKIT_EXPECT_BUNDLE_ID: 'com.example.ios' }, cwd: tmp.dir });
+    expect(apple.stderr).toMatch(/is not the app PRICINGKIT_EXPECT_BUNDLE_ID allows/);
   });
 
   it('refuses a Play spec for another app than the one on the command line', async () => {

@@ -205,6 +205,8 @@ describe('plan', () => {
     expect(r.code).toBe(2);
     const plan = parseChangeSet(r.stdout);
     expect(basePriceOps(plan).map((op) => [op.target.territory, op.before?.amount, op.after?.amount])).toEqual([['GB', '24.99', '27.99']]);
+    // The regions version the PATCH will send is Play's current one, recorded in the plan for review
+    expect(basePriceOps(plan)[0].options).toEqual({ regionsVersion: '2025/10' });
     expect(play.calls.length).toBeGreaterThan(0);
     expect(play.writes()).toEqual([]);
   });

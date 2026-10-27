@@ -42,6 +42,8 @@ export interface DiffOptions {
   allowNewTerritories?: boolean;
   /** Apple: preserve existing subscribers' prices (default true) */
   preserveCurrentPrice?: boolean;
+  /** Google Play: regionsVersion.version the price edit sends, recorded in the plan for review */
+  regionsVersion?: string;
 }
 
 export interface DiffResult {
@@ -118,6 +120,7 @@ export function diffPrices(
       before,
       after,
       ...(platform === 'apple' ? { options: { preserveCurrentPrice: options.preserveCurrentPrice ?? true } } : {}),
+      ...(platform === 'google' && options.regionsVersion ? { options: { regionsVersion: options.regionsVersion } } : {}),
       ...(target.note ? { note: target.note } : {}),
     };
     ops.push({ ...op, idempotencyKey: computeIdempotencyKey(op) });

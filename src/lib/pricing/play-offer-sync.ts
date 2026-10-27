@@ -427,14 +427,34 @@ export function planPlayOfferSync(input: PlanPlayOfferSyncInput): OfferSyncPlan 
       ...(rule.deviationThreshold ? { deviationThreshold: rule.deviationThreshold } : {}),
     });
     const derived: Record<string, PlayPhaseRegionPrice> = {};
+    const tooLarge: string[] = [];
     for (const row of rows) {
       for (const f of row.flags) if (f.severity === 'warning') entry.warnings.push(`${row.region}: ${f.message}`);
       if (!row.ok || !row.config) {
+        // A discount the new base price no longer covers needs a decision, not a silent skip
+        if (row.flags.some((f) => f.code === 'DISCOUNT_TOO_LARGE')) {
+          tooLarge.push(row.region);
+          continue;
+        }
         const detail = row.flags.filter((f) => f.severity === 'error').map((f) => f.message).join('; ');
-        skipped.push({ product: rule.product, territory: row.region, offerKey: rule.key, reason: row.flags.some((f) => f.code === 'NO_CURRENT_PRICE') ? 'NOT_CONFIGURED' : row.flags.some((f) => f.code === 'NO_PLAY_PRICE') ? 'UNRESOLVED_PRICE_POINT' : 'INVALID_TARGET', detail: `${detail} (the offer keeps its current price here)` });
+        const reason: PlanSkip['reason'] = row.flags.some((f) => f.code === 'NO_CURRENT_PRICE')
+          ? 'NOT_CONFIGURED'
+          : row.flags.some((f) => f.code === 'NO_PLAY_PRICE')
+            ? 'UNRESOLVED_PRICE_POINT'
+            : row.flags.some((f) => f.code === 'DEVIATION_ABOVE_THRESHOLD')
+              ? 'DEVIATION_ABOVE_THRESHOLD'
+              : 'INVALID_TARGET';
+        skipped.push({ product: rule.product, territory: row.region, offerKey: rule.key, reason, detail: `${detail} (the offer keeps its current price here)` });
         continue;
       }
       derived[row.region] = row.config;
+    }
+    if (tooLarge.length > 0) {
+      manual(
+        'RULE_NOT_APPLICABLE',
+        `The amount off of the Play offer "${rule.key}" is no longer below the base price over the phase in ${listOf(tooLarge)}. Lower the discount for ${tooLarge.length === 1 ? 'that region' : 'those regions'} in the rules file (and the offer), or raise the base price; this plan leaves ${tooLarge.length === 1 ? 'it' : 'them'} as they are.`,
+        tooLarge
+      );
     }
     const after: PlayOfferState = {
       ...state,
@@ -448,6 +468,7 @@ export function planPlayOfferSync(input: PlanPlayOfferSyncInput): OfferSyncPlan 
       changes: changed.map((region) => ({ region, phase: phase.index + 1, before: state.phases[phase.index].regions[region] ?? null, after: after.phases[phase.index].regions[region] ?? null })),
     };
     if (changed.length === 0) {
+      if (entry.manual) continue;
       entry.action = rule.pricing.type === 'play.relativeDiscount' ? 'followsBase' : 'none';
       if (rule.pricing.type === 'play.absoluteDiscount' && used.length > 0) entry.warnings.push('The offer keeps the same amount off the new base prices; Play works the new offer prices out itself.');
       for (const t of Object.keys(derived).sort()) skipped.push({ product: rule.product, territory: t, offerKey: rule.key, reason: 'ALREADY_AT_TARGET' });

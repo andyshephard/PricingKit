@@ -175,6 +175,8 @@ export class GooglePlayApiError extends ApiError {
   errors: Array<{ reason?: string; message?: string }>;
   /** Google's canonical status string, e.g. "PERMISSION_DENIED" */
   googleStatus?: string;
+  /** Requests this call sent before failing (1 = no client-side retry); set by googlePlayFetch */
+  attempts?: number;
 
   constructor(init: {
     code: number;
@@ -183,6 +185,7 @@ export class GooglePlayApiError extends ApiError {
     errors?: Array<{ reason?: string; message?: string }>;
     retryable?: boolean;
     cause?: unknown;
+    attempts?: number;
   }) {
     super(init.message, {
       status: init.code,
@@ -196,6 +199,7 @@ export class GooglePlayApiError extends ApiError {
     this.code = init.code;
     this.errors = init.errors ?? [];
     this.googleStatus = init.googleStatus;
+    if (init.attempts !== undefined) this.attempts = init.attempts;
   }
 }
 
@@ -207,6 +211,13 @@ export interface GooglePlayFetchOptions {
   retry?: RetryOptions;
   /** Optional per-run budget; each attempt consumes one request */
   budget?: RequestBudget;
+  /**
+   * Retry only 429 (the request was not processed). For non-idempotent
+   * writes such as offer creates: after a 5xx, a timeout or a network error
+   * the write may have taken effect, so it is never sent again here; the
+   * error is final (retryable: false) and the caller re-reads to find out.
+   */
+  retryOnlyRateLimited?: boolean;
 }
 
 function buildUrl(path: string, query?: GooglePlayFetchOptions['query']): string {
@@ -229,7 +240,7 @@ export async function googlePlayFetch<T>(
   path: string,
   options: GooglePlayFetchOptions = {}
 ): Promise<T> {
-  const { method = 'GET', body, query, budget } = options;
+  const { method = 'GET', body, query, budget, retryOnlyRateLimited = false } = options;
   const retry = resolveRetryOptions(options.retry);
   const url = buildUrl(path, query);
 
@@ -265,15 +276,17 @@ export async function googlePlayFetch<T>(
       const normalised = toApiError(networkError, 'google');
       // fetch() rejections are network failures / timeouts: transient
       const retryable = normalised.retryable || networkError instanceof TypeError;
-      if (!retryable || isLastAttempt) {
+      if (!retryable || isLastAttempt || retryOnlyRateLimited) {
         throw new GooglePlayApiError({
           code: normalised.status === 500 ? 503 : normalised.status,
           message: normalised.message,
           errors: [{ reason: 'networkError', message: normalised.message }],
           // Non-transient failures are terminal; a transient one that ran out of
-          // attempts follows its 503/504 status so an outer retry policy still applies
-          retryable: retryable ? undefined : false,
+          // attempts follows its 503/504 status so an outer retry policy still applies.
+          // A write that may have been sent (retryOnlyRateLimited) is never retryable.
+          retryable: retryable && !retryOnlyRateLimited ? undefined : false,
           cause: networkError,
+          attempts: attempt + 1,
         });
       }
       const delay = computeBackoffDelay(attempt, retry.baseDelayMs, retry.maxDelayMs);
@@ -311,7 +324,8 @@ export async function googlePlayFetch<T>(
     const retryAfterTooLong =
       retryAfterMs !== undefined && retryAfterMs > retry.maxRetryAfterMs;
 
-    if (isRetryableStatus(code) && !retryAfterTooLong && !isLastAttempt) {
+    const mayRetry = retryOnlyRateLimited ? code === 429 : isRetryableStatus(code);
+    if (mayRetry && !retryAfterTooLong && !isLastAttempt) {
       // Wait at least Retry-After; jittered backoff spreads out concurrent retries
       const backoff = computeBackoffDelay(attempt, retry.baseDelayMs, retry.maxDelayMs);
       const delay = retryAfterMs !== undefined ? Math.max(retryAfterMs, backoff) : backoff;
@@ -329,8 +343,10 @@ export async function googlePlayFetch<T>(
       googleStatus: errInfo.status,
       errors: Array.isArray(errInfo.errors) ? errInfo.errors : [],
       // Only a too-long Retry-After is terminal; otherwise retryable follows the
-      // status so a caller's own retry policy (e.g. executeWithRateLimit) still applies
-      retryable: retryAfterTooLong ? false : undefined,
+      // status so a caller's own retry policy (e.g. executeWithRateLimit) still applies.
+      // A write limited to 429 retries that failed otherwise may have taken effect: terminal.
+      retryable: retryAfterTooLong || (retryOnlyRateLimited && code !== 429) ? false : undefined,
+      attempts: attempt + 1,
     });
     console.error(
       `[googlePlayFetch] ${method} ${url} → ${response.status}`,

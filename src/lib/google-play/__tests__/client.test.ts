@@ -206,6 +206,42 @@ describe('googlePlayFetch retries', () => {
     await expect(promise).resolves.toEqual({ ok: true });
   });
 
+  it('with retryOnlyRateLimited, retries 429 but never resends after a 5xx or a network error', async () => {
+    const rate = mockFetch([jsonResponse(429, googleError(429, 'Quota exceeded', 'RESOURCE_EXHAUSTED')), jsonResponse(200, { ok: true })]);
+    const ok = googlePlayFetch(credentials, '/offers', { method: 'POST', body: {}, retryOnlyRateLimited: true });
+    await expectBackoff(rate.apiCalls, 1_000);
+    await finish(ok);
+    await expect(ok).resolves.toEqual({ ok: true });
+    expect(rate.apiCalls).toHaveLength(2);
+
+    const server = mockFetch([jsonResponse(503, googleError(503, 'Backend error', 'UNAVAILABLE'))]);
+    const failed = googlePlayFetch(credentials, '/offers', { method: 'POST', body: {}, retryOnlyRateLimited: true });
+    const assertion = expect(failed).rejects.toMatchObject({ code: 503, retryable: false, attempts: 1 });
+    await settle(failed);
+    await assertion;
+    expect(server.apiCalls).toHaveLength(1);
+
+    const network = mockFetch([
+      () => {
+        throw new TypeError('fetch failed');
+      },
+    ]);
+    const lost = googlePlayFetch(credentials, '/offers', { method: 'POST', body: {}, retryOnlyRateLimited: true });
+    const lostAssertion = expect(lost).rejects.toMatchObject({ retryable: false, attempts: 1 });
+    await settle(lost);
+    await lostAssertion;
+    expect(network.apiCalls).toHaveLength(1);
+  });
+
+  it('records how many requests a call sent before it failed', async () => {
+    const { apiCalls } = mockFetch([jsonResponse(429, googleError(429, 'Quota exceeded', 'RESOURCE_EXHAUSTED')), jsonResponse(400, googleError(400, 'Invalid', 'INVALID_ARGUMENT'))]);
+    const promise = googlePlayFetch(credentials, '/offers', { method: 'POST', body: {}, retryOnlyRateLimited: true });
+    const assertion = expect(promise).rejects.toMatchObject({ code: 400, attempts: 2 });
+    await settle(promise);
+    await assertion;
+    expect(apiCalls).toHaveLength(2);
+  });
+
   it('retries network errors', async () => {
     const { apiCalls } = mockFetch([
       () => {

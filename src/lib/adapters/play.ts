@@ -270,10 +270,22 @@ export class PlayAdapter implements PlatformAdapter {
     return result;
   }
 
-  /** Price edits: one read and one PATCH for the whole batch. Each region removal: a read and a PATCH. */
+  /**
+   * Price edits: one read and one PATCH for the whole batch. Each region
+   * removal: a read and a PATCH. Plus one price conversion when the plan
+   * recorded no regions version.
+   */
   requestsNeeded(ops: BasePriceOp[]): number {
     const sets = ops.some((op) => op.kind === 'setPrice') ? 2 : 0;
-    return sets + 2 * ops.filter((op) => op.kind === 'removePrice').length;
+    const version = ops.some((op) => op.options?.regionsVersion) || this.regionsVersionRead ? 0 : 1;
+    return sets + 2 * ops.filter((op) => op.kind === 'removePrice').length + version;
+  }
+
+  /** The regions version a batch sends: the plan's (reviewed), else Play's current one */
+  private async baseRegionsVersion(ops: BasePriceOp[]): Promise<{ regionsVersion?: string }> {
+    const recorded = ops.find((op) => op.options?.regionsVersion)?.options?.regionsVersion;
+    const regionsVersion = recorded ?? (await this.fetchRegionsVersion());
+    return regionsVersion ? { regionsVersion } : {};
   }
 
   batchKey(op: BasePriceOp): string {
@@ -299,11 +311,12 @@ export class PlayAdapter implements PlatformAdapter {
     if (sets.length > 0) {
       try {
         if (product.type === 'subscription') {
+          const version = await this.baseRegionsVersion(ops);
           const configs: RegionalBasePlanConfig[] = sets.map(({ op }) => ({
             regionCode: op.target.territory,
             price: toMoney(op.after!.currency, op.after!.amount),
           } as RegionalBasePlanConfig));
-          await updateBasePlanPrices(this.credentials, this.packageName, product.productId, product.basePlanId, configs, this.ctx);
+          await updateBasePlanPrices(this.credentials, this.packageName, product.productId, product.basePlanId, configs, this.ctx, version);
         } else {
           const prices: Record<string, Money> = {};
           for (const { op } of sets) prices[op.target.territory] = toMoney(op.after!.currency, op.after!.amount);
@@ -318,7 +331,7 @@ export class PlayAdapter implements PlatformAdapter {
     for (const { op, i } of ops.map((op, i) => ({ op, i })).filter(({ op }) => op.kind === 'removePrice')) {
       try {
         if (product.type === 'subscription') {
-          await deleteBasePlanRegionPrice(this.credentials, this.packageName, product.productId, product.basePlanId, op.target.territory, this.ctx);
+          await deleteBasePlanRegionPrice(this.credentials, this.packageName, product.productId, product.basePlanId, op.target.territory, this.ctx, await this.baseRegionsVersion([op]));
         } else {
           await deleteRegionPrice(this.credentials, this.packageName, product.productId, op.target.territory, this.ctx);
         }
@@ -551,32 +564,47 @@ export class PlayAdapter implements PlatformAdapter {
     const offerId = op.target.offer.key;
     switch (op.kind) {
       case 'createOffer': {
+        // What the run log records, so a resume and an undo know what may exist:
+        //   createSent      the create POST went out (it may have taken effect whatever the answer)
+        //   created         true once Play confirmed the offer exists
+        //   activationSent  the activate POST went out
+        //   activated       true / false (Play refused it) / 'unknown' (no answer)
         const after = op.after!;
-        let created: Record<string, unknown> = {};
+        let record: Record<string, unknown> = context.pending?.includes('activate') ? { created: true } : {};
         if (!context.pending?.includes('activate')) {
           try {
             await createSubscriptionOffer(this.credentials, id, playOfferResource(id, after), op.regionsVersion!, this.ctx);
-            created = { created: true };
+            record = { createSent: true, created: true };
           } catch (error) {
-            // A retried create whose first attempt took effect: the offer exists. Use it only if it is exactly this one.
-            if (getErrorStatus(error) !== 409) throw error;
-            const existing = await getSubscriptionOffer(this.credentials, id, offerId, this.ctx);
-            const read = existing ? parsePlayOffer(existing, id) : undefined;
-            if (!read?.play || (read.problems?.length ?? 0) > 0 || !samePlayOfferContent(read.play.offer, after)) throw error;
-            created = { created: true, foundAfterConflict: true };
+            // Creates retry 429 only, so a 409 means the offer existed before this request (an earlier
+            // attempt took effect). Use it only if it is exactly this one.
+            if (getErrorStatus(error) === 409) {
+              const existing = await getSubscriptionOffer(this.credentials, id, offerId, this.ctx).catch(() => null);
+              const read = existing ? parsePlayOffer(existing, id) : undefined;
+              if (read?.play && (read.problems?.length ?? 0) === 0 && samePlayOfferContent(read.play.offer, after)) {
+                record = { createSent: true, created: true, foundAfterConflict: true };
+              }
+            }
+            if (!record.created) {
+              // Whatever the status, the create may have applied: the next read (or a resume) decides
+              Object.assign(error as object, { partialResponse: { createSent: true, activationSent: false } });
+              throw error;
+            }
           }
         }
         if (after.state === 'ACTIVE') {
           try {
             await setSubscriptionOfferActive(this.credentials, id, offerId, true, this.ctx);
           } catch (error) {
-            // The draft exists: say so, so the run log (and a resume) knows only the activation is left
-            if (created.created) Object.assign(error as object, { partialResponse: { ...created, activated: false } });
+            // The draft exists. A refusal (4xx) means it is still a draft; no answer means it may be either.
+            const status = getErrorStatus(error);
+            const activated = status !== undefined && status < 500 ? false : 'unknown';
+            Object.assign(error as object, { partialResponse: { ...record, activationSent: true, activated } });
             throw error;
           }
-          return { ...created, activated: true, regions: Object.keys(after.regions).length };
+          return { ...record, activationSent: true, activated: true, regions: Object.keys(after.regions).length };
         }
-        return { ...created, regions: Object.keys(after.regions).length };
+        return { ...record, regions: Object.keys(after.regions).length };
       }
       case 'updateOffer':
       case 'updateOfferPrices': {

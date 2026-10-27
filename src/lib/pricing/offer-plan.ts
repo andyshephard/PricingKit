@@ -155,7 +155,9 @@ export type OfferRefusalCode =
   | 'OFFER_UNREADABLE'
   | 'MISSING_SETTINGS'
   | 'UNSUPPORTED_PRICING'
-  | 'NO_PRICES';
+  | 'NO_PRICES'
+  /** Play: the spec leaves out a tag the offer has, without play.allowTagRemoval */
+  | 'TAG_REMOVAL';
 
 export interface OfferPlanEntry {
   product: ProductRef;

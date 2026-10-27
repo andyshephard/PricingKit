@@ -59,6 +59,8 @@ export interface BasePriceOp {
   options?: {
     /** Apple: keep existing subscribers on their current price (default true) */
     preserveCurrentPrice?: boolean;
+    /** Google Play: the regionsVersion.version the edit sends (planned, so it is reviewed) */
+    regionsVersion?: string;
   };
   /** Same change -> same key; the executor and run log use it to detect repeats */
   idempotencyKey: string;
@@ -109,7 +111,9 @@ export interface PlanSkip {
     | 'UNRESOLVED_PRICE_POINT'
     | 'NO_TARGET'
     | 'INVALID_TARGET'
-    | 'AMBIGUOUS_STATE';
+    | 'AMBIGUOUS_STATE'
+    /** Play percentOfCurrent: Play's price is further from the target than the deviation threshold */
+    | 'DEVIATION_ABOVE_THRESHOLD';
   detail?: string;
 }
 
@@ -203,7 +207,7 @@ const basePriceOpSchema = z
     target: z.object({ product: productRefSchema, territory: territorySchema }).strict(),
     before: priceValueSchema.nullable(),
     after: priceValueSchema.nullable(),
-    options: z.object({ preserveCurrentPrice: z.boolean().optional() }).strict().optional(),
+    options: z.object({ preserveCurrentPrice: z.boolean().optional(), regionsVersion: z.string().min(1).max(40).optional() }).strict().optional(),
     idempotencyKey: z.string().min(1),
     note: z.string().optional(),
     dependsOn: z.array(z.string().min(1)).min(1).optional(),
@@ -226,7 +230,7 @@ const skipSchema = z
     product: productRefSchema,
     territory: z.string(),
     offerKey: z.string().optional(),
-    reason: z.enum(['OFFER_CONFLICT', 'ALREADY_AT_TARGET', 'NOT_CONFIGURED', 'CURRENCY_MISMATCH', 'UNRESOLVED_PRICE_POINT', 'NO_TARGET', 'INVALID_TARGET', 'AMBIGUOUS_STATE']),
+    reason: z.enum(['OFFER_CONFLICT', 'ALREADY_AT_TARGET', 'NOT_CONFIGURED', 'CURRENCY_MISMATCH', 'UNRESOLVED_PRICE_POINT', 'NO_TARGET', 'INVALID_TARGET', 'AMBIGUOUS_STATE', 'DEVIATION_ABOVE_THRESHOLD']),
     detail: z.string().optional(),
   })
   .strict();
@@ -319,6 +323,7 @@ export function checkChangeSetRules(changeSet: ChangeSet): string[] {
     if (deletes && base.before === null) problems.push(`${where}: ${base.kind} must say what it removes (before)`);
     if (!deletes && base.after === null) problems.push(`${where}: ${base.kind} needs an after price`);
 
+    if (base.options?.regionsVersion && base.platform !== 'google') problems.push(`${where}: options.regionsVersion is Google Play-only`);
     if (base.kind === 'removePrice' && base.platform !== 'google') problems.push(`${where}: removePrice is Google-only (Apple can't remove a current price)`);
     if ((base.kind === 'schedulePrice' || base.kind === 'deleteScheduled') && base.platform !== 'apple') {
       problems.push(`${where}: ${base.kind} is Apple-only`);

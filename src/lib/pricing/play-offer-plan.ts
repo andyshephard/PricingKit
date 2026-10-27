@@ -43,6 +43,7 @@ import {
   describePlayPhase,
   describePlayTargeting,
   playDurationRatio,
+  trimPercent,
   samePlayOfferContent,
   samePlayPhaseTerms,
   sameTargeting,
@@ -67,6 +68,7 @@ export type PlayFlagCode =
   | 'DISCOUNT_TOO_LARGE'
   | 'NO_AMOUNT'
   | 'SPAN_NOT_COMPARABLE'
+  | 'INVALID_AMOUNT'
   | 'DEVIATION_ABOVE_THRESHOLD';
 
 export interface PlayFlag {
@@ -121,6 +123,11 @@ export interface PlayDerivationInput {
 }
 
 const TARGET_SCALE = 6;
+
+/** At most the currency's fraction digits (2, or 0 for JPY, KRW, ...) */
+function fitsCurrency(amount: Decimal, scale: number): boolean {
+  return isDecimalString(amount) && (normalizeDecimal(amount).split('.')[1]?.length ?? 0) <= scale;
+}
 
 function flag(code: PlayFlagCode, severity: PlayFlag['severity'], message: string): PlayFlag {
   return { code, severity, message };
@@ -254,6 +261,10 @@ export function derivePlayPhasePrices(input: PlayDerivationInput): PlayPreviewRo
           row.flags.push(flag('NO_AMOUNT', 'error', `The rule gives no amount off for ${region}`));
           return row;
         }
+        if (!fitsCurrency(amount, scale)) {
+          row.flags.push(flag('INVALID_AMOUNT', 'error', `${amount} ${currency} has more decimals than ${currency} allows (${scale})`));
+          return row;
+        }
         row.config = { type: 'absoluteDiscount', currency, amount: normalizeDecimal(amount) };
         if (row.proratedBase !== null) {
           row.offerPrice = roundDecimal(subtractDecimal(row.proratedBase, amount), scale);
@@ -268,6 +279,10 @@ export function derivePlayPhasePrices(input: PlayDerivationInput): PlayPreviewRo
         const amount = pricing.prices[region];
         if (amount === undefined) {
           row.flags.push(flag('NO_AMOUNT', 'error', `The rule gives no price for ${region}`));
+          return row;
+        }
+        if (!fitsCurrency(amount, scale)) {
+          row.flags.push(flag('INVALID_AMOUNT', 'error', `${amount} ${currency} has more decimals than ${currency} allows (${scale})`));
           return row;
         }
         row.config = { type: 'price', currency, amount: normalizeDecimal(amount) };
@@ -295,7 +310,8 @@ export function derivePlayPhasePrices(input: PlayDerivationInput): PlayPreviewRo
         row.deviation = subtractDecimal(amount, row.exactTarget);
         row.deviationRatio = deviationRatio(row.exactTarget, amount);
         if (compareDecimal(row.deviationRatio, threshold) > 0) {
-          row.flags.push(flag('DEVIATION_ABOVE_THRESHOLD', 'warning', `Play's price ${amount} is ${row.deviationRatio} away from the target ${row.exactTarget} (threshold ${threshold})`));
+          // An error on Play: the region is left out rather than priced far from its rule (raise deviationThreshold to accept it)
+          row.flags.push(flag('DEVIATION_ABOVE_THRESHOLD', 'error', `Play's price ${amount} is ${row.deviationRatio} away from the target ${row.exactTarget} (threshold ${threshold}); left out`));
         }
         break;
       }
@@ -325,6 +341,12 @@ export interface PlayOfferPreview {
   phases: string[];
   tags: string[];
   regionsVersion?: string;
+  /** The offer as it is now (absent for a create): state, eligibility and tags before the plan */
+  before?: { state: PlayOfferState['state']; eligibility: string; targeting: PlayTargeting; tags: string[] };
+  /** Tags the plan adds and removes */
+  tagChanges: { added: string[]; removed: string[] };
+  /** Set when the plan changes the eligibility */
+  eligibilityChange?: { from: string; to: string };
   /** Per region: base price, offer price, discount */
   rows: PlayPreviewRow[];
   /** Regions whose offer price the plan changes, with before and after */
@@ -368,6 +390,7 @@ function skipReason(row: PlayPreviewRow): PlanSkip['reason'] {
   if (codes.includes('CURRENCY_MISMATCH')) return 'CURRENCY_MISMATCH';
   if (codes.includes('NO_PLAY_PRICE')) return 'UNRESOLVED_PRICE_POINT';
   if (codes.includes('NO_AMOUNT')) return 'NO_TARGET';
+  if (codes.includes('DEVIATION_ABOVE_THRESHOLD')) return 'DEVIATION_ABOVE_THRESHOLD';
   return 'INVALID_TARGET';
 }
 
@@ -392,15 +415,23 @@ function makePlayOp(
   return { ...op, idempotencyKey: computePlayOfferIdempotencyKey(op) };
 }
 
-function previewOf(state: PlayOfferState, rows: PlayPreviewRow[], regionsVersion: string | undefined): PlayOfferPreview {
+function previewOf(state: PlayOfferState, rows: PlayPreviewRow[], regionsVersion: string | undefined, before?: PlayOfferState): PlayOfferPreview {
+  const eligibility = describePlayTargeting(state.targeting);
+  const was = before ? describePlayTargeting(before.targeting) : undefined;
   return {
     offerId: state.key,
     state: state.state,
-    eligibility: describePlayTargeting(state.targeting),
+    eligibility,
     targeting: state.targeting,
     phases: state.phases.map(describePlayPhase),
     tags: state.tags,
     ...(regionsVersion ? { regionsVersion } : {}),
+    ...(before ? { before: { state: before.state, eligibility: was!, targeting: before.targeting, tags: before.tags } } : {}),
+    tagChanges: {
+      added: state.tags.filter((t) => !before?.tags.includes(t)),
+      removed: before ? before.tags.filter((t) => !state.tags.includes(t)) : [],
+    },
+    ...(before && !sameTargeting(before.targeting, state.targeting) ? { eligibilityChange: { from: was!, to: eligibility } } : {}),
     rows,
     changes: [],
   };
@@ -448,7 +479,7 @@ function planPlayOne(input: PlayOfferPlanInput): { entry: OfferPlanEntry; op?: O
     base: input.base,
     territories: spec.territories,
     ...(input.snapped ? { snapped: input.snapped } : {}),
-    ...(input.deviationThreshold ? { deviationThreshold: input.deviationThreshold } : {}),
+    ...(spec.play?.deviationThreshold ?? input.deviationThreshold ? { deviationThreshold: spec.play?.deviationThreshold ?? input.deviationThreshold } : {}),
   });
   for (const row of rows) {
     for (const f of row.flags) if (f.severity === 'warning') entry.warnings.push(`${row.region}: ${f.message}`);
@@ -470,6 +501,11 @@ function planPlayOne(input: PlayOfferPlanInput): { entry: OfferPlanEntry; op?: O
   if (closed.length) entry.warnings.push(`${closed.join(', ')}: the base plan is closed to new subscribers there, so the offer is too (it follows the base plan)`);
   if (pricing.type === 'percentOfCurrent') {
     entry.warnings.push("Play has no price ladder: each target is made a valid price with Play's own price conversion (convertRegionPrices), so the rule's snap mode doesn't apply.");
+  }
+  if (pricing.type === 'play.relativeDiscount' && compareDecimal(normalizeDecimal(pricing.fraction), '0.5') !== 0) {
+    entry.warnings.push(
+      `relativeDiscount ${normalizeDecimal(pricing.fraction)} is sent as the share taken off (${trimPercent(pricing.fraction)}% off), as the Android Publisher reference describes it ("a value of 0.8 represents an 80% discount"). Not yet confirmed on a test app: check the offer price in Play Console after applying.`
+    );
   }
   if (pricing.type === 'play.absoluteDiscount' || pricing.type === 'play.relativeDiscount') {
     entry.warnings.push('Play works out discounted prices itself; the offer prices shown are estimates (rounded to the currency unit).');
@@ -512,7 +548,17 @@ function planPlayOne(input: PlayOfferPlanInput): { entry: OfferPlanEntry; op?: O
     // Existing regions keep their availability; regions the spec adds follow the base plan's
     regions: { ...target.regions, ...current.regions },
   };
-  entry.play = { ...previewOf(merged, rows, regionsVersion), state: merged.state };
+  entry.play = previewOf(merged, rows, regionsVersion, current);
+  const { added, removed } = entry.play.tagChanges;
+  if (removed.length > 0 && !spec.play?.allowTagRemoval) {
+    return refuse(
+      'TAG_REMOVAL',
+      `The spec leaves out tag${removed.length > 1 ? 's' : ''} ${removed.join(', ')} that the Play offer "${spec.id}" has. Tags tell the app how to treat the offer (e.g. whether a paywall may show it), so PricingKit doesn't drop them silently: add them to the spec's tags, or set play.allowTagRemoval: true to remove them.`
+    );
+  }
+  for (const tag of removed) entry.warnings.push(`removes tag ${tag}`);
+  for (const tag of added) entry.warnings.push(`adds tag ${tag}`);
+  if (entry.play.eligibilityChange) entry.warnings.push(`eligibility ${entry.play.eligibilityChange.from} → ${entry.play.eligibilityChange.to}`);
   if (samePlayOfferContent(current, merged)) {
     if (target.state === 'ACTIVE' && current.state !== 'ACTIVE') {
       entry.action = 'activate';
@@ -525,7 +571,7 @@ function planPlayOne(input: PlayOfferPlanInput): { entry: OfferPlanEntry; op?: O
     for (const r of ok) skipped.push({ product, territory: r.region, offerKey: spec.id, reason: 'ALREADY_AT_TARGET' });
     return { entry, skipped, warnings: entry.warnings };
   }
-  const pricesOnly = sameTargeting(current.targeting, targeting) && current.tags.join() === target.tags.join();
+  const pricesOnly = sameTargeting(current.targeting, targeting) && added.length === 0 && removed.length === 0;
   if (!pricesOnly) {
     entry.warnings.push("Changing an existing offer's eligibility or tags: whether Play accepts this for an active offer is not confirmed; Play's refusal is shown if it doesn't.");
   }
@@ -652,7 +698,7 @@ export function planPlayOfferLifecycle(input: PlayOfferLifecycleInput): OfferPla
     changes: [],
     refusals: [],
     warnings,
-    play: { ...previewOf(op.after ?? current, [], input.regionsVersion), changes: [] },
+    play: previewOf(op.after ?? current, [], input.regionsVersion, current),
   };
   return finishPlan(
     { app: input.app, id: input.id ?? `offer-${input.action}-${(input.createdAt ?? new Date().toISOString()).replace(/[^0-9]/g, '').slice(0, 14)}`, ...(input.createdAt ? { createdAt: input.createdAt } : {}) },

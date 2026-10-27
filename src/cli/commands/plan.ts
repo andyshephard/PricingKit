@@ -71,12 +71,16 @@ export async function planFromSpec(spec: PricingSpec, reader: PriceReader, creat
         ...(price.deviation !== '0' ? { note: `target ${price.target} ${price.currency}, snapped by ${price.deviation} (${price.deviationRatio})` } : {}),
       };
     }
+    // Google Play base plan edits send a regions version: record Play's current one in the plan
+    const regionsVersion =
+      entry.product.platform === 'google' && entry.product.type === 'subscription' && Object.keys(targets).length > 0 ? await reader.fetchRegionsVersion?.() : undefined;
     products.push({
       state,
       targets,
       options: {
         ...(entry.allowNewTerritories !== undefined ? { allowNewTerritories: entry.allowNewTerritories } : {}),
         ...(entry.preserveCurrentPrice !== undefined ? { preserveCurrentPrice: entry.preserveCurrentPrice } : {}),
+        ...(regionsVersion ? { regionsVersion } : {}),
       },
     });
   }
@@ -141,6 +145,20 @@ function specKind(text: string): unknown {
   }
 }
 
+/** Regions left out because Play's price was further from the target than the deviation threshold */
+export function deviationSkips(changeSet: ChangeSet): PlanSkip[] {
+  return (changeSet.skipped ?? []).filter((s) => s.reason === 'DEVIATION_ABOVE_THRESHOLD');
+}
+
+function deviationNote(skips: PlanSkip[]): string[] {
+  if (skips.length === 0) return [];
+  return [
+    '',
+    `ERROR: ${skips.length} ${skips.length === 1 ? 'region was' : 'regions were'} left out because Play's price is further from the target than the deviation threshold (${skips.map((s) => `${s.offerKey ?? ''} ${s.territory}`.trim()).join(', ')}).`,
+    'Review them; raise the threshold (play.deviationThreshold in the spec, deviationThreshold in a rules file) to accept those prices. Exit code 1.',
+  ];
+}
+
 /** The read side of offer planning only: no way to reach applyOffer */
 export interface OfferPlanner {
   planOffers(input: { app: OfferPlanSpec['app']; offers: OfferPlanSpec['offers']; createdAt?: string; description?: string }): Promise<OfferPlan>;
@@ -163,12 +181,16 @@ const ACTIONS: Record<OfferPlanEntry['action'], string> = {
 export function formatPlayOfferPreview(entry: OfferPlanEntry): string[] {
   const p = entry.play;
   if (!p) return [];
+  const tags = (list: string[]) => (list.length ? list.join(', ') : 'none');
+  const change = (before: string | undefined, after: string) => (before === undefined ? `${after} (new offer)` : before === after ? `${after} (unchanged)` : `${before} -> ${after}`);
+  const tagNotes = [...p.tagChanges.removed.map((t) => `removes ${t}`), ...(p.before ? p.tagChanges.added.map((t) => `adds ${t}`) : [])];
   const lines = [
     '',
-    `Play offer ${p.offerId} on ${productLabel(entry.product)}: ${ACTIONS[entry.action]}${entry.opId ? ` (${entry.opId})` : ''}, ${p.state} once applied`,
-    `  Eligibility: ${p.eligibility}`,
+    `Play offer ${p.offerId} on ${productLabel(entry.product)}: ${ACTIONS[entry.action]}${entry.opId ? ` (${entry.opId})` : ''}`,
+    `  State: ${change(p.before?.state, p.state)}`,
+    `  Eligibility: ${change(p.before?.eligibility, p.eligibility)}`,
     `  Phases: ${p.phases.join('; ')}`,
-    `  Tags: ${p.tags.length ? p.tags.join(', ') : 'none'}`,
+    `  Tags: ${change(p.before ? tags(p.before.tags) : undefined, tags(p.tags))}${tagNotes.length ? ` (${tagNotes.join(', ')})` : ''}`,
     ...(p.regionsVersion ? [`  Regions version: ${p.regionsVersion}`] : []),
   ];
   if (p.rows.length > 0) {
@@ -221,9 +243,10 @@ async function planOffersCommand(ctx: CommandContext, specText: string, out: str
   if (plan.hash !== changeSetHash(plan.changeSet)) throw new CliError('Internal error: plan hash mismatch');
   const written = await writeOutputFile(ctx, out, serializeChangeSet(plan.changeSet));
   const refused = plan.entries.filter((e) => e.action === 'refused').length;
-  const text = [formatOfferPlan(plan), '', `Plan written to ${written}`, 'Dry run: nothing was changed in the store.'].join('\n');
+  const deviating = deviationSkips(plan.changeSet);
+  const text = [formatOfferPlan(plan), '', `Plan written to ${written}`, 'Dry run: nothing was changed in the store.', ...deviationNote(deviating)].join('\n');
   return {
-    exitCode: refused > 0 ? EXIT_ERROR : plan.changeSet.ops.length > 0 ? EXIT_CHANGES : EXIT_OK,
+    exitCode: refused > 0 || deviating.length > 0 ? EXIT_ERROR : plan.changeSet.ops.length > 0 ? EXIT_CHANGES : EXIT_OK,
     json: { changeSet: plan.changeSet, hash: plan.hash, entries: plan.entries },
     text,
   };
@@ -319,6 +342,7 @@ async function planSyncCommand(ctx: CommandContext, rulesPath: string, specPath:
   const stateWritten =
     stateOut && basePlan ? await writeOutputFile(ctx, stateOut, serializeStateSnapshot(createStateSnapshot(rules.app, basePlan.states, createdAt))) : undefined;
   const hasBaseOps = plan.changeSet.ops.some((op) => !isOfferOp(op));
+  const deviating = deviationSkips(plan.changeSet);
   const text = [
     formatSyncPlan(plan),
     '',
@@ -332,9 +356,10 @@ async function planSyncCommand(ctx: CommandContext, rulesPath: string, specPath:
           `then run "pricingkit plan --rules ${rulesPath}" to re-derive the offers against the new prices and apply that plan.`,
         ]
       : []),
+    ...deviationNote(deviating),
   ].join('\n');
   return {
-    exitCode: plan.changeSet.ops.length > 0 || plan.manualActions.length > 0 ? EXIT_CHANGES : EXIT_OK,
+    exitCode: deviating.length > 0 ? EXIT_ERROR : plan.changeSet.ops.length > 0 || plan.manualActions.length > 0 ? EXIT_CHANGES : EXIT_OK,
     json: { changeSet: plan.changeSet, hash: plan.hash, entries: plan.entries, manualActions: plan.manualActions },
     text,
   };

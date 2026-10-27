@@ -183,6 +183,8 @@ Credentials come only from environment variables:
   App Store Connect: ASC_KEY_ID, ASC_ISSUER_ID, and one of ASC_PRIVATE_KEY (the .p8 contents),
                      ASC_PRIVATE_KEY_HEX (the same, hex-encoded) or ASC_PRIVATE_KEY_PATH
   Google Play:       GOOGLE_APPLICATION_CREDENTIALS (key file path) or GOOGLE_SERVICE_ACCOUNT_JSON (key JSON)
+Optional pins: PRICINGKIT_EXPECT_BUNDLE_ID / PRICINGKIT_EXPECT_PACKAGE refuse any other app
+(from a flag, spec, rules file or plan) before anything is read.
 
 Run "pricingkit help <command>" for a command's options.`;
 
@@ -206,10 +208,13 @@ The spec is a pricingkit.spec (base prices) or a pricingkit.offerPlanSpec
 (offers: App Store offers to create or re-price, several products in one
 spec, each offer with its own key; or, for a Google Play app, play.offer
 offers to create, change or activate on base plans, previewed per region with
-base price, offer price and discount, plus each offer's eligibility, phases
-and tags). For an offer plan the output also lists refused offers and the
-plan hash to pass to "pricingkit apply --confirm"; exit code 1 when an offer
-was refused.
+base price, offer price and discount, plus each offer's state, eligibility
+and tags before and after, and its phases). For an offer plan the output also
+lists refused offers and the plan hash to pass to "pricingkit apply
+--confirm"; exit code 1 when an offer was refused (e.g. a Play spec that
+leaves out a tag the offer has, without play.allowTagRemoval) or a Play region
+was left out because Play's price is further from the percent-of-current
+target than the deviation threshold (play.deviationThreshold, default 0.05).
 
 Reads the products in the spec, turns its targets into per-territory prices,
 snaps them to valid store prices and writes the ChangeSet (default

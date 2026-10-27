@@ -7,6 +7,8 @@ import {
   createRun,
   derivePlayPhasePrices,
   invertPlayOfferOp,
+  buildUndoChangeSet,
+  planPlayOfferSync,
   parseChangeSet,
   parseRun,
   planPlayOfferChanges,
@@ -129,7 +131,12 @@ describe('undoing Play offer ops', () => {
   it('maps every op to the op that restores it, with what it cannot restore', () => {
     expect(invertPlayOfferOp(op('createOffer', null, state()))).toMatchObject({ op: { kind: 'deactivateOffer', after: { state: 'INACTIVE' } }, caveat: expect.stringMatching(/only draft offers/) });
     expect(invertPlayOfferOp(op('createOffer', null, state({ state: 'DRAFT' })))).toMatchObject({ op: { kind: 'deleteOffer' } });
-    expect(invertPlayOfferOp(op('createOffer', null, state()), { activated: false })).toMatchObject({ op: { kind: 'deleteOffer', before: { state: 'DRAFT' } } });
+    // A failed create: what the run log says was sent decides
+    const failed = (response: Record<string, unknown>) => invertPlayOfferOp(op('createOffer', null, state()), { failed: true, response });
+    expect(failed({ createSent: true, created: true, activationSent: true, activated: false })).toMatchObject({ op: { kind: 'deleteOffer', before: { state: 'DRAFT' } } });
+    expect(failed({ createSent: true, activationSent: false })).toMatchObject({ op: { kind: 'deleteOffer', before: { state: 'DRAFT' } }, caveat: expect.stringMatching(/at most a draft/) });
+    expect(failed({ createSent: true, created: true, activationSent: true, activated: 'unknown' })).toEqual({ notReversible: expect.stringMatching(/may be ACTIVE or still a draft/) });
+    expect(failed({})).toEqual({ notReversible: expect.stringMatching(/doesn't say how far/) });
     expect(invertPlayOfferOp(op('activateOffer', state({ state: 'INACTIVE' }), state()))).toMatchObject({ op: { kind: 'deactivateOffer', after: { state: 'INACTIVE' } } });
     expect(invertPlayOfferOp(op('activateOffer', state({ state: 'DRAFT' }), state())).caveat).toMatch(/can't return to draft/);
     expect(invertPlayOfferOp(op('deactivateOffer', state(), state({ state: 'INACTIVE' })))).toMatchObject({ op: { kind: 'activateOffer', after: { state: 'ACTIVE' } } });
@@ -213,5 +220,96 @@ describe('planning Play offers (pure)', () => {
     const refused = planPlayOfferChanges({ app, inputs: [{ ...input, existing: [store(twoPhases)] }] });
     expect(refused.entries[0].refusals[0].code).toBe('TERMS_IMMUTABLE');
     expect(refused.changeSet.ops).toEqual([]);
+  });
+});
+
+describe('review fixes', () => {
+  it('keeps a failed op in undo after client-side retries, even when the last answer was a 4xx', () => {
+    const changeSet: ChangeSet = {
+      schemaVersion: 1,
+      kind: 'pricingkit.changeset',
+      id: 'p',
+      createdAt: '2030-01-01T00:00:00Z',
+      app,
+      ops: [{ ...op('deactivateOffer', state(), state({ state: 'INACTIVE' })), id: 'op-0001' }],
+    };
+    const failedRun = (clientAttempts?: number) => {
+      const run = createRun(changeSet, { now: '2030-01-01T00:00:00Z' });
+      run.ops[0] = { ...run.ops[0], status: 'failed', attempts: 1, error: { message: 'refused', status: 400, ...(clientAttempts ? { clientAttempts } : {}) } };
+      return run;
+    };
+    // One request, refused: it changed nothing, so there is nothing to undo
+    expect(buildUndoChangeSet(changeSet, failedRun(1)).ops).toEqual([]);
+    // The client retried (a 429, then the 400): an earlier request may have taken effect
+    expect(buildUndoChangeSet(changeSet, failedRun(2)).ops).toMatchObject([{ kind: 'activateOffer' }]);
+    expect(parseRun(serializeRun(failedRun(2))).ops[0].error?.clientAttempts).toBe(2);
+  });
+
+  it('warns that relative discounts other than 50% are sent as the share taken off (unconfirmed)', () => {
+    const plan = (fraction: string) =>
+      planPlayOfferChanges({
+        app,
+        inputs: [
+          {
+            spec: { id: 'x-off', kind: 'play.offer', productRef: product, mode: 'PAY_UP_FRONT', duration: 'P1Y', pricing: { type: 'play.relativeDiscount', fraction }, eligibility: { type: 'play.targeting', rule: { type: 'developerDetermined' } }, territories: 'all', syncWithBase: false },
+            billingPeriod: 'P1Y',
+            base,
+            existing: [],
+            regionsVersion: '2025/03',
+          },
+        ],
+      }).entries[0].warnings.join('\n');
+    expect(plan('0.3')).toMatch(/relativeDiscount 0\.3 is sent as the share taken off \(30% off\).*0\.8 represents an 80% discount.*Not yet confirmed/);
+    expect(plan('0.5')).not.toMatch(/share taken off/);
+  });
+
+  it("refuses amounts with more decimals than the region's currency allows", () => {
+    const rows = derivePlayPhasePrices({ pricing: { type: 'fixed', prices: { US: '29.999', JP: '4900.5' } }, phase: { duration: 'P1Y', recurrenceCount: 1 }, billingPeriod: 'P1Y', base, territories: 'all' });
+    expect(rows.map((r) => [r.region, r.flags[0]?.code])).toEqual([
+      ['JP', 'INVALID_AMOUNT'],
+      ['US', 'INVALID_AMOUNT'],
+    ]);
+    const absolute = derivePlayPhasePrices({ pricing: { type: 'play.absoluteDiscount', amounts: { JP: '100.5' } }, phase: { duration: 'P1Y', recurrenceCount: 1 }, billingPeriod: 'P1Y', base, territories: 'all' });
+    expect(absolute[0].flags[0].code).toBe('INVALID_AMOUNT');
+  });
+
+  it('skips a percent-of-current region whose Play price is further from the target than the threshold', () => {
+    const rows = derivePlayPhasePrices({
+      pricing: { type: 'percentOfCurrent', percent: '50', snap: 'nearest' },
+      phase: { duration: 'P1Y', recurrenceCount: 1 },
+      billingPeriod: 'P1Y',
+      base,
+      territories: ['US'],
+      snapped: { resolved: { US: { currency: 'USD', amount: '31.99' } }, unresolved: {} },
+    });
+    expect(rows[0]).toMatchObject({ ok: false, flags: [{ code: 'DEVIATION_ABOVE_THRESHOLD', severity: 'error' }] });
+    const looser = derivePlayPhasePrices({
+      pricing: { type: 'percentOfCurrent', percent: '50', snap: 'nearest' },
+      phase: { duration: 'P1Y', recurrenceCount: 1 },
+      billingPeriod: 'P1Y',
+      base,
+      territories: ['US'],
+      snapped: { resolved: { US: { currency: 'USD', amount: '31.99' } }, unresolved: {} },
+      deviationThreshold: '0.1',
+    });
+    expect(looser[0].ok).toBe(true);
+  });
+
+  it('turns a discount the base no longer covers into a manual action in sync', () => {
+    const offer = state({ key: 'ten-off', phases: [{ duration: 'P1Y', recurrenceCount: 1, regions: { US: { type: 'absoluteDiscount', currency: 'USD', amount: '70' }, GB: { type: 'absoluteDiscount', currency: 'GBP', amount: '10' } } }] });
+    const plan = planPlayOfferSync({
+      app,
+      rules: [{ product, kind: 'play.offer', key: 'ten-off', pricing: { type: 'play.absoluteDiscount', amounts: { US: '70', GB: '10' } }, syncWithBase: true }],
+      products: [{ product, billingPeriod: 'P1Y', base, offers: [store(offer)] }],
+      regionsVersion: '2025/03',
+    });
+    expect(plan.manualActions).toMatchObject([{ code: 'RULE_NOT_APPLICABLE', territories: ['US'], message: expect.stringMatching(/no longer below the base price/) }]);
+    expect(plan.changeSet.skipped?.some((s) => s.territory === 'US')).toBeFalsy();
+    expect(plan.entries[0].action).toBe('manual');
+  });
+
+  it('tags start with a letter', () => {
+    expect(checkPlayOfferOpRules(op('createOffer', null, state({ tags: ['1-tag'] })), 'google').join()).toMatch(/offer tag "1-tag" must start with a lower-case letter/);
+    expect(checkPlayOfferOpRules(op('createOffer', null, state({ tags: ['rc-customer-center'] })), 'google')).toEqual([]);
   });
 });

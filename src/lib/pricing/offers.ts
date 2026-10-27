@@ -169,6 +169,10 @@ export interface PlayOfferSettings {
   state?: 'ACTIVE' | 'DRAFT';
   /** regionsVersion.version for create and patch; default: the version Play's price conversion reports */
   regionsVersion?: string;
+  /** Allow the plan to remove tags the existing offer has and the spec leaves out (default false: refused) */
+  allowTagRemoval?: boolean;
+  /** percentOfCurrent: largest accepted distance between Play's price and the target, as a fraction (default "0.05"); regions further away are left out */
+  deviationThreshold?: Decimal;
 }
 
 /** Apple-only settings that some offer kinds need when they are created */
@@ -292,6 +296,8 @@ export const offerSpecSchema = z
       .object({
         state: z.enum(['ACTIVE', 'DRAFT']).optional(),
         regionsVersion: z.string().min(1).max(40).optional(),
+        allowTagRemoval: z.boolean().optional(),
+        deviationThreshold: decimalSchema.refine((v) => compareDecimal(v, '0') >= 0 && compareDecimal(v, '1') <= 0, { message: 'deviationThreshold is a fraction from 0 to 1' }).optional(),
       })
       .strict()
       .optional(),
@@ -350,7 +356,7 @@ function playCrossCheck(spec: OfferSpec): string[] {
   }
   const tags = spec.tags ?? [];
   if (tags.length > MAX_PLAY_OFFER_TAGS) problems.push(`Play allows at most ${MAX_PLAY_OFFER_TAGS} offer tags`);
-  for (const tag of tags) if (!PLAY_OFFER_TAG_PATTERN.test(tag)) problems.push(`tag "${tag}": lower-case letters, digits and hyphens only, at most 20 characters`);
+  for (const tag of tags) if (!PLAY_OFFER_TAG_PATTERN.test(tag)) problems.push(`tag "${tag}": starts with a lower-case letter; lower-case letters, digits and hyphens only, at most 20 characters`);
   if (new Set(tags).size !== tags.length) problems.push('tags must be unique');
   if (spec.schedule) problems.push('Play offers have no start or end date; leave schedule out (activate and deactivate them instead)');
   if (spec.pricing.type === 'play.relativeDiscount') {
