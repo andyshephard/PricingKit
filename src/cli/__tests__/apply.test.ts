@@ -223,3 +223,34 @@ describe('pricingkit undo', () => {
     expect(r.stderr).toMatch(/different plan/);
   });
 });
+
+describe('pricingkit apply at a terminal', () => {
+  it('shows what the plan does and applies only when the app ID is typed back', async () => {
+    const { hash } = await planFile();
+    const calls = appleApiRequest.mock.calls.length;
+    const cancelled = await run(['apply', 'plan.json', '--confirm', hash], { env, cwd: tmp.dir, typed: 'yes' });
+    expect(cancelled.code).toBe(1);
+    expect(cancelled.stderr).toMatch(/Plan offers-\S+ for com\.example\.app \(App Store\): 2 ops \(createOffer 2\)/);
+    expect(cancelled.stderr).toMatch(/Type the app's bundle ID \(com\.example\.app\) to apply, anything else cancels:/);
+    expect(cancelled.stderr).toMatch(/Not applied: the confirmation typed did not match\. Nothing was read or sent\./);
+    expect(appleApiRequest.mock.calls.length).toBe(calls);
+    expect(existsSync(join(tmp.dir, 'plan.run.json'))).toBe(false);
+    // End of input cancels too
+    expect((await run(['apply', 'plan.json', '--confirm', hash], { env, cwd: tmp.dir, typed: null })).code).toBe(1);
+
+    const applied = await run(['apply', 'plan.json', '--confirm', hash], { env, cwd: tmp.dir, typed: ' com.example.app ' });
+    expect(applied.code).toBe(0);
+    expect(store.writes()).toHaveLength(2);
+  });
+
+  it('--yes skips the question; without a terminal (CI) nothing is asked', async () => {
+    const { hash } = await planFile();
+    const yes = await run(['apply', 'plan.json', '--confirm', hash, '--yes'], { env, cwd: tmp.dir, typed: 'nope' });
+    expect(yes.code).toBe(0);
+    expect(yes.stderr).not.toMatch(/Type the app/);
+    const { hash: again } = await planFile();
+    const ci = await run(['apply', 'plan.json', '--confirm', again, '--force'], { env, cwd: tmp.dir });
+    expect(ci.code).toBe(0);
+    expect(ci.stderr).not.toMatch(/Type the app/);
+  });
+});

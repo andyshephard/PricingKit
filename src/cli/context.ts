@@ -24,6 +24,12 @@ export interface CommandContext {
   cwd: string;
   redactor: Redactor;
   now: () => Date;
+  /**
+   * Interactive only (stdin and stderr are a terminal): prints the lines and
+   * the question on stderr and returns the line typed, or null. Undefined
+   * otherwise (CI, pipes, tests without an answer).
+   */
+  ask?: (lines: string[], question: string) => Promise<string | null>;
 }
 
 export interface CommandResult {

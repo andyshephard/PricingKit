@@ -432,7 +432,7 @@ Only `apply` writes to a store, and only with `--confirm <plan hash>`.
 | `diff <plan.json>` | Human-readable summary of a plan: changes per product and territory with before, after and percent change, skipped territories by reason, warnings. No store requests. |
 | `offers` | An App Store subscription's introductory, promotional, offer code and win-back offers with each territory's price (`--kind` filters); or a Google Play subscription's offers (`--package-name`, `--base-plan` for one base plan) with state, eligibility, tags and each phase's price per region. |
 | `offer deactivate\|activate\|delete` | Plans one lifecycle change of an existing offer and writes it as a plan file (default `pricingkit-plan.json`, never replaced without `--force`; or `--out`). App Store: `--bundle-id --subscription --kind --offer <key>`; deactivating an introductory or win-back offer sets its end date (`--end-date`). Google Play: `--package-name --subscription --base-plan --offer <offer id>`. What the store doesn't allow (deactivating a promotional offer, deleting an offer code or an active Play offer) is refused with the reason. Reads only; prints the `apply` command. |
-| `apply <plan.json> --confirm <hash>` | Applies a plan, App Store or Google Play (the app named in the plan). `--confirm` must be the plan's hash (shown by `plan` and `diff`). Saves the run log before and after every write (`--run-out`, default `<plan>.run.json` next to the plan file, never overwritten) and continues one with `--resume <run.json>`. Deleting offers needs `--force-delete`; a plan that changes base prices needs `--allow-base-prices` (see [base prices from the CLI](#base-prices-from-the-cli)). |
+| `apply <plan.json> --confirm <hash>` | Applies a plan, App Store or Google Play (the app named in the plan). `--confirm` must be the plan's hash (shown by `plan` and `diff`). Saves the run log before and after every write (`--run-out`, default `<plan>.run.json` next to the plan file, never overwritten) and continues one with `--resume <run.json>`. Deleting offers needs `--force-delete`; a plan that changes base prices needs `--allow-base-prices` (see [base prices from the CLI](#base-prices-from-the-cli)). On a terminal it first shows a summary and asks for the app's bundle ID or package name (`--yes` skips this; CI is never asked). |
 | `undo <plan.json> <run.json>` | Writes the plan that undoes a run (`--out`, default `<plan>.undo.json` next to the plan file, replaced only with `--force`) and prints its summary, hash and anything that can't be reversed. Offline: no credentials, no store requests. Apply it with `apply --confirm`, plus `--force-delete` when it deletes offers. |
 | `plan --rules <rules.json> [--spec <spec.json>]` | Plans keeping `syncWithBase` offers in step: against current base prices, or with `--spec`, against the prices that base-price plan sets (one plan, base ops first). `--scheduled-base hold\|now` (default `hold`). Offers the store can't re-price are listed as manual actions. |
 | `plan --workspace <file>` | Plans every app of a [workspace](#workspaces-several-apps-and-both-stores): one plan file per app (and per offer plan spec) plus a `workspace-plan.json` index with one hash, in `--out-dir` (default `pricingkit-plans`). |
@@ -729,13 +729,20 @@ registry has under that name and hands it your credentials. Tools:
 | `offers` | Lists a subscription's offers (as `pricingkit offers --json`). |
 | `plan` | Makes a plan from a spec and/or rules file and writes it to `out` (a dry run). |
 | `diff` | Summarises a plan file, with its hash. Offline. |
-| `apply_command` | Returns the exact `pricingkit apply <plan> --confirm <hash>` command (with `--allow-base-prices` / `--force-delete` when needed) for a person to review and run. It applies nothing. |
+| `apply_command` | Returns the start of the `pricingkit apply <plan>` command for a person to finish: without `--confirm` (they run `pricingkit diff` themselves and copy the hash it prints) and without the opt-in flags (it names the ones the plan needs, `--allow-base-prices` / `--force-delete`, and why). It applies nothing. |
 
 There is no apply tool. Arguments are typed and can't start with `-`. File paths are relative,
 use only letters, digits, `.`, `_`, `-` and `/`, have no `..` segments, nothing under `.git/`, and
 must resolve (following links) inside the server's working directory; `plan` writes only `.json`
 files and never replaces a file that isn't already a plan (or state) file. The command
 `apply_command` returns is shell-quoted, and a `resume` log must belong to the plan.
+
+An agent relays what it likes, so the human step is built in: `apply_command` never hands over a
+ready-to-run command, and `pricingkit apply` at a terminal shows what the plan does (app, ops,
+base prices, deletes, existing-subscriber moves) and asks for the app's bundle ID or package name
+before it loads credentials (`--yes` skips the question; CI is never asked). **Pin the app** the
+server may touch with `PRICINGKIT_EXPECT_BUNDLE_ID` / `PRICINGKIT_EXPECT_PACKAGE` in its environment
+(see the configuration above), so a plan or spec for another app is refused before anything is read.
 
 **Shared options.** `--json` prints machine-readable JSON on stdout: the document itself
 (`pricingkit.state`, `pricingkit.changeset`, `pricingkit.planSummary`, `pricingkit.offers`,

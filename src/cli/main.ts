@@ -44,6 +44,8 @@ export interface CliIO {
   env: Record<string, string | undefined>;
   cwd: string;
   now?: () => Date;
+  /** Interactive sessions only: reads one line typed by the person (null at end of input) */
+  readLine?: () => Promise<string | null>;
 }
 
 const CONSOLE_METHODS = ['log', 'info', 'warn', 'error', 'debug'] as const;
@@ -148,6 +150,14 @@ export async function runCli(argv: string[], io: CliIO): Promise<ExitCode> {
         cwd: io.cwd,
         redactor,
         now: io.now ?? (() => new Date()),
+        ...(io.readLine
+          ? {
+              ask: async (lines: string[], question: string) => {
+                err(`${lines.join('\n')}\n${question}`);
+                return io.readLine!();
+              },
+            }
+          : {}),
       };
       const result = await HANDLERS[args.command](ctx);
       if (args.json) outJson(result.json);
@@ -188,10 +198,27 @@ export async function main(argv = process.argv.slice(2)): Promise<ExitCode> {
     });
     return EXIT_OK;
   }
+  // On a terminal, apply asks for a typed confirmation (unless --yes); in CI and pipes it doesn't
+  const interactive = Boolean(process.stdin.isTTY && process.stderr.isTTY);
   return runCli(argv, {
     stdout: (text) => process.stdout.write(text),
     stderr: (text) => process.stderr.write(text),
     env: process.env,
     cwd: process.cwd(),
+    ...(interactive
+      ? {
+          readLine: async () => {
+            const { createInterface } = await import('node:readline/promises');
+            const rl = createInterface({ input: process.stdin, output: process.stderr, terminal: true });
+            try {
+              return await rl.question('');
+            } catch {
+              return null;
+            } finally {
+              rl.close();
+            }
+          },
+        }
+      : {}),
   });
 }

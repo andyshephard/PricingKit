@@ -4,7 +4,9 @@
 //
 // - Tools: offers, plan, diff (each runs the CLI command in-process
 //   with --json) and apply_command, which only reads a plan file and returns
-//   the exact `pricingkit apply` command a person must run. Nothing here can
+//   the start of the `pricingkit apply` command, without --confirm or the
+//   opt-in flags: the person gets the hash from their own diff and adds the
+//   flags knowingly. Nothing here can
 //   write to a store: there is no apply tool, and the CLI's apply command is
 //   never invoked (src/cli/__tests__/mcp.test.ts checks both).
 // - Arguments are typed: each tool builds the argv itself, values can't start
@@ -21,7 +23,7 @@
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import { assertRunMatches, changeSetHash, isOfferOp, parseChangeSet, parseRun, parseStateSnapshot } from '@/lib/pricing';
+import { assertRunMatches, isOfferOp, parseChangeSet, parseRun, parseStateSnapshot } from '@/lib/pricing';
 import packageJson from '../../package.json';
 import { runCli, type CliIO } from './main';
 
@@ -106,7 +108,7 @@ export const TOOLS: Tool[] = [
   {
     name: 'apply_command',
     description:
-      'Returns the exact `pricingkit apply` command a person must run, after reviewing the plan, to apply a plan file (with the flags it needs: --allow-base-prices for base prices, --force-delete for deletes). Never applies anything and sends no store requests: agents plan, humans apply.',
+      'Returns the start of the `pricingkit apply` command for a plan file, for a person to finish and run: without --confirm (they get the hash by running `pricingkit diff` on the plan themselves) and without the opt-in flags (the result names the ones the plan needs and why, for the person to add). Never applies anything and sends no store requests: agents plan, humans apply.',
     inputSchema: {
       type: 'object',
       properties: { plan: str('Path of the plan file'), resume: str('Path of a run log to resume') },
@@ -239,30 +241,29 @@ async function commandForPlan(args: Args, cwd: string): Promise<ToolResult> {
       throw error instanceof ToolInputError ? error : new ToolInputError(`resume: ${(error as Error).message}`);
     }
   }
-  const hash = changeSetHash(changeSet);
+  // Deliberately incomplete: no --confirm hash and no opt-in flags. The person applying the plan
+  // gets the hash from their own `pricingkit diff` and adds the flags knowingly; an agent can't
+  // hand over a ready-to-paste command that skips the review.
   const baseOps = changeSet.ops.filter((op) => !isOfferOp(op)).length;
   const deletes = changeSet.ops.filter((op) => isOfferOp(op) && op.kind === 'deleteOffer').length;
-  const argv = [
-    'pricingkit',
-    'apply',
-    planPath,
-    '--confirm',
-    hash,
-    ...(resumePath !== undefined ? ['--resume', resumePath] : []),
-    ...(baseOps > 0 ? ['--allow-base-prices'] : []),
-    ...(deletes > 0 ? ['--force-delete'] : []),
-  ];
+  const argv = ['pricingkit', 'apply', planPath, ...(resumePath !== undefined ? ['--resume', resumePath] : [])];
   const command = argv.map(shellQuote).join(' ');
+  const requiredFlags = [
+    ...(baseOps > 0 ? [{ flag: '--allow-base-prices', reason: `the plan changes base prices (${baseOps} ${baseOps === 1 ? 'op' : 'ops'}); add it only if you mean to change them` }] : []),
+    ...(deletes > 0
+      ? [{ flag: '--force-delete', reason: `the plan deletes ${deletes} ${deletes === 1 ? 'offer' : 'offers'}; the store can't tell whether anyone redeemed them, and a deleted offer can't be restored` }]
+      : []),
+  ];
   const notes = [
-    'A person must review the plan (pricingkit diff) and run this command themselves; this server cannot apply plans.',
+    `This server cannot apply plans. A person reviews the plan by running "pricingkit diff ${shellQuote(planPath)}" themselves, then runs this command with --confirm <the hash that diff prints>${requiredFlags.length ? ' and the flags below' : ''}.`,
     ...(changeSet.ops.length === 0 ? ['The plan has no ops: applying it changes nothing.'] : []),
     ...(resumeNote ? [resumeNote] : []),
-    ...(baseOps > 0 ? [`--allow-base-prices: the plan changes base prices (${baseOps} ops).`] : []),
-    ...(deletes > 0 ? [`--force-delete: the plan deletes ${deletes} offer(s), which the store can't check for redemptions or can't undo.`] : []),
+    ...requiredFlags.map((f) => `${f.flag} is needed: ${f.reason}.`),
+    'Pin the app the server may work on with PRICINGKIT_EXPECT_BUNDLE_ID / PRICINGKIT_EXPECT_PACKAGE in its environment.',
   ];
   return {
-    content: [{ type: 'text', text: `${command}\n\n${notes.join('\n')}` }],
-    structuredContent: { command, argv, hash, ops: changeSet.ops.length, notes },
+    content: [{ type: 'text', text: `${command} --confirm <hash from pricingkit diff>\n\n${notes.join('\n')}` }],
+    structuredContent: { command, argv, needsConfirm: true, requiredFlags, ops: changeSet.ops.length, notes },
   };
 }
 
@@ -328,7 +329,7 @@ export class McpServer {
             protocolVersion: PROTOCOL_VERSIONS.includes(wanted) ? wanted : PROTOCOL_VERSIONS[0],
             capabilities: { tools: { listChanged: false } },
             serverInfo: { name: 'pricingkit', version: packageJson.version },
-            instructions: 'Read store prices and offers and make plans. Applying a plan is for a person: apply_command returns the command to run.',
+            instructions: 'Read store prices and offers and make plans. Applying a plan is for a person: apply_command returns the start of the command, which they complete with the hash from their own pricingkit diff.',
           },
         });
       }

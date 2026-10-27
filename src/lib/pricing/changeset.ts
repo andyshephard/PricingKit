@@ -7,7 +7,7 @@
 
 import { z } from 'zod';
 import { normalizeDecimal } from './decimal';
-import { canonicalJson, contentHash, fnv1a64, priceValueSchema, productRefSchema, appRefSchema, territorySchema, type HashAlg } from './refs';
+import { canonicalJson, contentHash, priceValueSchema, productRefSchema, appRefSchema, territorySchema, type HashAlg } from './refs';
 import { checkOfferOpRules, describeOfferOp, isOfferOp, isOfferOpKind, offerOpSchema, offerTargetKey, type OfferOp, type OfferOpKind } from './offer-ops';
 import { OFFER_KINDS, type OfferKind } from './offers';
 import type { PlayOfferOp } from './play-offers';

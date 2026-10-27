@@ -30,7 +30,7 @@ async function call(method: string, params: Record<string, unknown> = {}) {
 }
 async function tool(name: string, args: Record<string, unknown>) {
   const r = await call('tools/call', { name, arguments: args });
-  return r.result as { content: Array<{ text: string }>; structuredContent?: { exitCode?: number; result?: unknown; command?: string; hash?: string }; isError?: boolean };
+  return r.result as { content: Array<{ text: string }>; structuredContent?: { exitCode?: number; result?: unknown; command?: string; hash?: string; requiredFlags?: unknown }; isError?: boolean };
 }
 const writeJson = (name: string, value: unknown) => writeFileSync(join(tmp.dir, name), JSON.stringify(value));
 
@@ -83,7 +83,7 @@ describe('MCP tools', () => {
     expect(store.writes()).toEqual([]);
   });
 
-  it('plan writes a plan file, diff summarises it, apply_command returns the command and applies nothing', async () => {
+  it('plan writes a plan file, diff summarises it, apply_command returns the start of the command and applies nothing', async () => {
     const plan = await tool('plan', { spec: 'base.json', rules: 'rules.json', out: 'plans/plan.json' });
     // plans/ doesn't exist: the CLI reports it, nothing is written
     expect(plan.isError).toBe(true);
@@ -98,19 +98,26 @@ describe('MCP tools', () => {
 
     const before = appleApiRequest.mock.calls.length;
     const command = await tool('apply_command', { plan: 'plan.json' });
-    expect(command.structuredContent!.command).toBe(`pricingkit apply plan.json --confirm ${hash} --allow-base-prices`);
-    expect(command.content[0].text).toMatch(/A person must review the plan/);
+    // No hash and no opt-in flag: the person gets the hash from their own diff and adds the flag knowingly
+    expect(command.structuredContent!.command).toBe('pricingkit apply plan.json');
+    expect(JSON.stringify(command)).not.toContain(hash);
+    expect(command.structuredContent).toMatchObject({ needsConfirm: true, requiredFlags: [{ flag: '--allow-base-prices', reason: expect.stringMatching(/changes base prices \(2 ops\)/) }] });
+    expect(command.content[0].text).toMatch(/^pricingkit apply plan\.json --confirm <hash from pricingkit diff>/);
+    expect(command.content[0].text).toMatch(/runs this command with --confirm <the hash that diff prints> and the flags below/);
+    expect(command.content[0].text).toMatch(/PRICINGKIT_EXPECT_BUNDLE_ID/);
     expect(appleApiRequest.mock.calls.length).toBe(before);
     expect(store.writes()).toEqual([]);
     expect(readdirSync(tmp.dir).some((f) => f.endsWith('.run.json'))).toBe(false);
 
     // The command it returns works for the person who runs it
-    const applied = await runCliCaptured((command.structuredContent!.command as string).split(' ').slice(1), { env, cwd: tmp.dir });
+    const reviewed = await runCliCaptured(['diff', 'plan.json', '--json'], { cwd: tmp.dir });
+    const confirm = JSON.parse(reviewed.stdout).changeSetHash;
+    const applied = await runCliCaptured([...(command.structuredContent!.command as string).split(' ').slice(1), '--confirm', confirm, '--allow-base-prices'], { env, cwd: tmp.dir });
     expect(applied.code).toBe(0);
     expect(store.writes()).toHaveLength(3);
   });
 
-  it('apply_command adds --force-delete for deletes and --resume when asked', async () => {
+  it('apply_command names --force-delete for deletes, and adds --resume when asked', async () => {
     const del = await runCliCaptured(['offer', 'delete', '--bundle-id', BUNDLE, '--subscription', A, '--kind', 'apple.promo', '--offer', 'example_annual_50', '--out', 'del.json'], { env, cwd: tmp.dir });
     expect(del.code).toBe(2);
     const hash = changeSetHash(parseChangeSet(readFileSync(join(tmp.dir, 'del.json'), 'utf8')));
@@ -119,7 +126,8 @@ describe('MCP tools', () => {
     // A failed run (no --force-delete) leaves a log to resume
     expect((await runCliCaptured(['apply', 'del.json', '--confirm', hash], { env, cwd: tmp.dir })).code).toBe(1);
     const r = await tool('apply_command', { plan: 'del.json', resume: 'del.run.json' });
-    expect(r.structuredContent!.command).toBe(`pricingkit apply del.json --confirm ${hash} --resume del.run.json --force-delete`);
+    expect(r.structuredContent!.command).toBe('pricingkit apply del.json --resume del.run.json');
+    expect(r.structuredContent!.requiredFlags).toEqual([{ flag: '--force-delete', reason: expect.stringMatching(/deletes 1 offer/) }]);
     expect(r.content[0].text).toMatch(/already records 0 of 1 ops as done \(ok or skipped\); they won't be re-checked\. 1 will be checked/);
 
     // A run log of another plan is refused

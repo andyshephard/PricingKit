@@ -69,6 +69,7 @@ const OPTIONS: Record<CommandName, OptionSpec> = {
     'allow-base-prices': { type: 'boolean' },
     'workspace-plan': { type: 'string' },
     'resume-runs': { type: 'boolean' },
+    yes: { type: 'boolean', short: 'y' },
   },
   undo: { ...COMMON, out: { type: 'string', short: 'o' }, force: { type: 'boolean' }, 'workspace-plan': { type: 'string' } },
 };
@@ -418,9 +419,9 @@ ${SHARED_HELP}`,
   apply: `Usage:
   pricingkit apply <plan.json> --confirm <plan hash> [--run-out <run.json>] [--force]
   pricingkit apply <plan.json> --confirm <plan hash> --resume <run.json>
-                   [--force-delete] [--allow-base-prices]
+                   [--force-delete] [--allow-base-prices] [--yes]
   pricingkit apply --workspace-plan <workspace-plan.json> --confirm <workspace plan hash>
-                   [--resume-runs] [--force] [--force-delete] [--allow-base-prices]
+                   [--resume-runs] [--force] [--force-delete] [--allow-base-prices] [--yes]
 
 Applies a plan made by "pricingkit plan" (or "undo", or "offer"),
 App Store or Google Play: the app comes from the plan.
@@ -452,6 +453,12 @@ refused (INVALID_RUN) before anything is read or sent. --force replaces
 existing run logs, and with them the record "undo" needs to reverse those
 runs: move them aside first if you may want to undo. The request budget
 (--budget) is shared by all the plans of one run.
+
+On a terminal, apply then prints a summary (the app, ops by kind, base-price
+ops, deletes, App Store changes that move existing subscribers) and asks you to
+type the app's bundle ID or package name (with --workspace-plan: the number of
+apps) before it loads credentials; anything else cancels with nothing sent.
+--yes (-y) skips the question. Without a terminal (CI, pipes) nothing is asked.
 
 Exit code 0 when every op is done, 1 otherwise (the log says which).
 
