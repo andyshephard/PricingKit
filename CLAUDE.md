@@ -111,7 +111,7 @@ CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm test`, `npm run typecheck` a
 - Platform-specific: `/api/products` (Google) vs `/api/apple/products` (Apple)
 - Error codes: 401 (auth), 403 (permission), 404 (not found), 422 (e.g. Apple IAP update without a base territory price), 429 (rate limit)
 - Routes get credentials only from `@/middleware/auth`; never define a cookie helper in a route file or import one from another route (`src/app/api/__tests__/auth-helpers.test.ts`).
-- Public, no auth: Index Checker page at `/index-checker`, `GET /api/ppp` and `GET /api/exchange-rates`. Their `?refresh=true` (bypasses caches, spends upstream quota) needs a valid Google or Apple session and returns 401 otherwise. Saving an Open Exchange Rates key (`POST /api/settings/exchange-rates`) tests it upstream; without a session that is limited to 5 tests per client per 10 minutes.
+- Public, no auth: Index Checker page at `/index-checker`, `GET /api/ppp` and `GET /api/exchange-rates`. Their `?refresh=true` (bypasses caches, spends upstream quota) needs a valid Google or Apple session and returns 401 otherwise. Saving an Open Exchange Rates key (`POST /api/settings/exchange-rates`) tests it upstream; without a session that is limited to 50 per instance per 10 minutes, and 5 per client when `TRUSTED_CLIENT_IP_HEADER` is set. Under `next dev` a plaintext session cookie can be forged to skip the limit (dev only).
 
 ### Currency & Pricing
 - **Pricing strategies:** `'direct' | 'ppp' | 'bigmac' | 'netflix' | 'custom'` — defined in `/lib/pricing/strategies.ts` (`PricingStrategy` type + `calculateRegionalPrice` switch). Import from `@/lib/pricing`. `custom` is kept for API compatibility but hidden in the bulk modals until per-territory multipliers exist.
@@ -154,6 +154,8 @@ Touchpoints (all required, in order):
 ```
 ENCRYPTION_KEY              # Required outside `next dev`. Encrypts credentials in cookies (openssl rand -base64 32)
 OPEN_EXCHANGE_RATES_APP_ID  # Optional operator key for currency conversion; users can also save their own in Settings
+TRUSTED_CLIENT_IP_HEADER    # Optional: proxy header with the real client IP (cf-connecting-ip, x-real-ip, x-forwarded-for).
+                            # Only set it when every request passes that proxy; never trust client IP headers otherwise.
 ```
 
 On Cloudflare Workers set these as Worker secrets; for `npm run preview` put them in `.dev.vars`.

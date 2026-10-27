@@ -12,8 +12,9 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 2. **Node 22 or later** is now declared in `package.json` `engines`; `.nvmrc` pins the version CI uses (22.23.3).
 3. **Scripts calling `?refresh=true`** on `/api/ppp` or `/api/exchange-rates` must now send a valid Google or Apple session cookie, or they get `401`. Plain reads without `refresh` are still public.
 4. **Clients of `/api/bulk`** should read the per-result `success`, `error` and `skippedRegions` fields. The top-level `success` is now `false` when nothing was written. A subscription item sent without a `basePlanId` now produces one result per base plan (each carrying its `basePlanId`), so `total` and `results` count base plans for subscriptions, not request items.
-5. **Forks importing the pricing maths** should change `@/lib/google-play/currency` to `@/lib/pricing` and `@/lib/conversion-indexes/*` to `@/lib/pricing/indexes/*`. The functions are unchanged.
-6. Nothing else needs configuring. There is no database, no session file and no new environment variable.
+5. **Optional `TRUSTED_CLIENT_IP_HEADER`.** Set it to `cf-connecting-ip` on Cloudflare (or the header your own proxy sets) to rate-limit anonymous Open Exchange Rates key tests per client. Without it they share one per-instance limit.
+6. **Forks importing the pricing maths** should change `@/lib/google-play/currency` to `@/lib/pricing` and `@/lib/conversion-indexes/*` to `@/lib/pricing/indexes/*`. The functions are unchanged.
+7. Nothing else needs configuring. There is no database and no session file.
 
 ### Added
 
@@ -33,7 +34,7 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 - **Fewer and gentler Apple reads.** The Apple products list reads base prices 4 at a time instead of all at once, and subscription price points are read 8,000 per request (one request per territory instead of about four). Apple in-app purchase price updates by price point are sent one territory at a time.
 - **Apple in-app purchase list no longer assumes USA.** A product whose price schedule names no base territory is listed without a price and flagged (`priceUnavailableReason: "BASE_TERRITORY_UNKNOWN"`) instead of showing its US price.
 - When Apple refuses a subscription price with 409 and the territory already has a scheduled price, the error now names that scheduled price for immediate changes too. Nothing is deleted on a 409.
-- **Testing an Open Exchange Rates key without signing in is rate limited** to 5 tests per client per 10 minutes (429 with `Retry-After`). Signed-in users are not limited.
+- **Testing an Open Exchange Rates key without signing in is rate limited** (429 with `Retry-After`): 50 tests per instance per 10 minutes, and 5 per client when the new optional `TRUSTED_CLIENT_IP_HEADER` names the header your proxy sets to the client IP (e.g. `cf-connecting-ip` on Cloudflare). Client IP headers are ignored unless configured, because clients can forge them. Signed-in users are not limited.
 
 - **Google Play region edits no longer launch or re-enable regions.** Editing prices on a subscription base plan or one-time product changes only the regions you edited. Previously every save turned on new-subscriber availability for all regions, auto-filled every unconfigured region with a price converted from the US price, and required a US price. Other regions, availability settings and other base plans are now sent back exactly as Google returned them, and the product keeps its own `regionsVersion`. If Google needs something more (for example a USD/EUR price), you see Google's error instead of PricingKit guessing prices.
 - **Untouched one-time product regions are kept as they are.** Regions with no price are no longer rewritten to a USD 0 price on save.

@@ -35,11 +35,23 @@ export class AttemptLimiter {
     this.now = options.now ?? Date.now;
   }
 
-  attempt(key: string): AttemptDecision {
+  /**
+   * Count one attempt. With no key (the client can't be identified
+   * reliably) only the global cap applies.
+   */
+  attempt(key: string | undefined): AttemptDecision {
     const now = this.now();
     const { limit, windowMs, globalLimit, maxKeys = 1000 } = this.options;
 
     if (now - this.global.start >= windowMs) this.global = { start: now, count: 0 };
+    const retryAfter = (start: number) => Math.max(1, Math.ceil((start + windowMs - now) / 1000));
+    if (key === undefined) {
+      if (globalLimit !== undefined && this.global.count >= globalLimit) {
+        return { allowed: false, retryAfterSeconds: retryAfter(this.global.start) };
+      }
+      this.global.count++;
+      return { allowed: true };
+    }
     let window = this.windows.get(key);
     if (!window || now - window.start >= windowMs) {
       window = { start: now, count: 0 };
@@ -51,7 +63,6 @@ export class AttemptLimiter {
       }
     }
 
-    const retryAfter = (start: number) => Math.max(1, Math.ceil((start + windowMs - now) / 1000));
     if (window.count >= limit) return { allowed: false, retryAfterSeconds: retryAfter(window.start) };
     if (globalLimit !== undefined && this.global.count >= globalLimit) {
       return { allowed: false, retryAfterSeconds: retryAfter(this.global.start) };
@@ -62,11 +73,23 @@ export class AttemptLimiter {
   }
 }
 
-/** Best-effort client identifier for rate limiting (Cloudflare, then proxies). */
-export function clientKeyFromHeaders(headers: Headers): string {
-  const cf = headers.get('cf-connecting-ip');
-  if (cf) return cf.trim();
-  const forwarded = headers.get('x-forwarded-for');
-  if (forwarded) return forwarded.split(',')[0].trim();
-  return headers.get('x-real-ip')?.trim() || 'unknown';
+/**
+ * The client IP from a header set by a proxy the operator trusts, or
+ * undefined. Client-supplied headers such as cf-connecting-ip or
+ * x-forwarded-for can be forged by anyone who reaches the app directly, so
+ * nothing is read unless the operator names the header:
+ *
+ * - TRUSTED_CLIENT_IP_HEADER=cf-connecting-ip  behind Cloudflare (including Workers)
+ * - TRUSTED_CLIENT_IP_HEADER=x-real-ip         behind a proxy that sets it
+ * - TRUSTED_CLIENT_IP_HEADER=x-forwarded-for   uses the LAST entry, the one your proxy appended
+ *
+ * Unset (the default), callers fall back to a per-instance cap only.
+ */
+export function trustedClientIp(headers: Headers, trustedHeader: string | undefined): string | undefined {
+  const name = trustedHeader?.trim().toLowerCase();
+  if (!name) return undefined;
+  const value = headers.get(name);
+  if (!value) return undefined;
+  const ip = name === 'x-forwarded-for' ? value.split(',').at(-1)?.trim() : value.trim();
+  return ip || undefined;
 }

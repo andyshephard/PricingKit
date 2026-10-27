@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { AttemptLimiter, clientKeyFromHeaders } from '../attempt-limiter';
+import { AttemptLimiter, trustedClientIp } from '../attempt-limiter';
 
 describe('AttemptLimiter', () => {
   it('allows `limit` attempts per key per window, then reports Retry-After', () => {
@@ -30,10 +30,26 @@ describe('AttemptLimiter', () => {
   });
 });
 
-describe('clientKeyFromHeaders', () => {
-  it('prefers Cloudflare, then the first forwarded address', () => {
-    expect(clientKeyFromHeaders(new Headers({ 'cf-connecting-ip': '203.0.113.1', 'x-forwarded-for': '198.51.100.1' }))).toBe('203.0.113.1');
-    expect(clientKeyFromHeaders(new Headers({ 'x-forwarded-for': '198.51.100.1, 10.0.0.1' }))).toBe('198.51.100.1');
-    expect(clientKeyFromHeaders(new Headers())).toBe('unknown');
+describe('trustedClientIp', () => {
+  const forged = new Headers({ 'cf-connecting-ip': '203.0.113.1', 'x-forwarded-for': '198.51.100.1, 10.0.0.1', 'x-real-ip': '192.0.2.9' });
+
+  it('reads nothing unless the operator names a header', () => {
+    expect(trustedClientIp(forged, undefined)).toBeUndefined();
+    expect(trustedClientIp(forged, '')).toBeUndefined();
+  });
+
+  it('reads only the configured header', () => {
+    expect(trustedClientIp(forged, 'cf-connecting-ip')).toBe('203.0.113.1');
+    expect(trustedClientIp(forged, 'X-Real-IP')).toBe('192.0.2.9');
+    // The last x-forwarded-for entry is the one the trusted proxy appended
+    expect(trustedClientIp(forged, 'x-forwarded-for')).toBe('10.0.0.1');
+    expect(trustedClientIp(new Headers(), 'cf-connecting-ip')).toBeUndefined();
+  });
+});
+
+describe('AttemptLimiter without a client key', () => {
+  it('applies the global cap only', () => {
+    const limiter = new AttemptLimiter({ limit: 1, globalLimit: 3, windowMs: 1000, now: () => 0 });
+    expect([1, 2, 3, 4].map(() => limiter.attempt(undefined).allowed)).toEqual([true, true, true, false]);
   });
 });

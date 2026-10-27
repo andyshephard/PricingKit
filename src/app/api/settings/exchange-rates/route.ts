@@ -1,13 +1,17 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { hasAuthenticatedSession } from '@/lib/session';
-import { AttemptLimiter, clientKeyFromHeaders } from '@/lib/utils/attempt-limiter';
+import { AttemptLimiter, trustedClientIp } from '@/lib/utils/attempt-limiter';
 
 const COOKIE_NAME = 'exchange_rates_api_key';
 
 // Without a store session, testing a key is limited so this endpoint can't be
-// used as a free Open Exchange Rates proxy: 5 tests per client per 10 minutes,
-// 50 per instance. Signed-in users are not limited here.
+// used as a free Open Exchange Rates proxy: 50 tests per instance per 10
+// minutes, and 5 per client when the client IP comes from a proxy header the
+// operator trusts (TRUSTED_CLIENT_IP_HEADER; see trustedClientIp). Signed-in
+// users are not limited here. Caveat: under `next dev` sessions may be
+// plaintext cookies, so anyone can forge one and skip this limit; outside
+// `next dev` a session cookie must decrypt with ENCRYPTION_KEY.
 const anonymousKeyTests = new AttemptLimiter({ limit: 5, globalLimit: 50, windowMs: 10 * 60 * 1000 });
 
 // GET: Report whether a key is configured. Never returns any part of the
@@ -55,7 +59,9 @@ export async function POST(request: Request) {
 
     const cookieStore = await cookies();
     if (!(await hasAuthenticatedSession(cookieStore))) {
-      const decision = anonymousKeyTests.attempt(clientKeyFromHeaders(request.headers));
+      const decision = anonymousKeyTests.attempt(
+        trustedClientIp(request.headers, process.env.TRUSTED_CLIENT_IP_HEADER)
+      );
       if (!decision.allowed) {
         return NextResponse.json(
           { success: false, error: 'Too many key tests. Try again later, or sign in first.' },

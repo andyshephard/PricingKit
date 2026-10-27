@@ -176,6 +176,13 @@ ENCRYPTION_KEY=your-secure-random-string
 
 # Open Exchange Rates API key (for currency conversion)
 OPEN_EXCHANGE_RATES_APP_ID=your-api-key
+
+# Optional: header your proxy sets to the real client IP, used to rate-limit
+# anonymous Open Exchange Rates key tests per client. Leave unset unless every
+# request passes through that proxy (clients can forge these headers):
+#   cf-connecting-ip (Cloudflare, incl. Workers), x-real-ip, or x-forwarded-for (last entry used)
+# Unset, anonymous key tests share a per-instance cap instead.
+TRUSTED_CLIENT_IP_HEADER=cf-connecting-ip
 ```
 
 ## Security
