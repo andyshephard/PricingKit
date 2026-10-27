@@ -17,12 +17,14 @@
 // deleted only with `force.deleteOffers`, because App Store Connect doesn't
 // report redemptions.
 //
-// Writes go in two waves: every base-price op first, then the offer ops. An
-// offer op derived from the plan's new base prices (`dependsOn`, sync plans)
-// is applied only once those base-price ops are done (ok or already at
-// target); if any of them failed, it fails with BASE_NOT_APPLIED and nothing
-// is sent, so an offer is never re-priced against base prices that aren't in
-// place.
+// Writes go in rounds: an op runs only after every op it depends on
+// (`dependsOn`) has run, and within a round base-price ops go before offer
+// ops. In a sync plan, offer ops derived from the plan's new base prices
+// wait for those base-price ops; in its undo plan, base-price reverts wait
+// for the offer reverts. If an op it depends on failed in this pass, an op
+// fails with BASE_NOT_APPLIED / OFFER_NOT_APPLIED and nothing is sent, so an
+// offer is never priced against base prices that aren't in place. If that
+// op didn't run in this pass (the run stopped first), it stays pending.
 
 import {
   changeSetHash,
@@ -48,6 +50,8 @@ export const PERSIST_FAILED = 'PERSIST_FAILED';
 export const REDEMPTIONS_UNCHECKED = 'REDEMPTIONS_UNCHECKED';
 /** An offer op was not sent because a base-price op it was derived from (dependsOn) failed */
 export const BASE_NOT_APPLIED = 'BASE_NOT_APPLIED';
+/** A base-price op (an undo plan's revert) was not sent because an offer op it waits for (dependsOn) failed */
+export const OFFER_NOT_APPLIED = 'OFFER_NOT_APPLIED';
 
 /**
  * Thrown before anything is read or sent when a plan with offer ops is
@@ -222,7 +226,11 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
       return false;
     }
   };
+  // Ops whose status this pass set (classified, applied or failed); an op that failed in an
+  // earlier pass and wasn't retried in this one doesn't count as failed for its dependents
+  const settledThisPass = new Set<string>();
   const update = (record: OpRecord, changes: Partial<OpRecord>) => {
+    if (changes.status !== undefined) settledThisPass.add(record.opId);
     Object.assign(record, changes);
     if (changes.status === 'ok' || changes.status === 'skipped') delete record.error;
     if (changes.status === 'ok' || changes.status === 'failed') delete record.skipReason;
@@ -367,12 +375,13 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
     await publish();
   }
 
-  // 3. Apply, in batches the adapter can write together (offer ops one at a time).
-  //    Base-price ops all go before any offer op (see dependsOn).
+  // 3. Apply, in batches the adapter can write together (offer ops, and ops with
+  //    dependencies, one at a time), in rounds that respect dependsOn.
+  const depsOf = (op: ChangeOp): string[] => op.dependsOn ?? [];
   const units: ReadyItem[][] = [];
   const batches = new Map<string, ReadyItem[]>();
   for (const item of ready) {
-    const key = !item.offer && adapter.applyMany ? adapter.batchKey?.(item.op) : undefined;
+    const key = !item.offer && adapter.applyMany && depsOf(item.op).length === 0 ? adapter.batchKey?.(item.op) : undefined;
     if (key === undefined) {
       units.push([item]);
     } else {
@@ -417,31 +426,37 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
   };
 
   /**
-   * Whether an offer op's base-price dependencies are in place: 'ok' when
-   * every one is done (ok, or skipped as already at target), 'wait' while
-   * one hasn't run (the run stopped first), or the failed ones.
+   * Whether an op's dependencies are in place: 'ok' when every one is done
+   * (ok, or skipped as already at target), the ones that failed in this
+   * pass, or 'wait' (one didn't run in this pass: the run stopped first).
    */
-  const dependencyState = (op: OfferOp): 'ok' | 'wait' | { failed: string[] } => {
-    const deps = op.dependsOn ?? [];
-    const failed = deps.filter((id) => records.get(id)?.status === 'failed');
+  const dependencyState = (op: ChangeOp): 'ok' | 'wait' | { failed: string[] } => {
+    const deps = depsOf(op);
+    const failed = deps.filter((id) => records.get(id)?.status === 'failed' && settledThisPass.has(id));
     if (failed.length > 0) return { failed };
     return deps.every((id) => ['ok', 'skipped'].includes(records.get(id)?.status ?? '')) ? 'ok' : 'wait';
   };
 
   const runGuarded = async (unit: ReadyItem[]) => {
     const first = unit[0];
-    if (first.offer && first.op.dependsOn?.length) {
+    if (depsOf(first.op).length > 0) {
       const deps = dependencyState(first.op);
       if (deps === 'wait') return; // left pending for a resume
       if (deps !== 'ok') {
         update(records.get(first.op.id)!, {
           status: 'failed',
           finishedAt: now(),
-          error: {
-            message: `Not applied: its prices were derived from base prices that weren't applied (${deps.failed.join(', ')} failed). Nothing was sent. Fix or re-plan those, then resume.`,
-            code: BASE_NOT_APPLIED,
-            retryable: false,
-          },
+          error: first.offer
+            ? {
+                message: `Not applied: its prices were derived from base prices that weren't applied (${deps.failed.join(', ')} failed). Nothing was sent. Fix or re-plan those, then resume.`,
+                code: BASE_NOT_APPLIED,
+                retryable: false,
+              }
+            : {
+                message: `Not applied: it waits for the offer ops of this product (${deps.failed.join(', ')} failed), so the base price doesn't change under offers priced from it. Nothing was sent. Fix those, then resume.`,
+                code: OFFER_NOT_APPLIED,
+                retryable: false,
+              },
         });
         await publish();
         return;
@@ -461,16 +476,17 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
       reserved -= needed;
     }
   };
-  await mapWithConcurrency(
-    units.filter((unit) => !unit[0].offer),
-    concurrency,
-    runGuarded
-  );
-  await mapWithConcurrency(
-    units.filter((unit) => unit[0].offer),
-    concurrency,
-    runGuarded
-  );
+  // Rounds: a unit runs once nothing it depends on is still queued. dependsOn is one level
+  // deep (checkChangeSetRules), so this takes at most two rounds.
+  let queue = units;
+  while (queue.length > 0) {
+    const queued = new Set(queue.flatMap((unit) => unit.map((item) => item.op.id)));
+    const round = queue.filter((unit) => unit.every((item) => depsOf(item.op).every((id) => !queued.has(id))));
+    if (round.length === 0) break; // unreachable for a valid plan; whatever is left stays pending
+    await mapWithConcurrency(round.filter((unit) => !unit[0].offer), concurrency, runGuarded);
+    await mapWithConcurrency(round.filter((unit) => unit[0].offer), concurrency, runGuarded);
+    queue = queue.filter((unit) => !round.includes(unit));
+  }
 
   async function runUnit(unit: ReadyItem[]): Promise<void> {
     // Record the attempt and persist it BEFORE sending, so a crash mid-request

@@ -267,6 +267,9 @@ offer op lists the base ops of its product it depends on (`dependsOn`):
 - The executor applies every base-price op before any offer op. If a base op an offer op depends
   on fails (or the price moved since planning), the offer op fails with `BASE_NOT_APPLIED` and
   nothing is sent for it; a resume applies it once the base ops are done.
+- Undo goes the other way round: the undo plan of a sync run reverts the offer first, and its
+  base-price reverts depend on that (`OFFER_NOT_APPLIED` and nothing sent if the offer revert
+  fails), so a base price is never reverted under an offer still priced from the new one.
 - Sync only changes prices of territories the offer already has. A territory the rule can't price
   keeps its offer price and is listed as skipped.
 - Only promotional offers can be re-priced. Offer codes, win-back offers and introductory offers

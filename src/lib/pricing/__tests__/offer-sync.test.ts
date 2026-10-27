@@ -5,6 +5,8 @@ import { describe, it, expect } from 'vitest';
 import {
   applyChangeSet,
   buildChangeSet,
+  buildUndoChangeSet,
+  changeSetHash as changeSetHashOf,
   checkChangeSetRules,
   checkRulesDrift,
   InvalidOfferRulesError,
@@ -24,6 +26,7 @@ import {
   type TargetPrice,
 } from '..';
 import { FakeStore } from './fixtures/fake-store';
+import { RequestBudget } from '@/lib/utils/request-budget';
 
 const app = { bundleId: 'com.example.app' };
 const product = { platform: 'apple' as const, type: 'subscription' as const, id: '9400000001' };
@@ -314,14 +317,20 @@ describe('checkRulesDrift', () => {
 class SyncStore extends FakeStore {
   offers: StoreOffer[];
   offerWrites = 0;
-  constructor(state: ProductPriceState, offers: StoreOffer[]) {
-    super('apple', [state]);
+  /** Fail this many offer writes (nothing written), then succeed */
+  offerFailures = 0;
+  constructor(state: ProductPriceState, offers: StoreOffer[], budget?: RequestBudget) {
+    super('apple', [state], budget);
     this.offers = structuredClone(offers);
   }
   async fetchOffers(): Promise<StoreOffer[]> {
     return structuredClone(this.offers);
   }
   async applyOffer(op: OfferOp, _context: OfferApplyContext): Promise<Record<string, unknown>> {
+    if (this.offerFailures > 0) {
+      this.offerFailures--;
+      throw Object.assign(new Error('Server error'), { status: 500 });
+    }
     this.offerWrites++;
     this.writes.push(`offer:${op.target.offer.key}`);
     const target = this.offers.find((o) => o.key === op.target.offer.key)!;
@@ -386,5 +395,82 @@ describe('applying a sync plan', () => {
     expect(run.status).toBe('completed');
     expect(run.ops.find((r) => r.opId === US)).toMatchObject({ status: 'skipped', skipReason: 'ALREADY_AT_TARGET' });
     expect(store.offerWrites).toBe(1);
+  });
+
+  it("on resume, an offer op whose failed base op wasn't retried in this pass stays as it was (no fresh BASE_NOT_APPLIED)", async () => {
+    const plan = sync([rule()], [offer('apple.promo', 'example_half')], { base: basePlan() });
+    const firstStore = new SyncStore(baseState(), [offer('apple.promo', 'example_half')]);
+    firstStore.failures.set('US', { times: 1, error: () => Object.assign(new Error('Server error'), { status: 500 }) });
+    const first = await applyChangeSet(plan.changeSet, { adapter: firstStore, confirm: plan.hash, now: () => '2030-01-01T00:00:00Z' });
+    expect(first.ops.find((r) => r.opId === US)).toMatchObject({ status: 'failed', error: { status: 500 } });
+    const before = first.ops.find((r) => r.opId === 'op-0003')!;
+    expect(before.error?.code).toBe('BASE_NOT_APPLIED');
+
+    // The resume reads the product (1 request), but the budget can't cover the US write: it isn't retried
+    const budget = new RequestBudget({ limit: 2 });
+    const store = new SyncStore(firstStore.state(product), firstStore.offers, budget);
+    store.costPerOp = 5;
+    const resumed = await applyChangeSet(plan.changeSet, { adapter: store, confirm: plan.hash, run: first, budget, now: () => '2030-01-02T00:00:00Z' });
+    expect(resumed.stoppedReason).toBe('BUDGET_EXCEEDED');
+    expect(resumed.ops.find((r) => r.opId === US)).toMatchObject({ status: 'failed', attempts: 1 });
+    // Not re-judged in this pass: same record as the first pass left it
+    expect(resumed.ops.find((r) => r.opId === 'op-0003')).toEqual(before);
+    expect(store.offerWrites).toBe(0);
+  });
+});
+
+describe('undoing a sync run', () => {
+  async function appliedSync() {
+    const plan = sync([rule()], [offer('apple.promo', 'example_half')], { base: basePlan() });
+    const store = new SyncStore(baseState(), [offer('apple.promo', 'example_half')]);
+    const run = await applyChangeSet(plan.changeSet, { adapter: store, confirm: plan.hash });
+    expect(run.status).toBe('completed');
+    store.writes.length = 0;
+    return { plan, store, run, undo: buildUndoChangeSet(plan.changeSet, run, { createdAt: '2030-01-02T00:00:00Z' }) };
+  }
+
+  it('reverts the offer first; the base-price reverts wait for it', async () => {
+    const { store, undo } = await appliedSync();
+    const offerRevert = undo.ops.find((op) => op.kind === 'updateOfferPrices')!;
+    const baseReverts = undo.ops.filter((op) => op.kind === 'setPrice');
+    expect(baseReverts).toHaveLength(2);
+    for (const op of baseReverts) expect(op.dependsOn).toEqual([offerRevert.id]);
+    expect(offerRevert.dependsOn).toBeUndefined();
+    expect(parseChangeSet(serializeChangeSet(undo))).toEqual(undo);
+
+    const run = await applyChangeSet(undo, { adapter: store, confirm: changeSetHashOf(undo), concurrency: 4 });
+    expect(run.status).toBe('completed');
+    expect(store.writes[0]).toBe('offer:example_half');
+    expect(store.writes.slice(1).sort()).toEqual(['setPrice:GB', 'setPrice:US']);
+    expect(store.offers[0].prices.US.amount).toBe('29.99');
+    expect(store.state(product).territories.US.current?.amount).toBe('59.99');
+  });
+
+  it('holds back the base-price reverts when the offer revert fails, and finishes on resume', async () => {
+    const { store, undo } = await appliedSync();
+    store.offerFailures = 1;
+    let saved: ApplyRun | undefined;
+    const first = await applyChangeSet(undo, { adapter: store, confirm: changeSetHashOf(undo), onUpdate: (r) => void (saved = r) });
+    expect(first.status).toBe('incomplete');
+    const offerRevert = undo.ops.find((op) => op.kind === 'updateOfferPrices')!;
+    for (const record of first.ops) {
+      if (record.opId === offerRevert.id) expect(record).toMatchObject({ status: 'failed', attempts: 1 });
+      else expect(record).toMatchObject({ status: 'failed', attempts: 0, error: { code: 'OFFER_NOT_APPLIED' } });
+    }
+    // Nothing reverted: base prices stay where the offer was priced from
+    expect(store.writes).toEqual([]);
+    expect(store.state(product).territories.US.current?.amount).toBe('69.99');
+
+    const resumed = await applyChangeSet(undo, { adapter: store, confirm: changeSetHashOf(undo), run: saved });
+    expect(resumed.status).toBe('completed');
+    expect(store.writes[0]).toBe('offer:example_half');
+    expect(store.state(product).territories.US.current?.amount).toBe('59.99');
+  });
+
+  it('dependsOn changes the plan hash, so a reviewer confirms the order too', async () => {
+    const { undo } = await appliedSync();
+    const flat = structuredClone(undo);
+    for (const op of flat.ops) delete op.dependsOn;
+    expect(changeSetHashOf(flat)).not.toBe(changeSetHashOf(undo));
   });
 });

@@ -204,6 +204,10 @@ export function assertRunMatches(changeSet: ChangeSet, run: ApplyRun): void {
  * create that answered 5xx, or an intro offer created in some territories),
  * except ones the store refused with a 4xx and nothing recorded as written.
  * Intro creates are undone only for the resources the run recorded creating.
+ * Dependencies are reversed: where an offer op depended on base-price ops
+ * (a sync plan), the base-price reverts depend on the offer's revert, so
+ * offers are reverted first and a base price is not reverted under an offer
+ * whose revert failed.
  * The undo op is judged against the store like any other, so a part that
  * never happened is simply skipped. The result is an ordinary plan: review
  * it, then apply it like any other (it is idempotent too).
@@ -216,6 +220,8 @@ export function buildUndoChangeSet(
   assertRunMatches(changeSet, run);
   const byId = new Map(changeSet.ops.map((op) => [op.id, op]));
   const inverses: Array<WithoutId<ChangeOp>> = [];
+  /** Original op ID -> index of its inverse in `inverses` */
+  const inverseOf = new Map<string, number>();
   const notReversible: Array<{ opId: string; reason: string }> = [];
   const caveats: Array<{ index: number; message: string }> = [];
 
@@ -237,16 +243,31 @@ export function buildUndoChangeSet(
           caveats.push({ index: inverses.length, message: inverse.caveat });
           notReversible.push({ opId: op.id, reason: `Partly: ${inverse.caveat}` });
         }
+        inverseOf.set(op.id, inverses.length);
         inverses.push(inverse.op);
       }
       continue;
     }
     const inverse = invertOp(op as BasePriceOp);
     if ('notReversible' in inverse) notReversible.push({ opId: op.id, reason: inverse.notReversible });
-    else inverses.push(inverse.op);
+    else {
+      inverseOf.set(op.id, inverses.length);
+      inverses.push(inverse.op);
+    }
   }
 
   const ops = numberOps<ChangeOp>(inverses);
+  // X depended on Y -> undo(Y) depends on undo(X)
+  for (const op of changeSet.ops) {
+    const from = inverseOf.get(op.id);
+    if (from === undefined) continue;
+    for (const dep of op.dependsOn ?? []) {
+      const to = inverseOf.get(dep);
+      if (to === undefined) continue;
+      const target = ops[to];
+      target.dependsOn = [...new Set([...(target.dependsOn ?? []), ops[from].id])].sort();
+    }
+  }
   const createdAt = options.createdAt ?? new Date().toISOString();
   const undo: ChangeSet = {
     schemaVersion: CHANGESET_SCHEMA_VERSION,

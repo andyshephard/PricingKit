@@ -63,6 +63,12 @@ export interface BasePriceOp {
   idempotencyKey: string;
   /** Free-form context for reviewers (e.g. how far snapping moved the price) */
   note?: string;
+  /**
+   * Offer ops (IDs in the same ChangeSet) this op waits for. Set in undo
+   * plans of sync runs: a base price is reverted only after the offers that
+   * were derived from it are, and not at all if reverting them failed.
+   */
+  dependsOn?: string[];
 }
 
 /** Shape reserved for later op kinds. Not accepted by parseChangeSet. */
@@ -199,6 +205,7 @@ const basePriceOpSchema = z
     options: z.object({ preserveCurrentPrice: z.boolean().optional() }).strict().optional(),
     idempotencyKey: z.string().min(1),
     note: z.string().optional(),
+    dependsOn: z.array(z.string().min(1)).min(1).optional(),
   })
   .strict();
 
@@ -272,19 +279,24 @@ export function checkChangeSetRules(changeSet: ChangeSet): string[] {
     if (ids.has(op.id)) problems.push(`${where}: duplicate op id`);
     ids.add(op.id);
 
+    // dependsOn links a base-price op and an offer op of the same product, one level deep (so no
+    // cycles): sync plans make offer ops wait for base ops, their undo plans the other way round
+    const deps = (op as { dependsOn?: string[] }).dependsOn ?? [];
+    if (new Set(deps).size !== deps.length) problems.push(`${where}: dependsOn lists an op twice`);
+    for (const dep of deps) {
+      const target = byId.get(dep);
+      if (!target) problems.push(`${where}: dependsOn names ${dep}, which isn't in the plan`);
+      else if (isOfferOp(target) === isOfferOp(op)) {
+        problems.push(`${where}: dependsOn names ${dep}; an offer op can depend only on base-price ops and a base-price op only on offer ops`);
+      } else if (productKey(target.target.product) !== productKey(op.target.product)) problems.push(`${where}: dependsOn names ${dep}, an op on another product`);
+      else if ((target as { dependsOn?: string[] }).dependsOn?.length) problems.push(`${where}: dependsOn names ${dep}, which itself depends on other ops`);
+    }
+
     if (isOfferOp(op)) {
       problems.push(...checkOfferOpRules(op, appPlatform));
       const slotKey = `offer|${offerTargetKey(op)}`;
       if (slots.has(slotKey)) problems.push(`${where}: another op already changes ${op.target.offer.kind} "${op.target.offer.key}"`);
       slots.add(slotKey);
-      const deps = op.dependsOn ?? [];
-      if (new Set(deps).size !== deps.length) problems.push(`${where}: dependsOn lists an op twice`);
-      for (const dep of deps) {
-        const base = byId.get(dep);
-        if (!base) problems.push(`${where}: dependsOn names ${dep}, which isn't in the plan`);
-        else if (isOfferOp(base)) problems.push(`${where}: dependsOn names ${dep}, an offer op; only base-price ops can be depended on`);
-        else if (productKey(base.target.product) !== productKey(op.target.product)) problems.push(`${where}: dependsOn names ${dep}, an op on another product`);
-      }
       continue;
     }
     if ((RESERVED_OP_KINDS as readonly string[]).includes(op.kind)) {
