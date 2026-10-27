@@ -133,6 +133,34 @@ describe('apply --allow-base-prices (App Store)', () => {
     expect(store.subs.get(A)!.base).toEqual({ USA: '49.99', GBR: '44.99' });
   });
 
+  it('undo of a base op that failed with a 5xx sends nothing when someone else has since set a third price', async () => {
+    for (const afterWrite of [true, false]) {
+      store.subs.get(A)!.base = { USA: '49.99', GBR: '44.99' };
+      const out = `third-${afterWrite}.json`;
+      const { hash } = await planBase({ US: '54.99' }, out);
+      store.failures.push({ method: 'POST', path: /^\/subscriptionPrices$/, status: 503, afterWrite });
+      const first = await run(['apply', out, '--confirm', hash, '--allow-base-prices', '--json'], { env, cwd: tmp.dir });
+      expect(first.code).toBe(1);
+      expect(JSON.parse(first.stdout).ops[0]).toMatchObject({ status: 'failed', attempts: 1, error: { status: 503 } });
+
+      // The failed op may have taken effect, so undo includes its revert (54.99 -> 49.99)
+      const runLog = out.replace('.json', '.run.json');
+      const undoFile = out.replace('.json', '.undo.json');
+      expect((await run(['undo', out, runLog], { env: {}, cwd: tmp.dir })).code).toBe(2);
+      const undo = readPlan(undoFile);
+      expect(basePriceOps(undo).map((op) => [op.target.territory, op.before!.amount, op.after!.amount])).toEqual([['US', '54.99', '49.99']]);
+
+      // Meanwhile someone sets a third price in the store
+      store.subs.get(A)!.base.USA = '27.99';
+      const writes = store.writes().length;
+      const undone = await run(['apply', undoFile, '--confirm', changeSetHash(undo), '--allow-base-prices', '--json'], { env, cwd: tmp.dir });
+      expect(undone.code).toBe(1);
+      expect(JSON.parse(undone.stdout).ops[0]).toMatchObject({ status: 'failed', attempts: 0, error: { code: 'STATE_CHANGED' } });
+      expect(store.writes()).toHaveLength(writes);
+      expect(store.subs.get(A)!.base.USA).toBe('27.99');
+    }
+  });
+
   it('replaces a scheduled price create-first, delete-after, and undo puts the old one back', async () => {
     const first = await planBase({ US: '54.99' }, 'sched-1.json', { startDate: '2030-06-01' });
     expect(first.plan.ops.map((op) => op.kind)).toEqual(['schedulePrice']);
