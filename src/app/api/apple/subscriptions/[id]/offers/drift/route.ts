@@ -10,7 +10,8 @@ const querySchema = z.object({
   kind: z.enum(APPLE_OFFER_KINDS),
   offer: z.string().min(1).max(200),
   percent: z.string().min(1).max(20),
-  basis: z.enum(['perPeriod', 'totalOverDuration']).default('perPeriod'),
+  // Omitted: totalOverDuration for a pay-up-front offer, perPeriod otherwise (decided once the offer is read)
+  basis: z.enum(['perPeriod', 'totalOverDuration']).optional(),
   snap: z.enum(['nearest', 'floor', 'ceil']).default('nearest'),
   threshold: z
     .string()
@@ -18,7 +19,7 @@ const querySchema = z.object({
     .optional(),
 });
 
-// GET /api/apple/subscriptions/[id]/offers/drift?kind=apple.promo&offer=<id or key>&percent=50&basis=perPeriod&snap=nearest
+// GET /api/apple/subscriptions/[id]/offers/drift?kind=apple.promo&offer=<id or key>&percent=50[&basis=perPeriod|totalOverDuration][&snap=nearest]
 // Read-only: compares one offer's prices with "percent of each territory's
 // current price, snapped to its price points" and returns an OfferDriftReport.
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -37,7 +38,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { kind, offer, percent, basis, snap, threshold } = parsed.data;
     let rule;
     try {
-      rule = parsePercentOfCurrentRule({ type: 'percentOfCurrent', percent, basis, snap });
+      const parsedRule = parsePercentOfCurrentRule({ type: 'percentOfCurrent', percent, basis: basis ?? 'perPeriod', snap });
+      rule = { type: parsedRule.type, percent: parsedRule.percent, snap: parsedRule.snap, ...(basis ? { basis } : {}) };
     } catch (error) {
       if (error instanceof InvalidOfferSpecError) return NextResponse.json({ error: error.problems.join('; ') }, { status: 400 });
       throw error;

@@ -2,11 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import { RequestBudget } from '@/lib/utils/request-budget';
 
+const session = {
+  credentials: { privateKey: 'unused', keyId: 'TESTKEY123', issuerId: 'issuer', bundleId: 'com.example.test' },
+  bundleId: 'com.example.test',
+};
+const getAppleAuthFromCookies = vi.fn();
 vi.mock('@/middleware/auth', () => ({
-  getAppleAuthFromCookies: vi.fn(async () => ({
-    credentials: { privateKey: 'unused', keyId: 'TESTKEY123', issuerId: 'issuer', bundleId: 'com.example.test' },
-    bundleId: 'com.example.test',
-  })),
+  getAppleAuthFromCookies: () => getAppleAuthFromCookies(),
 }));
 
 const checkOfferDrift = vi.fn();
@@ -28,6 +30,8 @@ function call(id: string, query: string) {
 
 beforeEach(() => {
   checkOfferDrift.mockReset();
+  getAppleAuthFromCookies.mockReset();
+  getAppleAuthFromCookies.mockResolvedValue(session);
   constructed.length = 0;
 });
 
@@ -49,14 +53,29 @@ describe('GET offers/drift', () => {
     expect(constructed[0].budget).toBeInstanceOf(RequestBudget);
   });
 
-  it('defaults to perPeriod and nearest', async () => {
+  it('leaves the basis to the adapter (decided by the offer mode) and defaults snapping to nearest', async () => {
     checkOfferDrift.mockResolvedValue({});
     await call('123', 'kind=apple.winBack&offer=x&percent=25');
-    expect(checkOfferDrift.mock.calls[0][1].rule).toEqual({ type: 'percentOfCurrent', percent: '25', basis: 'perPeriod', snap: 'nearest' });
+    expect(checkOfferDrift.mock.calls[0][1].rule).toEqual({ type: 'percentOfCurrent', percent: '25', snap: 'nearest' });
+  });
+
+  it('returns 401 without a session and never builds an adapter', async () => {
+    getAppleAuthFromCookies.mockResolvedValue(null);
+    expect((await call('123', 'kind=apple.promo&offer=x&percent=50')).status).toBe(401);
+    expect(constructed).toHaveLength(0);
+    expect(checkOfferDrift).not.toHaveBeenCalled();
+  });
+
+  it('returns 422 when the rule cannot apply to the offer', async () => {
+    const { OfferRuleError } = await import('@/lib/pricing');
+    checkOfferDrift.mockRejectedValue(new OfferRuleError('A free trial has no price to derive'));
+    const response = await call('123', 'kind=apple.intro&offer=x&percent=50');
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({ error: 'A free trial has no price to derive' });
   });
 
   it('refuses bad input before reading anything', async () => {
-    for (const query of ['kind=apple.promo&offer=x&percent=150', 'kind=play.offer&offer=x&percent=50', 'kind=apple.promo&percent=50', 'kind=apple.promo&offer=x&percent=abc']) {
+    for (const query of ['kind=apple.promo&offer=x&percent=150', 'kind=apple.promo&offer=x&percent=12.34567', 'kind=play.offer&offer=x&percent=50', 'kind=apple.promo&percent=50', 'kind=apple.promo&offer=x&percent=abc']) {
       expect((await call('123', query)).status).toBe(400);
     }
     expect((await call('com.example.sub', 'kind=apple.promo&offer=x&percent=50')).status).toBe(400);

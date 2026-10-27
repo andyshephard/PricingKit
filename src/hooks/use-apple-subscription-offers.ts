@@ -17,6 +17,8 @@ export function useAppleSubscriptionOffers(subscriptionId: string | undefined) {
     queryKey: ['apple', 'subscription-offers', subscriptionId],
     queryFn: () => getJson(`/api/apple/subscriptions/${encodeURIComponent(subscriptionId!)}/offers`, 'Failed to fetch offers'),
     enabled: !!subscriptionId,
+    // A failed read is not retried: a 429 or a spent request budget only gets worse by retrying
+    retry: false,
   });
 }
 

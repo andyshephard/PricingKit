@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { AlertTriangle, ChevronDown, ChevronRight, Loader2, Tag } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, Loader2, RefreshCw, Tag } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { getTerritoryByAlpha2 } from '@/lib/apple-connect/territories';
-import type { AppleOfferKind, OfferDriftStatus, StoreOffer } from '@/lib/pricing';
+import { defaultOfferBasis, type AppleOfferKind, type OfferDriftStatus, type StoreOffer } from '@/lib/pricing';
 import { useAppleOfferDrift, useAppleSubscriptionOffers, type OfferDriftQuery } from '@/hooks/use-apple-subscription-offers';
 
 const KIND_LABELS: Record<string, string> = {
@@ -94,10 +94,11 @@ function OfferPrices({ offer }: { offer: StoreOffer }) {
 
 function DriftCheck({ subscriptionId, offer }: { subscriptionId: string; offer: StoreOffer }) {
   const [percent, setPercent] = useState('50');
-  const [basis, setBasis] = useState<OfferDriftQuery['basis']>('perPeriod');
+  // A pay-up-front offer is priced for its whole duration
+  const [basis, setBasis] = useState<OfferDriftQuery['basis']>(defaultOfferBasis(offer.mode));
   const [snap, setSnap] = useState<OfferDriftQuery['snap']>('nearest');
   const [query, setQuery] = useState<OfferDriftQuery | null>(null);
-  const { data, isFetching, error } = useAppleOfferDrift(subscriptionId, query);
+  const { data, isFetching, error, refetch } = useAppleOfferDrift(subscriptionId, query);
   const report = data?.report;
   const drifted = report?.territories.filter((t) => t.status !== 'match') ?? [];
 
@@ -136,12 +137,18 @@ function DriftCheck({ subscriptionId, offer }: { subscriptionId: string; offer: 
         </div>
         <Button
           variant="outline"
-          disabled={isFetching || !/^\d+(\.\d+)?$/.test(percent)}
+          disabled={isFetching || !/^\d+(\.\d{1,4})?$/.test(percent)}
           onClick={() => setQuery({ kind: offer.kind as AppleOfferKind, offer: offer.storeId, percent, basis, snap })}
         >
           {isFetching && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           Check
         </Button>
+        {query && (
+          <Button variant="ghost" disabled={isFetching} onClick={() => refetch()}>
+            <RefreshCw className="mr-2 h-4 w-4" />
+            Re-check
+          </Button>
+        )}
       </div>
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
