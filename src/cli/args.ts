@@ -1,0 +1,212 @@
+// Argument parsing with node:util parseArgs (no dependency). Each command
+// declares its own options; unknown options are an error.
+
+import { parseArgs, type ParseArgsConfig } from 'node:util';
+import { DEFAULT_REQUEST_BUDGET_LIMIT } from '@/lib/utils/request-budget';
+import { UsageError } from './errors';
+
+export const COMMANDS = ['export', 'plan', 'diff', 'offers', 'drift'] as const;
+export type CommandName = (typeof COMMANDS)[number];
+
+type OptionSpec = NonNullable<ParseArgsConfig['options']>;
+
+const COMMON: OptionSpec = {
+  json: { type: 'boolean' },
+  budget: { type: 'string' },
+  help: { type: 'boolean', short: 'h' },
+};
+
+const APP: OptionSpec = {
+  'bundle-id': { type: 'string' },
+  'package-name': { type: 'string' },
+};
+
+const OPTIONS: Record<CommandName, OptionSpec> = {
+  export: { ...COMMON, ...APP, subscription: { type: 'string' }, 'base-plan': { type: 'string' }, out: { type: 'string', short: 'o' } },
+  plan: { ...COMMON, ...APP, spec: { type: 'string' }, out: { type: 'string', short: 'o' }, 'state-out': { type: 'string' } },
+  diff: { ...COMMON, plan: { type: 'string' } },
+  offers: { ...COMMON, ...APP, subscription: { type: 'string' }, kind: { type: 'string' } },
+  drift: {
+    ...COMMON,
+    ...APP,
+    subscription: { type: 'string' },
+    kind: { type: 'string' },
+    offer: { type: 'string' },
+    percent: { type: 'string' },
+    basis: { type: 'string' },
+    snap: { type: 'string' },
+    threshold: { type: 'string' },
+    territories: { type: 'string' },
+  },
+};
+
+const ALLOWS_POSITIONAL: Partial<Record<CommandName, true>> = { diff: true };
+
+export type Flags = Record<string, string | boolean | undefined>;
+
+export type ParsedArgs =
+  | { kind: 'help'; command?: CommandName }
+  | { kind: 'version' }
+  | { kind: 'command'; command: CommandName; flags: Flags; positionals: string[]; json: boolean; budget: number };
+
+export const MAX_BUDGET = 100_000;
+
+export function parseBudget(value: string | undefined): number {
+  if (value === undefined) return DEFAULT_REQUEST_BUDGET_LIMIT;
+  if (!/^\d+$/.test(value)) throw new UsageError(`--budget must be a whole number of requests, got ${JSON.stringify(value)}`);
+  const n = Number(value);
+  if (n < 1 || n > MAX_BUDGET) throw new UsageError(`--budget must be between 1 and ${MAX_BUDGET}`);
+  return n;
+}
+
+function isCommand(value: string | undefined): value is CommandName {
+  return (COMMANDS as readonly string[]).includes(value ?? '');
+}
+
+/** Parse argv (without node and the script). Throws UsageError. */
+export function parseCliArgs(argv: string[]): ParsedArgs {
+  const [first, ...rest] = argv;
+  if (first === undefined || first === '--help' || first === '-h') return { kind: 'help' };
+  if (first === '--version' || first === '-v') return { kind: 'version' };
+  if (first === 'help') {
+    if (rest[0] !== undefined && !isCommand(rest[0])) throw new UsageError(`Unknown command "${rest[0]}". Commands: ${COMMANDS.join(', ')}`);
+    return { kind: 'help', command: rest[0] as CommandName | undefined };
+  }
+  if (!isCommand(first)) {
+    throw new UsageError(
+      first.startsWith('-') ? `Give a command first. Commands: ${COMMANDS.join(', ')}` : `Unknown command "${first}". Commands: ${COMMANDS.join(', ')}`
+    );
+  }
+
+  let parsed;
+  try {
+    parsed = parseArgs({ args: rest, options: OPTIONS[first], strict: true, allowPositionals: Boolean(ALLOWS_POSITIONAL[first]) });
+  } catch (error) {
+    throw new UsageError(`${(error as Error).message.replace(/\s*To specify a positional argument[\s\S]*$/, '')} (see pricingkit help ${first})`);
+  }
+  const flags = parsed.values as Flags;
+  if (flags.help) return { kind: 'help', command: first };
+  return {
+    kind: 'command',
+    command: first,
+    flags,
+    positionals: parsed.positionals,
+    json: flags.json === true,
+    budget: parseBudget(flags.budget as string | undefined),
+  };
+}
+
+/** A string flag, or a UsageError naming it when it's required and missing */
+export function stringFlag(flags: Flags, name: string, required: true): string;
+export function stringFlag(flags: Flags, name: string, required?: false): string | undefined;
+export function stringFlag(flags: Flags, name: string, required = false): string | undefined {
+  const v = flags[name];
+  if (typeof v === 'string' && v.trim() !== '') return v.trim();
+  if (typeof v === 'string') throw new UsageError(`--${name} can't be empty`);
+  if (required) throw new UsageError(`--${name} is required`);
+  return undefined;
+}
+
+export type AppSelection = { platform: 'apple'; bundleId: string } | { platform: 'google'; packageName: string };
+
+/** Exactly one of --bundle-id (App Store) or --package-name (Google Play) */
+export function appSelection(flags: Flags, required = true): AppSelection | undefined {
+  const bundleId = stringFlag(flags, 'bundle-id');
+  const packageName = stringFlag(flags, 'package-name');
+  if (bundleId && packageName) throw new UsageError('Give either --bundle-id (App Store) or --package-name (Google Play), not both');
+  if (bundleId) return { platform: 'apple', bundleId };
+  if (packageName) return { platform: 'google', packageName };
+  if (required) throw new UsageError('Choose the app: --bundle-id <id> (App Store) or --package-name <name> (Google Play)');
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Help
+
+const SHARED_HELP = `Shared options:
+  --json            Machine-readable JSON on stdout
+  --budget <n>      Most store requests this run may send (default ${DEFAULT_REQUEST_BUDGET_LIMIT})
+  -h, --help        Help for the command`;
+
+export const MAIN_HELP = `pricingkit: read store prices, plan price changes and check offers for drift.
+Read-only: no command writes to a store.
+
+Usage: pricingkit <command> [options]
+
+Commands:
+  export   Current prices of a subscription (App Store) or base plan (Google Play), as a state snapshot
+  plan     Turn a pricing spec into a plan (ChangeSet). A dry run: never writes to a store
+  diff     Human-readable summary of a plan file
+  offers   List an App Store subscription's offers with their prices per territory
+  drift    Check an App Store offer's prices against a percent-of-current rule
+
+${SHARED_HELP}
+
+Exit codes:
+  0  OK (and, for plan, diff and drift: nothing to change)
+  1  Error: bad arguments, missing credentials, a store error or a spent budget
+  2  Drift found, or the plan has ops
+
+Credentials come only from environment variables:
+  App Store Connect: ASC_KEY_ID, ASC_ISSUER_ID, and ASC_PRIVATE_KEY (the .p8 contents) or ASC_PRIVATE_KEY_PATH
+  Google Play:       GOOGLE_APPLICATION_CREDENTIALS (key file path) or GOOGLE_SERVICE_ACCOUNT_JSON (key JSON)
+
+Run "pricingkit help <command>" for a command's options.`;
+
+export const COMMAND_HELP: Record<CommandName, string> = {
+  export: `Usage:
+  pricingkit export --bundle-id <id> --subscription <subscription id> [--out <file>]
+  pricingkit export --package-name <name> --subscription <product id> --base-plan <id> [--out <file>]
+
+Reads the current (and scheduled) price in every territory and prints it as a
+pricingkit.state snapshot (with --json) or a table. --out also writes the JSON
+snapshot to a file. On the App Store, --subscription is the numeric App Store
+Connect subscription ID.
+
+${SHARED_HELP}`,
+  plan: `Usage:
+  pricingkit plan --spec <spec.json> [--out <plan.json>] [--state-out <state.json>]
+
+Reads the products in the spec, turns its targets into per-territory prices,
+snaps them to valid store prices and writes the ChangeSet (default
+pricingkit-plan.json). A dry run: it only reads from the store (Google Play's
+price conversion is a read-only call). Prints the ChangeSet with --json,
+otherwise a summary. --state-out writes the prices the plan was made against.
+The app comes from the spec; --bundle-id or --package-name, if given, must match.
+
+Exit code 2 when the plan has ops, 0 when everything is already at target.
+
+${SHARED_HELP}`,
+  diff: `Usage:
+  pricingkit diff <plan.json>
+  pricingkit diff --plan <plan.json>
+
+Summarises a plan file: ops per product and territory with before, after and
+change, skipped territories by reason, and warnings. Sends no store requests.
+Exit code 2 when the plan has ops.
+
+${SHARED_HELP}`,
+  offers: `Usage:
+  pricingkit offers --bundle-id <id> --subscription <subscription id> [--kind <kind>]
+
+Lists the subscription's introductory, promotional, offer code and win-back
+offers with each territory's price. --kind filters: apple.intro, apple.promo,
+apple.offerCode, apple.winBack. App Store only.
+
+${SHARED_HELP}`,
+  drift: `Usage:
+  pricingkit drift --bundle-id <id> --subscription <subscription id>
+                   --kind <kind> --offer <offer id or key> --percent <n>
+                   [--basis perPeriod|totalOverDuration] [--snap nearest|floor|ceil]
+                   [--threshold <0..1>] [--territories all|GB,US,...]
+
+Checks every territory's offer price against "percent of that territory's
+current price, snapped to its price points" and prints a pricingkit.offerDrift
+report. Without --basis, a pay-up-front offer is checked over its whole
+duration and any other offer per billing period. App Store only.
+
+Exit code 2 when the offer is not in sync (any mismatch, missing, extra,
+unresolved or unreadable territory), 0 when every territory matches.
+
+${SHARED_HELP}`,
+};
