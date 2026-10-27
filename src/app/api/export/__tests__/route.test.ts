@@ -16,8 +16,10 @@ const mocks = vi.hoisted(() => ({
   getAppleSubscriptionPrices: vi.fn(),
 }));
 
-vi.mock('../../auth/route', () => ({ getAuthFromCookies: mocks.getAuthFromCookies }));
-vi.mock('../../apple/auth/route', () => ({ getAppleAuthFromCookies: mocks.getAppleAuthFromCookies }));
+vi.mock('@/middleware/auth', () => ({
+  getGoogleAuthFromCookies: mocks.getAuthFromCookies,
+  getAppleAuthFromCookies: mocks.getAppleAuthFromCookies,
+}));
 // Only read functions are provided: any write call would fail as undefined.
 vi.mock('@/lib/google-play/products', () => ({ getInAppProductRaw: mocks.getInAppProductRaw }));
 vi.mock('@/lib/google-play/subscriptions', () => ({ getSubscription: mocks.getGoogleSubscription }));

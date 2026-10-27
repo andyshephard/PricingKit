@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 import { ApiError } from '@/lib/utils/api-error';
 
 // No network: auth and every Apple call are mocked
-vi.mock('../../../auth/route', () => ({
+vi.mock('@/middleware/auth', () => ({
   getAppleAuthFromCookies: vi.fn(async () => ({
     credentials: {
       privateKey: 'unused',

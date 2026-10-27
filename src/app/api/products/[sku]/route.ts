@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getAuthFromCookies } from '../../auth/route';
+import { getGoogleAuthFromCookies } from '@/middleware/auth';
 import { getInAppProduct, updateInAppProductPrices, deleteRegionPrice } from '@/lib/google-play/products';
 import { GOOGLE_PRICING_WRITE_DENIED_ERROR } from '@/lib/google-play/errors';
 import {
@@ -26,7 +26,7 @@ export async function GET(
   context: RouteParams
 ) {
   try {
-    const auth = await getAuthFromCookies();
+    const auth = await getGoogleAuthFromCookies();
 
     if (!auth) {
       return NextResponse.json(
@@ -84,7 +84,7 @@ export async function PATCH(
   context: RouteParams
 ) {
   try {
-    const auth = await getAuthFromCookies();
+    const auth = await getGoogleAuthFromCookies();
 
     if (!auth) {
       return NextResponse.json(
@@ -162,7 +162,7 @@ export async function DELETE(
   context: RouteParams
 ) {
   try {
-    const auth = await getAuthFromCookies();
+    const auth = await getGoogleAuthFromCookies();
 
     if (!auth) {
       return NextResponse.json(

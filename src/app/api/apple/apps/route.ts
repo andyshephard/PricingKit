@@ -1,16 +1,7 @@
 import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import {
-  appleApiRequest,
-  AppleApiError,
-  getAppleSessionCredentials,
-} from '@/lib/apple-connect/client';
-import type {
-  AppleApiListResponse,
-  AppleConnectCredentials,
-} from '@/lib/apple-connect/types';
-
-const APPLE_SESSION_COOKIE = 'apple_session';
+import { appleApiRequest, AppleApiError } from '@/lib/apple-connect/client';
+import type { AppleApiListResponse } from '@/lib/apple-connect/types';
+import { getAppleSessionFromCookies } from '@/middleware/auth';
 
 interface AppleAppListItem {
   id: string;
@@ -30,21 +21,10 @@ export interface AppleAppSummary {
 }
 
 export async function GET() {
-  const cookieStore = await cookies();
-  const sessionId = cookieStore.get(APPLE_SESSION_COOKIE)?.value;
-  if (!sessionId) {
+  const credentials = await getAppleSessionFromCookies();
+  if (!credentials) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
   }
-
-  const sessionCredentials = await getAppleSessionCredentials(sessionId);
-  if (!sessionCredentials) {
-    return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-  }
-
-  const credentials: AppleConnectCredentials = {
-    ...sessionCredentials,
-    bundleId: sessionCredentials.bundleId ?? '',
-  };
 
   try {
     const response = await appleApiRequest<AppleApiListResponse<AppleAppListItem>>(

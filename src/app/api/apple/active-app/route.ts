@@ -9,10 +9,13 @@ import type {
   AppleApiListResponse,
   AppleConnectCredentials,
 } from '@/lib/apple-connect/types';
+import {
+  APPLE_BUNDLE_ID_COOKIE,
+  APPLE_SESSION_COOKIE,
+  SESSION_COOKIE_MAX_AGE,
+} from '@/lib/session';
 
-const APPLE_SESSION_COOKIE = 'apple_session';
-const APPLE_BUNDLE_ID_COOKIE = 'apple_bundle_id';
-const COOKIE_MAX_AGE = 24 * 60 * 60;
+const COOKIE_MAX_AGE = SESSION_COOKIE_MAX_AGE;
 
 export async function POST(request: NextRequest) {
   const cookieStore = await cookies();

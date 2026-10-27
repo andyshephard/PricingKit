@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
-import { getAuthFromCookies } from '../auth/route';
+import { getGoogleAuthFromCookies } from '@/middleware/auth';
 import { listSubscriptions } from '@/lib/google-play/subscriptions';
 
 export async function GET() {
   try {
-    const auth = await getAuthFromCookies();
+    const auth = await getGoogleAuthFromCookies();
 
     if (!auth) {
       return NextResponse.json(

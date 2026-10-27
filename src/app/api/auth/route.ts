@@ -13,6 +13,11 @@ import {
   MISSING_ENCRYPTION_KEY_MESSAGE,
   canStoreSessions,
 } from '@/lib/encryption';
+import {
+  GOOGLE_PACKAGE_NAME_COOKIE,
+  GOOGLE_SESSION_COOKIE,
+  SESSION_COOKIE_MAX_AGE,
+} from '@/lib/session';
 
 interface ProbeListResp<T> {
   subscriptions?: T[];
@@ -21,9 +26,9 @@ interface ProbeProduct {
   productId?: string;
 }
 
-const SESSION_COOKIE = 'gplay_session';
-const PACKAGE_NAME_COOKIE = 'gplay_package_name';
-const COOKIE_MAX_AGE = 24 * 60 * 60; // 24 hours
+const SESSION_COOKIE = GOOGLE_SESSION_COOKIE;
+const PACKAGE_NAME_COOKIE = GOOGLE_PACKAGE_NAME_COOKIE;
+const COOKIE_MAX_AGE = SESSION_COOKIE_MAX_AGE;
 
 export async function POST(request: NextRequest) {
   try {
@@ -210,25 +215,4 @@ export async function DELETE() {
       { status: 500 }
     );
   }
-}
-
-// Helper to get credentials and package name from cookies (for use in other API routes)
-export async function getAuthFromCookies(): Promise<{
-  credentials: ServiceAccountCredentials;
-  packageName: string;
-} | null> {
-  const cookieStore = await cookies();
-  const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
-  const packageName = cookieStore.get(PACKAGE_NAME_COOKIE)?.value;
-
-  if (!sessionId || !packageName) {
-    return null;
-  }
-
-  const credentials = await getSessionCredentials(sessionId);
-  if (!credentials) {
-    return null;
-  }
-
-  return { credentials, packageName };
 }

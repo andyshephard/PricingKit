@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getAppleAuthFromCookies } from '../../auth/route';
+import { getAppleAuthFromCookies } from '@/middleware/auth';
 import {
   getSubscription,
   getSubscriptionById,

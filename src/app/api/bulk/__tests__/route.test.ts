@@ -3,8 +3,8 @@ import { NextRequest } from 'next/server';
 import type { InAppProduct } from '@/lib/google-play/types';
 
 // No network: auth and every Google Play call are mocked
-vi.mock('../../auth/route', () => ({
-  getAuthFromCookies: vi.fn(async () => ({
+vi.mock('@/middleware/auth', () => ({
+  getGoogleAuthFromCookies: vi.fn(async () => ({
     credentials: { client_email: 'test@example.com', private_key: 'unused' },
     packageName: 'com.example.app',
   })),

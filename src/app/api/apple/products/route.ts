@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getAppleAuthFromCookies } from '../auth/route';
+import { getAppleAuthFromCookies } from '@/middleware/auth';
 import { listInAppPurchases } from '@/lib/apple-connect';
 import { appleErrorResponse } from '../_lib/error-response';
 

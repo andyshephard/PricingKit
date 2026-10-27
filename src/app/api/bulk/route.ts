@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getAuthFromCookies } from '../auth/route';
+import { getGoogleAuthFromCookies } from '@/middleware/auth';
 import {
   getInAppProduct,
   updateInAppProductPrices,
@@ -38,7 +38,7 @@ const bulkUpdateSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    const auth = await getAuthFromCookies();
+    const auth = await getGoogleAuthFromCookies();
 
     if (!auth) {
       return NextResponse.json(

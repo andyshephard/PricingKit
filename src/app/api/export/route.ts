@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getAuthFromCookies } from '../auth/route';
-import { getAppleAuthFromCookies } from '../apple/auth/route';
+import { getAppleAuthFromCookies, getGoogleAuthFromCookies } from '@/middleware/auth';
 import { getInAppProductRaw } from '@/lib/google-play/products';
 import { getSubscription as getGoogleSubscription } from '@/lib/google-play/subscriptions';
 import {
@@ -85,7 +84,7 @@ function errorStatus(error: unknown): number | undefined {
 }
 
 async function buildGoogleExport(query: ExportQuery): Promise<PriceExport | Response> {
-  const auth = await getAuthFromCookies();
+  const auth = await getGoogleAuthFromCookies();
   if (!auth) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
   }

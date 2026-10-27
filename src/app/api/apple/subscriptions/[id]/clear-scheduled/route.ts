@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAppleAuthFromCookies } from '../../../auth/route';
+import { getAppleAuthFromCookies } from '@/middleware/auth';
 import {
   getSubscription,
   getSubscriptionById,

@@ -1,8 +1,9 @@
 /**
- * Authentication Middleware Utilities
+ * Authentication helpers for API routes.
  *
- * Provides reusable authentication helpers for API routes.
- * Reduces code duplication and ensures consistent auth handling.
+ * The single place that turns session cookies into store credentials. Route
+ * files must import these instead of defining their own (or importing a
+ * helper from another route file).
  */
 
 import { NextResponse } from 'next/server';
@@ -12,10 +13,12 @@ import { getAppleSessionCredentials } from '@/lib/apple-connect/client';
 import type { ServiceAccountCredentials } from '@/lib/google-play/types';
 import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
 
-const GOOGLE_SESSION_COOKIE = 'gplay_session';
-const GOOGLE_PACKAGE_NAME_COOKIE = 'gplay_package_name';
-const APPLE_SESSION_COOKIE = 'apple_session';
-const APPLE_BUNDLE_ID_COOKIE = 'apple_bundle_id';
+import {
+  APPLE_BUNDLE_ID_COOKIE,
+  APPLE_SESSION_COOKIE,
+  GOOGLE_PACKAGE_NAME_COOKIE,
+  GOOGLE_SESSION_COOKIE,
+} from '@/lib/session';
 
 /**
  * Google Play authentication result
@@ -69,6 +72,25 @@ export async function getGoogleAuthFromCookies(): Promise<GoogleAuthResult | nul
     return { credentials, packageName };
   } catch (error) {
     console.error('Error getting Google auth from cookies:', error);
+    return null;
+  }
+}
+
+/**
+ * Apple credentials from the session cookie, without requiring an app to be
+ * selected (bundleId is ''). Used before an app is chosen (app list, app switch).
+ * Returns null if not authenticated.
+ */
+export async function getAppleSessionFromCookies(): Promise<AppleConnectCredentials | null> {
+  try {
+    const cookieStore = await cookies();
+    const sessionId = cookieStore.get(APPLE_SESSION_COOKIE)?.value;
+    if (!sessionId) return null;
+    const sessionCredentials = await getAppleSessionCredentials(sessionId);
+    if (!sessionCredentials) return null;
+    return { ...sessionCredentials, bundleId: sessionCredentials.bundleId ?? '' };
+  } catch (error) {
+    console.error('Error getting Apple session from cookies:', error);
     return null;
   }
 }

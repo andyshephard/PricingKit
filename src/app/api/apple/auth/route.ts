@@ -13,10 +13,15 @@ import {
   MISSING_ENCRYPTION_KEY_MESSAGE,
   canStoreSessions,
 } from '@/lib/encryption';
+import {
+  APPLE_BUNDLE_ID_COOKIE,
+  APPLE_SESSION_COOKIE,
+  SESSION_COOKIE_MAX_AGE,
+} from '@/lib/session';
 
-const SESSION_COOKIE = 'apple_session';
-const BUNDLE_ID_COOKIE = 'apple_bundle_id';
-const COOKIE_MAX_AGE = 24 * 60 * 60; // 24 hours
+const SESSION_COOKIE = APPLE_SESSION_COOKIE;
+const BUNDLE_ID_COOKIE = APPLE_BUNDLE_ID_COOKIE;
+const COOKIE_MAX_AGE = SESSION_COOKIE_MAX_AGE;
 
 export async function POST(request: NextRequest) {
   try {
@@ -144,30 +149,4 @@ export async function DELETE() {
       { status: 500 }
     );
   }
-}
-
-// Helper to get Apple credentials from cookies (for use in other API routes)
-export async function getAppleAuthFromCookies(): Promise<{
-  credentials: AppleConnectCredentials;
-  bundleId: string;
-} | null> {
-  const cookieStore = await cookies();
-  const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
-  const bundleId = cookieStore.get(BUNDLE_ID_COOKIE)?.value;
-
-  if (!sessionId || !bundleId) {
-    return null;
-  }
-
-  const sessionCredentials = await getAppleSessionCredentials(sessionId);
-  if (!sessionCredentials) {
-    return null;
-  }
-
-  const credentials: AppleConnectCredentials = {
-    ...sessionCredentials,
-    bundleId,
-  };
-
-  return { credentials, bundleId };
 }

@@ -1,9 +1,13 @@
 import { getSessionCredentials } from './google-play/client';
 import { getAppleSessionCredentials } from './apple-connect/client';
 
-// Cookie names shared with /api/auth and /api/apple/auth
+// Session cookie names, shared by the auth routes and src/middleware/auth.ts
 export const GOOGLE_SESSION_COOKIE = 'gplay_session';
+export const GOOGLE_PACKAGE_NAME_COOKIE = 'gplay_package_name';
 export const APPLE_SESSION_COOKIE = 'apple_session';
+export const APPLE_BUNDLE_ID_COOKIE = 'apple_bundle_id';
+/** Session cookie lifetime in seconds (24 hours) */
+export const SESSION_COOKIE_MAX_AGE = 24 * 60 * 60;
 
 interface CookieReader {
   get(name: string): { value: string } | undefined;

@@ -4,10 +4,13 @@ import {
   googlePlayFetch,
   getSessionCredentials,
 } from '@/lib/google-play/client';
+import {
+  GOOGLE_PACKAGE_NAME_COOKIE,
+  GOOGLE_SESSION_COOKIE,
+  SESSION_COOKIE_MAX_AGE,
+} from '@/lib/session';
 
-const GOOGLE_SESSION_COOKIE = 'gplay_session';
-const GOOGLE_PACKAGE_NAME_COOKIE = 'gplay_package_name';
-const COOKIE_MAX_AGE = 24 * 60 * 60;
+const COOKIE_MAX_AGE = SESSION_COOKIE_MAX_AGE;
 
 export async function POST(request: NextRequest) {
   const cookieStore = await cookies();
