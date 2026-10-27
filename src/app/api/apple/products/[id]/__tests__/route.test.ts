@@ -95,7 +95,7 @@ describe('PATCH /api/apple/products/[id]', () => {
       .mockResolvedValueOnce({ ...product })
       .mockRejectedValueOnce(appleFailure(503));
     getBaseTerritoryForProduct.mockResolvedValue('USA');
-    replaceInAppPurchaseManualPrices.mockResolvedValue({ sent: 1, kept: 0 });
+    replaceInAppPurchaseManualPrices.mockResolvedValue({ sent: 1, kept: 0, keptScheduled: [] });
 
     const response = await PATCH(
       new NextRequest('http://localhost/x', {
@@ -129,7 +129,7 @@ describe('PATCH /api/apple/products/[id]', () => {
     getInAppPurchase.mockResolvedValue({ ...product });
     getInAppPurchasePrices.mockResolvedValue({});
     getBaseTerritoryForProduct.mockResolvedValue('GBR');
-    replaceInAppPurchaseManualPrices.mockResolvedValue({ sent: 2, kept: 5 });
+    replaceInAppPurchaseManualPrices.mockResolvedValue({ sent: 2, kept: 5, keptScheduled: [{ territoryId: 'GBR', startDate: '2099-01-01' }] });
 
     const response = await patch({ GB: { pricePointId: 'pp-gb' }, FR: { pricePointId: 'pp-fr', startDate: '2099-01-01' } });
     expect(response.status).toBe(200);
@@ -138,7 +138,9 @@ describe('PATCH /api/apple/products/[id]', () => {
     expect(iapId).toBe('iap-1');
     expect(changes).toEqual({ GB: { pricePointId: 'pp-gb' }, FR: { pricePointId: 'pp-fr', startDate: '2099-01-01' } });
     expect(base).toBe('GBR');
-    expect((await response.json()).updated).toBe(2);
+    const body = await response.json();
+    expect(body.updated).toBe(2);
+    expect(body.keptScheduled).toEqual([{ territoryId: 'GBR', startDate: '2099-01-01' }]);
   });
 
   it('refuses several territories for a product without a schedule (no base territory to keep)', async () => {
@@ -153,7 +155,7 @@ describe('PATCH /api/apple/products/[id]', () => {
     getInAppPurchase.mockResolvedValue({ ...product });
     getInAppPurchasePrices.mockResolvedValue({});
     getBaseTerritoryForProduct.mockResolvedValue(null);
-    replaceInAppPurchaseManualPrices.mockResolvedValue({ sent: 1, kept: 0 });
+    replaceInAppPurchaseManualPrices.mockResolvedValue({ sent: 1, kept: 0, keptScheduled: [] });
     await patch({ GB: { pricePointId: 'pp-gb' } });
     expect(replaceInAppPurchaseManualPrices.mock.calls[0][3]).toBe('GBR');
   });

@@ -1031,10 +1031,19 @@ export async function getInAppPurchaseManualPrices(
  *
  * POST /inAppPurchasePriceSchedules creates the whole schedule (base
  * territory plus every manual price), so posting one schedule per territory
- * would leave only the last one. This reads the current manual prices,
- * replaces the entries of the territories in `changes`, keeps every other
- * territory's entries (past start dates sent as "now", future ones as
- * scheduled) and sends ONE schedule. Expired entries are dropped.
+ * would leave only the last one. This reads the current manual prices and
+ * sends ONE schedule in which, per territory:
+ *
+ * - its current price is the active entry with the latest start date (sent
+ *   with no start date); older active entries and expired ones are dropped
+ * - its future entries are kept with their dates
+ * - an immediate change replaces only the current price; the territory's
+ *   scheduled prices stay and still take effect on their dates
+ * - a future-dated change adds (or replaces the entry with the same date);
+ *   the current price stays until then
+ *
+ * Nothing is dropped silently: if Apple refuses a schedule that kept a
+ * changed territory's scheduled prices, the error names them.
  */
 export async function replaceInAppPurchaseManualPrices(
   credentials: AppleConnectCredentials,
@@ -1043,31 +1052,78 @@ export async function replaceInAppPurchaseManualPrices(
   baseTerritoryId: string,
   ctx: RequestContext = {},
   today: string = new Date().toISOString().slice(0, 10)
-): Promise<{ sent: number; kept: number }> {
+): Promise<{ sent: number; kept: number; keptScheduled: Array<{ territoryId: string; startDate: string }> }> {
+  const day = (value: string) => value.slice(0, 10);
   const changed = new Map<string, { pricePointId: string; startDate?: string }>();
   for (const [territory, change] of Object.entries(changes)) {
     const alpha3 = territory.length === 2 ? alpha2ToAlpha3(territory) : alpha3ToAlpha2(territory) ? territory : null;
     if (!alpha3) {
       throw new ApiError(`Unknown Apple territory "${territory}"`, { status: 400, code: 'INVALID_TERRITORY', platform: 'apple' });
     }
+    if (change.startDate !== undefined && !(/^\d{4}-\d{2}-\d{2}/.test(change.startDate) && day(change.startDate) > today)) {
+      throw new ApiError(
+        `Start date ${change.startDate} for ${territory} is not a future date; leave it out for an immediate change`,
+        { status: 400, code: 'INVALID_START_DATE', platform: 'apple' }
+      );
+    }
     changed.set(alpha3, change);
   }
 
-  const existing = await getInAppPurchaseManualPrices(credentials, inAppPurchaseId, ctx);
-  const kept = existing
-    .filter((p) => !changed.has(p.territoryId))
-    .filter((p) => !p.endDate || p.endDate.slice(0, 10) > today)
-    .map((p) => ({
-      territoryId: p.territoryId,
-      pricePointId: p.pricePointId,
-      startDate: p.startDate && p.startDate.slice(0, 10) > today ? p.startDate : null,
-    }));
-  const updates = [...changed].map(([territoryId, change]) => ({
-    territoryId,
-    pricePointId: change.pricePointId,
-    startDate: change.startDate ?? null,
-  }));
+  // Current and future entries per territory, from the live schedule
+  const existing = (await getInAppPurchaseManualPrices(credentials, inAppPurchaseId, ctx)).filter(
+    (p) => !p.endDate || day(p.endDate) > today
+  );
+  const byTerritory = new Map<string, { current?: InAppPurchaseManualPrice; future: InAppPurchaseManualPrice[] }>();
+  for (const entry of existing) {
+    const slot = byTerritory.get(entry.territoryId) ?? { future: [] };
+    if (entry.startDate && day(entry.startDate) > today) {
+      slot.future.push(entry);
+    } else if (!slot.current || (entry.startDate ?? '') > (slot.current.startDate ?? '')) {
+      slot.current = entry;
+    }
+    byTerritory.set(entry.territoryId, slot);
+  }
 
-  await updateInAppPurchasePrices(credentials, inAppPurchaseId, [...kept, ...updates], baseTerritoryId, ctx);
-  return { sent: updates.length, kept: kept.length };
+  const schedule: Array<{ territoryId: string; pricePointId: string; startDate: string | null }> = [];
+  const keptScheduled: Array<{ territoryId: string; startDate: string }> = [];
+  let kept = 0;
+  const territories = new Set([...byTerritory.keys(), ...changed.keys()]);
+  for (const territoryId of territories) {
+    const slot = byTerritory.get(territoryId) ?? { future: [] };
+    const change = changed.get(territoryId);
+    const immediate = change && change.startDate === undefined;
+
+    if (immediate) {
+      schedule.push({ territoryId, pricePointId: change.pricePointId, startDate: null });
+    } else if (slot.current) {
+      schedule.push({ territoryId, pricePointId: slot.current.pricePointId, startDate: null });
+      kept++;
+    }
+    for (const future of slot.future) {
+      if (change?.startDate && day(future.startDate!) === day(change.startDate)) continue; // replaced below
+      schedule.push({ territoryId, pricePointId: future.pricePointId, startDate: future.startDate });
+      kept++;
+      if (change) keptScheduled.push({ territoryId, startDate: future.startDate! });
+    }
+    if (change?.startDate) {
+      schedule.push({ territoryId, pricePointId: change.pricePointId, startDate: change.startDate });
+    }
+  }
+
+  try {
+    await updateInAppPurchasePrices(credentials, inAppPurchaseId, schedule, baseTerritoryId, ctx);
+  } catch (error) {
+    const status = getErrorStatus(error);
+    if (keptScheduled.length > 0 && status !== undefined && status >= 400 && status < 500 && status !== 401 && status !== 403 && status !== 429) {
+      const apiError = toApiError(error, 'apple');
+      const listed = keptScheduled.map((s) => `${s.territoryId} from ${day(s.startDate)}`).join(', ');
+      throw new ApiError(
+        `${apiError.message} (the schedule kept the existing scheduled prices of the territories you changed: ${listed}. ` +
+          'They were not removed. If they conflict with your change, change or remove them first.)',
+        { status, code: apiError.code, platform: 'apple', retryable: false, cause: error }
+      );
+    }
+    throw error;
+  }
+  return { sent: changed.size, kept, keptScheduled };
 }

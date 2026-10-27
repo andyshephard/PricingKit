@@ -170,6 +170,8 @@ export async function PATCH(
 
     // Track skipped territories for response
     let skippedTerritories: string[] = [];
+    // Scheduled prices of changed territories that stay in place (they still take effect)
+    let keptScheduled: Array<{ territoryId: string; startDate: string }> = [];
     let updatedCount = 0;
 
     if (usesMoneyFormat) {
@@ -253,6 +255,7 @@ export async function PATCH(
       }
       const result = await replaceInAppPurchaseManualPrices(auth.credentials, product.id, changes, baseTerritory, ctx);
       updatedCount = result.sent;
+      keptScheduled = result.keptScheduled;
     }
 
     // Fetch updated product. The write is already done, so a failed refresh
@@ -279,6 +282,7 @@ export async function PATCH(
       success: true,
       product: updatedProduct,
       updated: updatedCount,
+      ...(keptScheduled.length > 0 ? { keptScheduled } : {}),
       skipped: skippedTerritories,
       ...(refreshError ? { refreshError } : {}),
     });
