@@ -1,7 +1,8 @@
 # Example: weekly offer drift check with the pricingkit CLI.
 #
 # Documentation only. This file is NOT active in the PricingKit repo. To use
-# it, copy it to .github/workflows/ in your own repository and set:
+# it, copy it to .github/workflows/ in your own repository, commit an offer
+# rules file (pricingkit.offerRules, see the PricingKit README) and set:
 #
 #   Repository secrets (Settings > Secrets and variables > Actions > Secrets)
 #     ASC_KEY_ID         App Store Connect API key ID
@@ -9,18 +10,20 @@
 #     ASC_PRIVATE_KEY    Contents of the AuthKey_XXXX.p8 file
 #
 #   Repository variables (... > Variables)
-#     PRICINGKIT_BUNDLE_ID      e.g. com.example.app
-#     PRICINGKIT_SUBSCRIPTION   numeric App Store Connect subscription ID
-#     PRICINGKIT_OFFER_KIND     apple.intro | apple.promo | apple.offerCode | apple.winBack
-#     PRICINGKIT_OFFER          the offer's ID or key (promo offer code, win-back offer ID, ...)
-#     PRICINGKIT_PERCENT        e.g. 50 (percent of each territory's current price)
+#     PRICINGKIT_RULES   path of the rules file in your repository,
+#                        e.g. pricing/offer-rules.json
 #
-# What it does: runs `pricingkit drift`.
-#   exit 0  in sync: the run passes
-#   exit 2  drift: the "report" job opens (or comments on) an issue labelled
-#           "pricing-drift", then fails
-#   other   1 is an error; anything else is a crash, an out-of-memory kill or
-#           a signal. The run fails either way.
+# The rules file names the app, every offer to check (product, kind, key) and
+# the percent-of-current rule each one follows, so one run checks them all.
+# App Store offers only: Google Play offers aren't supported yet.
+#
+# What it does: runs `pricingkit drift --rules`.
+#   exit 0  every offer in sync: the run passes
+#   exit 2  an offer drifted or is missing: the "report" job opens (or
+#           comments on) an issue labelled "pricing-drift", then fails
+#   other   1 is an error (including an offer whose rule can't be checked,
+#           when nothing drifted); anything else is a crash, an out-of-memory
+#           kill or a signal. The run fails either way.
 # The credentials stay in environment variables and are never written to disk.
 #
 # PUBLIC REPOSITORIES: the issue body contains the drift report (territories,
@@ -53,6 +56,12 @@ jobs:
       exit_code: ${{ steps.drift.outputs.exit_code }}
       report: ${{ steps.drift.outputs.report }}
     steps:
+      - name: Check out this repository (for the rules file)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          persist-credentials: false
+
       - name: Check out PricingKit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -79,21 +88,13 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
-          BUNDLE_ID: ${{ vars.PRICINGKIT_BUNDLE_ID }}
-          SUBSCRIPTION: ${{ vars.PRICINGKIT_SUBSCRIPTION }}
-          OFFER_KIND: ${{ vars.PRICINGKIT_OFFER_KIND }}
-          OFFER: ${{ vars.PRICINGKIT_OFFER }}
-          PERCENT: ${{ vars.PRICINGKIT_PERCENT }}
+          RULES: ${{ github.workspace }}/repo/${{ vars.PRICINGKIT_RULES }}
         run: |
           set +e
-          # Text report for people; add --json for the machine-readable pricingkit.offerDrift report
-          npx pricingkit drift \
-            --bundle-id "$BUNDLE_ID" \
-            --subscription "$SUBSCRIPTION" \
-            --kind "$OFFER_KIND" \
-            --offer "$OFFER" \
-            --percent "$PERCENT" \
-            --budget 500 > "$RUNNER_TEMP/drift.txt"
+          # Text report for people; add --json for the machine-readable pricingkit.rulesDrift report.
+          # Reading price points costs about one request per territory per subscription: raise
+          # --budget if the rules file covers many subscriptions (App Store Connect allows 3600 an hour).
+          npx pricingkit drift --rules "$RULES" --budget 1500 > "$RUNNER_TEMP/drift.txt"
           code=$?
           set -e
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
@@ -135,7 +136,7 @@ jobs:
         run: |
           body="$RUNNER_TEMP/issue.md"
           {
-            echo "The weekly drift check found offer prices that no longer match their rule."
+            echo "The weekly drift check found offers whose prices no longer match their rule, or that are missing."
             echo
             echo '```'
             printf '%s\n' "$REPORT"

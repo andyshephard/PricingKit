@@ -1,7 +1,17 @@
-import { InvalidOfferSpecError, OfferRuleError, parsePercentOfCurrentRule, type OfferDriftReport, type PercentOfCurrentRule } from '@/lib/pricing';
+import {
+  InvalidOfferRulesError,
+  InvalidOfferSpecError,
+  OfferRuleError,
+  parseOfferRules,
+  parsePercentOfCurrentRule,
+  type OfferDriftReport,
+  type OfferRules,
+  type PercentOfCurrentRule,
+  type RulesDriftReport,
+} from '@/lib/pricing';
 import { appSelection, stringFlag } from '../args';
-import { appleAdapter, type CommandContext, type CommandResult } from '../context';
-import { CliError, EXIT_CHANGES, EXIT_OK, UsageError } from '../errors';
+import { appleAdapter, readInputFile, type CommandContext, type CommandResult } from '../context';
+import { CliError, EXIT_CHANGES, EXIT_ERROR, EXIT_OK, UsageError, type ExitCode } from '../errors';
 import { describeCounts, money, table } from '../format';
 import { productFromFlags } from './export';
 import { appleOnly, parseOfferKind } from './offers';
@@ -41,6 +51,8 @@ export function formatDriftReport(report: OfferDriftReport): string {
 }
 
 export async function driftCommand(ctx: CommandContext): Promise<CommandResult> {
+  const rulesPath = stringFlag(ctx.flags, 'rules');
+  if (rulesPath) return rulesDriftCommand(ctx, rulesPath);
   const app = appSelection(ctx.flags)!;
   appleOnly(app, 'drift');
   const product = productFromFlags(app, ctx.flags);
@@ -81,4 +93,63 @@ export async function driftCommand(ctx: CommandContext): Promise<CommandResult> 
   }
   if (!report) throw new CliError(`No ${kind} offer "${offer}" on subscription ${product.platform === 'apple' ? product.id : ''}`, 'NOT_FOUND');
   return { exitCode: report.inSync ? EXIT_OK : EXIT_CHANGES, json: report, text: formatDriftReport(report) };
+}
+
+// ---------------------------------------------------------------------------
+// pricingkit drift --rules: every offer in a rules file, one report
+
+const SINGLE_OFFER_FLAGS = ['subscription', 'kind', 'offer', 'percent', 'basis', 'snap', 'threshold', 'territories'];
+
+/**
+ * 2 when any offer drifted or is missing (the report says which), otherwise
+ * 1 when an offer couldn't be checked, otherwise 0.
+ */
+export function rulesDriftExitCode(report: RulesDriftReport): ExitCode {
+  if (report.summary.drifted > 0 || report.summary.notFound > 0) return EXIT_CHANGES;
+  if (report.summary.errors > 0) return EXIT_ERROR;
+  return EXIT_OK;
+}
+
+export function formatRulesDriftReport(report: RulesDriftReport): string {
+  const app = 'bundleId' in report.app ? report.app.bundleId : report.app.packageName;
+  const s = report.summary;
+  const lines = [
+    `Offer rules for ${app}, checked ${report.checkedAt}`,
+    `${report.inSync ? 'In sync' : 'DRIFT'}: ${s.offers} offers: ${s.inSync} in sync, ${s.drifted} drifted, ${s.notFound} not found, ${s.errors} not checkable`,
+    table(
+      report.offers.map((o) => [
+        o.product.platform === 'apple' ? o.product.id : '',
+        o.kind,
+        o.key,
+        o.status,
+        o.status === 'drifted' && o.report ? describeCounts(Object.fromEntries(Object.entries(o.report.summary).filter(([k, n]) => k !== 'match' && n > 0))) : o.error?.message ?? '',
+      ])
+    ),
+  ];
+  for (const o of report.offers) {
+    if (o.status === 'drifted' && o.report) lines.push('', formatDriftReport(o.report));
+  }
+  for (const n of report.notChecked ?? []) lines.push('', `Not checked: ${n}`);
+  return lines.join('\n');
+}
+
+async function rulesDriftCommand(ctx: CommandContext, rulesPath: string): Promise<CommandResult> {
+  const extra = SINGLE_OFFER_FLAGS.filter((f) => ctx.flags[f] !== undefined);
+  if (extra.length > 0) throw new UsageError(`--rules checks the offers and rules in the file; drop ${extra.map((f) => `--${f}`).join(', ')}`);
+  let rules: OfferRules;
+  try {
+    rules = parseOfferRules(await readInputFile(ctx, rulesPath, 'rules file'));
+  } catch (error) {
+    if (error instanceof CliError) throw error;
+    if (error instanceof InvalidOfferRulesError) throw new CliError(error.message, 'INVALID_RULES');
+    throw error;
+  }
+  const bundleId = (rules.app as { bundleId: string }).bundleId;
+  const selected = appSelection(ctx.flags, false);
+  if (selected && !(selected.platform === 'apple' && selected.bundleId === bundleId)) {
+    throw new UsageError('The app given on the command line is not the app in the rules file');
+  }
+  const adapter = await appleAdapter(ctx, bundleId);
+  const report = await adapter.checkRulesDrift(rules);
+  return { exitCode: rulesDriftExitCode(report), json: report, text: formatRulesDriftReport(report) };
 }

@@ -60,7 +60,12 @@ export async function applyCommand(ctx: CommandContext): Promise<CommandResult> 
   }
   if (!('bundleId' in changeSet.app)) throw new UsageError('apply supports App Store offer plans only in this version');
   const notOffer = changeSet.ops.find((op) => !isOfferOp(op));
-  if (notOffer) throw new UsageError(`apply supports offer plans only in this version (op ${notOffer.id} is a ${notOffer.kind})`);
+  if (notOffer) {
+    // Base-price writes wait until the Apple base-price assumptions are confirmed on a test app (see CLAUDE.md)
+    throw new UsageError(
+      `apply supports offer plans only in this version (op ${notOffer.id} is a ${notOffer.kind}). For a plan with base prices and synced offers: change the base prices in the web app, then run "pricingkit plan --rules <rules.json>" to re-derive the offers against the new prices, and apply that plan.`
+    );
+  }
 
   let previous: ApplyRun | undefined;
   if (resumePath) {

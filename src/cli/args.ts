@@ -22,12 +22,22 @@ const APP: OptionSpec = {
 
 const OPTIONS: Record<CommandName, OptionSpec> = {
   export: { ...COMMON, ...APP, subscription: { type: 'string' }, 'base-plan': { type: 'string' }, out: { type: 'string', short: 'o' } },
-  plan: { ...COMMON, ...APP, spec: { type: 'string' }, out: { type: 'string', short: 'o' }, 'state-out': { type: 'string' }, force: { type: 'boolean' } },
+  plan: {
+    ...COMMON,
+    ...APP,
+    spec: { type: 'string' },
+    rules: { type: 'string' },
+    'scheduled-base': { type: 'string' },
+    out: { type: 'string', short: 'o' },
+    'state-out': { type: 'string' },
+    force: { type: 'boolean' },
+  },
   diff: { ...COMMON, plan: { type: 'string' } },
   offers: { ...COMMON, ...APP, subscription: { type: 'string' }, kind: { type: 'string' } },
   drift: {
     ...COMMON,
     ...APP,
+    rules: { type: 'string' },
     subscription: { type: 'string' },
     kind: { type: 'string' },
     offer: { type: 'string' },
@@ -149,10 +159,12 @@ Usage: pricingkit <command> [options]
 
 Commands:
   export   Current prices of a subscription (App Store) or base plan (Google Play), as a state snapshot
-  plan     Turn a pricing spec into a plan (ChangeSet). A dry run: never writes to a store
+  plan     Turn a pricing spec into a plan (ChangeSet); with --rules, keep offers in step with
+           base prices. A dry run: never writes to a store
   diff     Human-readable summary of a plan file
   offers   List an App Store subscription's offers with their prices per territory
-  drift    Check an App Store offer's prices against a percent-of-current rule
+  drift    Check App Store offers against their percent-of-current rules (one offer, or every
+           offer in a rules file with --rules)
   apply    Apply a reviewed App Store offer plan (needs --confirm <plan hash>); saves the run log
   undo     Turn a plan and its run log into an undo plan (offline), to review and apply
 
@@ -183,6 +195,8 @@ Connect subscription ID.
 ${SHARED_HELP}`,
   plan: `Usage:
   pricingkit plan --spec <spec.json> [--out <plan.json>] [--state-out <state.json>] [--force]
+  pricingkit plan --rules <rules.json> [--spec <base spec.json>] [--scheduled-base hold|now]
+                  [--out <plan.json>] [--force]
 
 The spec is a pricingkit.spec (base prices) or a pricingkit.offerPlanSpec
 (App Store offers: create or re-price, several products in one spec, each
@@ -200,14 +214,36 @@ The app comes from the spec; --bundle-id or --package-name, if given, must match
 
 Exit code 2 when the plan has ops, 0 when everything is already at target.
 
+With --rules (a pricingkit.offerRules file: existing App Store offers and the
+percent-of-current rule each follows), plans keeping every offer marked
+syncWithBase in step:
+  --rules alone           re-derives the offers against current base prices
+                          (on demand, e.g. after a base price change)
+  --rules with --spec     plans the base-price spec AND re-derives the offers
+                          against the prices that plan sets, in one plan: base
+                          ops first, then offer ops that wait for them
+Only promotional offers can be re-priced. Offer codes, win-back and
+introductory offers whose prices no longer match are listed under "Needs
+manual action" with what to do; PricingKit never deletes or re-creates an
+offer. Base prices scheduled for a later date (spec startDate) are held by
+default: offer prices change as soon as they are applied, so those offers
+are listed for a sync on or after the date. --scheduled-base now re-prices
+them now, against the scheduled prices, with a warning.
+"pricingkit apply" applies offer-only plans; a plan that also changes base
+prices is refused there (change base prices in the web app, then run
+"plan --rules" on its own). Exit code 2 when the plan has ops or manual
+actions. App Store only.
+
 ${SHARED_HELP}`,
   diff: `Usage:
   pricingkit diff <plan.json>
   pricingkit diff --plan <plan.json>
 
 Summarises a plan file: ops per product and territory with before, after and
-change, skipped territories by reason, and warnings. Sends no store requests.
-Exit code 2 when the plan has ops.
+change, skipped territories by reason, and warnings. A plan with base prices
+and offers shows them in two groups, base prices first (the order apply
+uses), and lists offers that need manual action. Sends no store requests.
+Exit code 2 when the plan has ops or manual actions.
 
 ${SHARED_HELP}`,
   offers: `Usage:
@@ -219,6 +255,7 @@ apple.offerCode, apple.winBack. App Store only.
 
 ${SHARED_HELP}`,
   drift: `Usage:
+  pricingkit drift --rules <rules.json>
   pricingkit drift --bundle-id <id> --subscription <subscription id>
                    --kind <kind> --offer <offer id or key> --percent <n>
                    [--basis perPeriod|totalOverDuration] [--snap nearest|floor|ceil]
@@ -233,6 +270,13 @@ territories are listed as outOfScope and don't affect the result.
 
 Exit code 2 when the offer is not in sync (any mismatch, missing, extra,
 unresolved or unreadable territory), 0 when every territory matches.
+
+With --rules, checks every offer in a pricingkit.offerRules file (the app
+comes from the file) and prints one pricingkit.rulesDrift report with each
+offer's pricingkit.offerDrift report. Exit code 2 when any offer drifted or
+doesn't exist, otherwise 1 when an offer couldn't be checked (e.g. a rule on a
+free trial), otherwise 0. App Store offers only: Google Play offers aren't
+supported yet.
 
 ${SHARED_HELP}`,
   apply: `Usage:

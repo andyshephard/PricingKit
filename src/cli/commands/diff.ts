@@ -6,6 +6,7 @@ import {
   productKey,
   type AppRef,
   type ChangeSet,
+  type ManualAction,
   type OfferOp,
   type OfferTerritoryPrice,
   type PlanSkip,
@@ -45,11 +46,17 @@ export interface PlanSummary {
       after: PriceValue | null;
       change?: string;
       note?: string;
+      /** Offer ops: the base-price ops it waits for (sync plans) */
+      dependsOn?: string[];
     }>;
   }>;
+  /** Ops per group: base prices are applied before offers */
+  byGroup: { basePrices: number; offers: number };
   skipped: { count: number; byReason: Record<string, number>; territories: PlanSkip[] };
   warnings: NonNullable<ChangeSet['warnings']>;
   notReversible: NonNullable<ChangeSet['notReversible']>;
+  /** Offers that need a person (sync plans): the store can't re-price them, or they were held */
+  manualActions: ManualAction[];
 }
 
 /** A plan's contents, grouped by product, for reviewers and machines. */
@@ -85,10 +92,12 @@ export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
     ...(changeSet.undoOf ? { undoOf: changeSet.undoOf } : {}),
     opCount: changeSet.ops.length,
     byKind: countBy(changeSet.ops, (op) => op.kind),
+    byGroup: { basePrices: changeSet.ops.filter((op) => !isOfferOp(op)).length, offers: changeSet.ops.filter(isOfferOp).length },
     products: [...products.values()],
     skipped: { count: skipped.length, byReason: countBy(skipped, (s) => s.reason), territories: skipped },
     warnings: changeSet.warnings ?? [],
     notReversible: changeSet.notReversible ?? [],
+    manualActions: changeSet.manualActions ?? [],
   };
 }
 
@@ -98,6 +107,7 @@ const offerPrice = (p: OfferTerritoryPrice | undefined): PriceValue | null =>
 /** One row per territory whose offer price changes; one row for an op that changes no price (end date, active flag) */
 function offerRows(op: OfferOp): PlanSummary['products'][number]['ops'] {
   const offer = { kind: op.target.offer.kind, key: op.target.offer.key };
+  const deps = op.dependsOn?.length ? { dependsOn: op.dependsOn } : {};
   const before = op.before?.prices ?? {};
   const after = op.after?.prices ?? {};
   const territories = op.kind === 'deleteOffer' ? Object.keys(before).sort() : changedTerritories(before, after);
@@ -106,13 +116,13 @@ function offerRows(op: OfferOp): PlanSummary['products'][number]['ops'] {
       op.after?.active !== undefined && op.after.active !== op.before?.active
         ? `active: ${op.after.active}`
         : `end date: ${op.before?.schedule?.end ?? 'none'} -> ${op.after?.schedule?.end ?? 'none'}`;
-    return [{ id: op.id, kind: op.kind, territory: '-', offer, before: null, after: null, note: what }];
+    return [{ id: op.id, kind: op.kind, territory: '-', offer, before: null, after: null, note: what, ...deps }];
   }
   return territories.map((t) => {
     const b = offerPrice(before[t]);
     const a = offerPrice(after[t]);
     const change = percentChange(b, a);
-    return { id: op.id, kind: op.kind, territory: t, offer, before: b, after: a, ...(change ? { change } : {}), ...(op.note ? { note: op.note } : {}) };
+    return { id: op.id, kind: op.kind, territory: t, offer, before: b, after: a, ...(change ? { change } : {}), ...(op.note ? { note: op.note } : {}), ...deps };
   });
 }
 
@@ -122,24 +132,50 @@ export function formatPlanSummary(summary: PlanSummary): string {
     `Plan ${summary.changeSetId} for ${app}`,
     `Created ${summary.createdAt}${summary.description ? `: ${summary.description}` : ''}`,
     ...(summary.undoOf ? [`Undoes run ${summary.undoOf.runId} of ${summary.undoOf.changeSetId}`] : []),
-    summary.opCount === 0 ? 'No changes: every territory is already at its target.' : `${summary.opCount} changes (${describeCounts(summary.byKind)})`,
+    summary.opCount === 0
+      ? summary.manualActions.length > 0
+        ? 'No changes the plan can make itself; see "Needs manual action".'
+        : 'No changes: every territory is already at its target.'
+      : `${summary.opCount} changes (${describeCounts(summary.byKind)})`,
     ...(summary.opCount > 0 ? [`Plan hash: ${summary.changeSetHash} (what "pricingkit apply --confirm" needs once you have reviewed this plan)`] : []),
   ];
-  for (const product of summary.products) {
-    lines.push('', product.key);
-    lines.push(
-      table([
-        ['Op', 'Territory', 'Kind', 'Before', 'After', 'Change'],
-        ...product.ops.map((op) => [
-          op.id,
-          op.territory,
-          op.offer ? `${op.kind} ${op.offer.kind} ${op.offer.key}` : op.kind,
-          priceCell(op.before),
-          priceCell(op.after),
-          op.change ?? (op.territory === '-' ? op.note ?? '' : ''),
-        ]),
-      ])
-    );
+  type Row = PlanSummary['products'][number]['ops'][number];
+  const section = (pick: (op: Row) => boolean) => {
+    for (const product of summary.products) {
+      const rows = product.ops.filter(pick);
+      if (rows.length === 0) continue;
+      lines.push('', product.key);
+      lines.push(
+        table([
+          ['Op', 'Territory', 'Kind', 'Before', 'After', 'Change'],
+          ...rows.map((op) => [
+            op.id,
+            op.territory,
+            op.offer ? `${op.kind} ${op.offer.kind} ${op.offer.key}` : op.kind,
+            priceCell(op.before),
+            priceCell(op.after),
+            op.change ?? (op.territory === '-' ? op.note ?? '' : ''),
+          ]),
+        ])
+      );
+      const waits = [...new Set(rows.filter((r) => r.dependsOn?.length).map((r) => `${r.id} after ${r.dependsOn!.join(', ')}`))];
+      if (waits.length > 0) lines.push(`  Applied only once its base prices are: ${waits.join('; ')}`);
+    }
+  };
+  if (summary.byGroup.basePrices > 0 && summary.byGroup.offers > 0) {
+    // A plan with both: base prices go first, and offers derived from them wait for them
+    lines.push('', `Base prices (${summary.byGroup.basePrices} changes, applied first)`);
+    section((op) => !op.offer);
+    lines.push('', `Offers (${summary.byGroup.offers} ops, applied after the base prices)`);
+    section((op) => Boolean(op.offer));
+  } else {
+    section(() => true);
+  }
+  if (summary.manualActions.length > 0) {
+    lines.push('', `Needs manual action (${summary.manualActions.length} offers; this plan doesn't change them):`);
+    for (const m of summary.manualActions) {
+      lines.push(`  ${productKey(m.product)} ${m.offer.kind} ${m.offer.key} (${m.code}): ${m.message}`);
+    }
   }
   if (summary.skipped.count > 0) {
     lines.push('', `Skipped ${summary.skipped.count} territories (${describeCounts(summary.skipped.byReason)})`);
@@ -168,5 +204,5 @@ export async function diffCommand(ctx: CommandContext): Promise<CommandResult> {
     throw new CliError((error as Error).message, 'INVALID_PLAN');
   }
   const summary = summarizeChangeSet(changeSet);
-  return { exitCode: summary.opCount > 0 ? EXIT_CHANGES : EXIT_OK, json: summary, text: formatPlanSummary(summary) };
+  return { exitCode: summary.opCount > 0 || summary.manualActions.length > 0 ? EXIT_CHANGES : EXIT_OK, json: summary, text: formatPlanSummary(summary) };
 }
