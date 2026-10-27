@@ -10,7 +10,7 @@ import { useAuthStore } from '@/store/auth-store';
 import { Button } from '@/components/ui/button';
 import { SiteHeader } from '@/components/site/site-header';
 import { SiteFooter } from '@/components/site/site-footer';
-import { REPO_LINKS } from '@/config/site';
+import { DOC_LINKS } from '@/config/site';
 import { cn } from '@/lib/utils';
 
 type PlatformTab = 'google' | 'apple';
@@ -118,9 +118,9 @@ export default function SetupPage() {
           <Lock className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />
           <p>
             Your key is sent to this server, encrypted into a short-lived session cookie, and never stored.{' '}
-            <a href={REPO_LINKS.security} className="font-semibold text-link hover:underline" rel="noopener noreferrer">
+            <Link href={`${DOC_LINKS.security}#how-credentials-are-handled`} className="font-semibold text-link hover:underline">
               How keys are handled
-            </a>
+            </Link>
           </p>
         </div>
       </main>

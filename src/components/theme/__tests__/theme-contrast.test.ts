@@ -57,6 +57,22 @@ const PAIRS: Array<[string, string]> = [
   ['sidebar-foreground', 'sidebar'],
   ['sidebar-accent-foreground', 'sidebar-accent'],
   ['sidebar-primary-foreground', 'sidebar-primary'],
+  // Status text on plain surfaces (results, price changes)
+  ['success-foreground', 'card'],
+  ['success-foreground', 'background'],
+  ['destructive', 'background'],
+  ['warn-foreground', 'card'],
+  // Docs: page, sidebar, search field and table heads
+  ['foreground', 'docs-page'],
+  ['soft', 'docs-page'],
+  ['muted-foreground', 'docs-page'],
+  ['link', 'docs-page'],
+  ['soft', 'docs-aside'],
+  ['muted-foreground', 'docs-aside'],
+  ['accent-foreground', 'accent'],
+  ['foreground', 'docs-raised'],
+  ['muted-foreground', 'docs-raised'],
+  ['soft', 'docs-raised'],
 ];
 
 describe.each([

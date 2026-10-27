@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { GITHUB_URL, LICENSE_NAME, REPO_LINKS, ROUTES } from '@/config/site';
+import { DOC_LINKS, GITHUB_URL, LICENSE_NAME, ROUTES } from '@/config/site';
 
 const footLink = 'rounded-md text-soft transition-colors hover:text-foreground';
 
@@ -23,14 +23,14 @@ export function SiteFooter() {
               </a>
             </li>
             <li>
-              <a href={REPO_LINKS.changelog} className={footLink} rel="noopener noreferrer">
+              <Link href={DOC_LINKS.changelog} className={footLink}>
                 Changelog
-              </a>
+              </Link>
             </li>
             <li>
-              <a href={REPO_LINKS.security} className={footLink} rel="noopener noreferrer">
+              <Link href={DOC_LINKS.security} className={footLink}>
                 Security
-              </a>
+              </Link>
             </li>
           </ul>
         </nav>

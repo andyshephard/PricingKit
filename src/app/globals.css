@@ -25,6 +25,9 @@
   --color-code: var(--code);
   --color-code-foreground: var(--code-foreground);
   --color-link: var(--link);
+  --color-docs-page: var(--docs-page);
+  --color-docs-aside: var(--docs-aside);
+  --color-docs-raised: var(--docs-raised);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -125,6 +128,9 @@
   --code: #0f172a;
   --code-foreground: #e2e8f0;
   --link: #1f4fd8;
+  --docs-page: #ffffff;
+  --docs-aside: #f6f7f9;
+  --docs-raised: #f6f7f9;
   --shadow-panel: 0 12px 40px rgba(20, 23, 31, 0.06);
 }
 
@@ -179,6 +185,9 @@
   --code: #090c11;
   --code-foreground: #e2e8f0;
   --link: #8ea8ff;
+  --docs-page: #0e1116;
+  --docs-aside: #12161d;
+  --docs-raised: #151a22;
   --shadow-panel: 0 16px 48px rgba(0, 0, 0, 0.35);
 }
 
@@ -212,7 +221,7 @@
 }
 
 @layer components {
-  /* Long-form text on docs-like pages (setup guides; the docs in part 2). */
+  /* Long-form text on docs-like pages (setup guides and /docs). */
   .prose-atlas {
     @apply text-[16px] leading-[1.7] text-soft;
   }
@@ -236,11 +245,19 @@
   }
   .prose-atlas :where(code):not(:where(pre code)) {
     @apply rounded-md bg-chip px-1.5 py-0.5 font-mono text-[0.9em] text-foreground;
+    /* Long identifiers (paths, cookie names) wrap instead of widening the page on phones */
+    overflow-wrap: anywhere;
   }
   .prose-atlas :where(pre) {
     @apply overflow-x-auto rounded-xl border border-line bg-code p-5 font-mono text-[13px] leading-[1.7] text-code-foreground;
   }
   .prose-atlas :where(strong) {
     @apply font-bold text-foreground;
+  }
+  .prose-atlas :where(li) {
+    @apply my-1.5;
+  }
+  .prose-atlas :where(h2, h3) {
+    scroll-margin-top: 6rem;
   }
 }

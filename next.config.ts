@@ -5,6 +5,12 @@ import { securityHeaders } from "./src/lib/security-headers";
 initOpenNextCloudflareForDev();
 
 const nextConfig: NextConfig = {
+  turbopack: {
+    rules: {
+      // The docs render CHANGELOG.md at build time: Markdown imports are plain strings
+      '*.md': { type: 'text' },
+    },
+  },
   async headers() {
     return [
       {

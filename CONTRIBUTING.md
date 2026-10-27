@@ -106,8 +106,8 @@ Run a single file with `npm test -- src/lib/google-play/__tests__/currency.test.
   say which test asserts the request and whether you also tried it on a test app.
 - Add an entry under `Unreleased` in `CHANGELOG.md` for any user-visible behaviour change,
   with an upgrade note if self-hosters need to do something.
-- Update `README.md` / `CLAUDE.md` when you change commands, environment variables or
-  architecture.
+- Update the docs pages (`src/content/docs`), and `README.md` / `CLAUDE.md` where they cover
+  it, when you change behaviour, commands, environment variables or architecture.
 - Don't commit planning or design `.md` files (at the repo root or under `docs/`); put that in the PR description.
 - Report security issues privately as described in `SECURITY.md`, not in a public issue or PR.
 

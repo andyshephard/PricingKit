@@ -83,6 +83,8 @@ CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm test`, `npm run typecheck` a
 /scripts/fetch-apple-price-tiers.ts  # Regenerates apple-connect/price-tier-data.json from the live API (needs credentials; never run in tests)
 /src/middleware/auth.ts # The only place routes get credentials: getGoogleAuthFromCookies,
                         # getAppleAuthFromCookies, getAppleSessionFromCookies
+/src/content/docs/      # The /docs pages (one TSX module per sidebar group, registry in index.ts); rendered by src/app/docs
+/src/components/docs/   # Docs shell pieces: search, sidebar, article, code blocks with copy, Markdown view (changelog)
 /src/hooks/             # React Query hooks for products/subscriptions
 /src/store/             # Zustand stores (auth-store, selection-store)
 /src/components/ui/     # shadcn/ui components
@@ -219,9 +221,24 @@ SESSION_VERSION             # Optional: set or change it to sign everyone out (i
 OPEN_EXCHANGE_RATES_APP_ID  # Optional operator key for currency conversion; users can also save their own in Settings
 TRUSTED_CLIENT_IP_HEADER    # Optional: proxy header with the real client IP (cf-connecting-ip, x-real-ip, x-forwarded-for).
                             # Only set it when every request passes that proxy; never trust client IP headers otherwise.
+NEXT_PUBLIC_SITE_URL        # Optional, inlined at build time: canonical/OG URLs, sitemap.xml, robots.txt.
+                            # Defaults to https://pricing-kit.com (DEFAULT_SITE_URL in src/config/site.ts); self-hosters on
+                            # another domain set it; local runs may set http://localhost:3000 in .env.local.
 ```
 
-On Cloudflare Workers set these as Worker secrets; for `npm run preview` put them in `.dev.vars`.
+On Cloudflare Workers set these as Worker secrets; for `npm run preview` put them in `.dev.vars`. `NEXT_PUBLIC_SITE_URL` belongs in the build environment.
+
+## Theme
+
+Atlas tokens in `src/app/globals.css` (`:root` and `.dark`), each text/background pair checked for WCAG AA by `src/components/theme/__tests__/theme-contrast.test.ts` (add a pair when you combine tokens in a new way). Components use tokens (`success`, `destructive`, `change`, `warn`, `info`, `link`, `docs-*`, ...), never Tailwind palette colours such as `text-green-600`, which don't follow dark mode. The theme toggle (`components/theme`) is the only theme source; there is no `next-themes`.
+
+## Docs (`/docs`)
+
+- User documentation lives in `src/content/docs/pages/*.tsx` as `DocPage` objects (title, description, sections with ids); `src/content/docs/index.ts` orders them into the sidebar groups and builds the search index (titles and headings only, passed from the layout, no network). `src/app/docs/[slug]` prerenders every page (`dynamicParams = false`). The README is a short overview that links to the docs; when behaviour changes, update the relevant docs page (and CHANGELOG).
+- Every statement must be true of the code: take facts from the code, SECURITY.md and CHANGELOG, mark made-up IDs and values as examples (`<CodeBlock example>`), and never document removed features. `src/content/docs/__tests__/docs.test.ts` checks slugs, heading ids, `DocLink` targets and anchors, the search index, the sitemap and robots, and that no page mentions offer drift checks or a bare `npx pricingkit` outside a warning.
+- `/docs/changelog` renders `CHANGELOG.md` at build time: `*.md` imports are text (Turbopack rule in `next.config.ts`, a matching plugin in `vitest.config.ts`, types in `src/types/markdown.d.ts`) and `src/lib/docs/markdown.ts` reads the subset the changelog uses into a tree (no HTML passes through; links only http(s), mailto, `/` and `#`).
+- The footer's Changelog and Security links and the connect screen's key-handling link point at `/docs/changelog` and `/docs/security`, not GitHub.
+- `sitemap.xml` and `robots.txt` (`src/app/sitemap.ts`, `robots.ts`, `src/config/public-pages.ts`) list the landing page, setup guides, index checker and docs; never dashboard or API paths.
 
 ## Path Alias
 
