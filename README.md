@@ -16,7 +16,8 @@ Free, open-source regional pricing tool for the App Store and Google Play. Set P
 - **Offers in step with base prices** - A checked-in rules file says which offers follow which rule (App Store: "X% of each territory's price"; Google Play: also Play's own discounts and fixed prices); one command checks them all for drift, and sync plans re-price them against new base prices (see [sync](#keeping-offers-in-step-with-base-prices-sync))
 - **Headless** - A `pricingkit` CLI (JSON or YAML specs, `--json` output, exit codes for CI), GitHub Actions templates for plan-on-PR and apply-on-merge with approval, and an MCP server so agents can plan while people apply (see [Command line](#command-line-pricingkit))
 - **Currency conversion** - Automatic exchange rate lookups; regions without a rate are flagged and never priced
-- **Multiple pricing strategies** - PPP (World Bank), Big Mac Index or Netflix Index for regional pricing
+- **Multiple pricing strategies** - PPP (World Bank), Big Mac Index, Netflix Index or your own per-territory multipliers (Custom) for regional pricing
+- **Pricing quality** - Target what you receive (proceeds, net of tax and commission) instead of the customer price; every planned change says what existing subscribers see (decrease, new subscribers only, notified, or needs consent); reference data shows its age and stale PPP data is capped or inflated (see [Pricing quality](#pricing-quality))
 - **Public Index Checker** - Compare regional prices across strategies at `/index-checker` (no auth required)
 - **Search & filter** - Find products by SKU/product ID or name
 
@@ -477,6 +478,97 @@ once it exists). The executor re-reads every territory before writing and refuse
 ambiguous (for example two future prices), so the failure mode is a refused or unverified op,
 not a silent wrong price; but run a small plan on a test app first. Google Play base plans and
 one-time products don't have this caveat.
+
+## Pricing quality
+
+These options go on a product entry of a `pricingkit.spec` (`plan --spec`), unless noted.
+
+**Proceeds targets.** `"measure": "proceeds"` makes `fixed` and `strategy` targets mean what you
+receive, net of VAT/tax and the store's commission, instead of the customer price
+(`percentOfCurrent` keeps meaning the customer price).
+- App Store: each territory snaps to the price point whose `proceeds` (as App Store Connect reports
+  it for the subscription's price points) is nearest the target; `snap` applies to proceeds.
+- Google Play: Play reports tax but not its fee, so PricingKit asks Play's price conversion for
+  `target / (1 - commission)` as the tax-exclusive price. `"commission"` defaults to `"0.15"` (Play's
+  rate for subscriptions, and for the first US$1M a year of one-time products in the 15% tier); set
+  `"0.30"` if that is your rate. Play proceeds are estimates: (price - tax) x (1 - commission).
+
+Plans record per op the proceeds before and after (Apple) or the estimated proceeds and Play's tax
+(`priceChanges` in the plan file), and `pricingkit diff` shows Proceeds and Tax columns.
+
+```json
+{ "product": { "platform": "google", "type": "subscription", "productId": "pro", "basePlanId": "annual" },
+  "targets": { "type": "strategy", "strategy": "ppp", "base": { "territory": "US", "amount": "25.00" } },
+  "measure": "proceeds", "commission": "0.15" }
+```
+
+**Existing subscribers.** Every base-price change in a plan is classified per territory, and
+`pricingkit diff` shows it in an "Existing subscribers" column:
+
+| Class | Meaning |
+|---|---|
+| `decrease` | App Store: existing subscribers renew at the lower price. Google Play: new purchases only, see below |
+| `increase-to-new-subscribers-only` | App Store with `preserveCurrentPrice` (the default), or any Google Play base plan change |
+| `increase-within-no-consent-threshold` | App Store: subscribers are notified; no consent needed |
+| `increase-needs-consent` | App Store: subscribers must agree before renewal, or the subscription expires |
+| `new-price` / `unchanged` | No current price / same amount |
+
+Rules (from App Store Connect Help and Play Console Help, read 2026-10-27; the sources and what isn't
+encoded are listed in `src/lib/pricing/price-increase.ts`):
+- App Store: consent is needed if the storefront always requires it (Austria, Germany, Poland,
+  Republic of Korea), or the subscriber had an increase in the last 12 months, or the increase is
+  both more than 50% and above the storefront's threshold (e.g. US$5 per period, US$50 a year for
+  annual subscriptions; local amounts per storefront from Apple's table). PricingKit can't read
+  the price history: give `"consent": { "lastIncreaseAt": "2026-03-01" }` (or per territory),
+  otherwise no recent increase is assumed and the plan says so. Give `"billingPeriod": "P1Y"` for
+  annual subscriptions, otherwise the lower non-annual threshold is used.
+- Google Play: a base plan price change applies to new purchases; existing subscribers stay on
+  their price in a legacy cohort until it is migrated (PricingKit doesn't migrate cohorts yet).
+  `ifMigrated` says what a migration would need: decreases need no approval; an increase can be an
+  opt-out (notice only) increase if it is at most the greater of 50% and 17 US cents a day, at most
+  once a year, in a country that allows it (not checked), otherwise subscribers must opt in.
+
+`"consent": { "maxIncreaseWithoutConsent": true }` refuses the whole plan (`CONSENT_REQUIRED`,
+nothing written) if any territory would need consent. The web app's Apple subscription preview
+shows the same column.
+
+**Custom multipliers.** The `custom` strategy prices each territory as the base price converted to
+its currency times `multipliers[territory] / multipliers[base territory]` (the base's own
+defaults to 1). Without `territories` it prices the territories in its table; with `"all"` or a
+list, territories without a multiplier are skipped. Multipliers must be 0.01 to 10.
+`"multipliersFile": "multipliers.csv"` reads the table from a CSV next to the spec (inside the
+working directory) with `territory` and `multiplier` columns, so a price export with a
+`multiplier` column added works; rows with an empty multiplier are skipped. The web app's bulk
+pricing modals take the same table (one `GB=0.9` per line, or the CSV).
+
+```json
+{ "type": "strategy", "strategy": "custom", "base": { "territory": "US", "amount": "9.99" },
+  "multipliers": { "GB": "0.95", "IN": "0.35", "BR": "0.5" } }
+```
+
+**Reference data freshness.** Plans record the data their strategy targets came from and its age
+(`dataFreshness`; `pricingkit diff` lists it, stale data is a warning). Built-in dates: PPP
+snapshot synced 2026-02-01 (2024 data assumed; per-country years weren't recorded), Big Mac 2025
+(month not recorded), Netflix index 2026-04-09, fallback exchange rates 2026-02-01, Apple tier ladder
+(web previews) 2026-02-02. Spec exchange rates can carry `"exchangeRatesAsOf"`. Top-level
+`"freshness": { "maxAgeDays": { "ppp": 900, "fallbackExchangeRates": 30 }, "refuseStale": true }`
+changes the limits and refuses a plan built on stale data. The web app shows the same as badges
+(index checker, bulk pricing modals), with live exchange-rate timestamps.
+
+**Stale PPP factors.** PPP conversion factors are annual and lag; for high-inflation currencies an
+old factor against today's exchange rate prices badly. With the `ppp` strategy,
+`"pppStaleness": { "mode": "cap", "maxAgeYears": 3 }` (the default) skips territories whose PPP
+data is older (`STALE_REFERENCE_DATA`), and `"mode": "inflate"` carries the factor forward with
+`"cpi"`: each territory's CPI now / CPI in the data year (the base territory's is required), so the
+multiplier becomes multiplier x cpi[t] / cpi[base]; territories without a ratio are skipped. The
+web app's `/api/ppp` applies the same policy per country with live World Bank years
+(`?pppStale=cap|inflate&pppMaxAge=3`): capped countries use the static index; inflate uses World
+Bank CPI (FP.CPI.TOTL) relative to the US.
+
+**Apple tier table.** The web app's Apple previews use a static price tier table. Regenerate it with
+`npx tsx scripts/fetch-apple-price-tiers.ts --iap <in-app purchase ID>` (needs App Store Connect
+credentials in the CLI's `ASC_*` variables; read-only; `--dry-run` to check without writing), then
+review the diff.
 
 ### Agents: `pricingkit mcp`
 

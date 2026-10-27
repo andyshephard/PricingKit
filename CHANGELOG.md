@@ -14,9 +14,16 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 4. **Clients of `/api/bulk`** should read the per-result `success`, `error` and `skippedRegions` fields. The top-level `success` is now `false` when nothing was written. A subscription item sent without a `basePlanId` now produces one result per base plan (each carrying its `basePlanId`), so `total` and `results` count base plans for subscriptions, not request items.
 5. **Optional `TRUSTED_CLIENT_IP_HEADER`.** Set it to `cf-connecting-ip` on Cloudflare (or the header your own proxy sets) to rate-limit anonymous Open Exchange Rates key tests per client. Without it they share one per-instance limit.
 6. **Forks importing the pricing maths** should change `@/lib/google-play/currency` to `@/lib/pricing` and `@/lib/conversion-indexes/*` to `@/lib/pricing/indexes/*`. The functions are unchanged.
-7. Nothing else needs configuring. There is no database and no session file.
+7. **Session cookies migrate by themselves.** Cookies from before the HKDF change are still read and re-encrypted on their next API request; nobody is signed out. Rolling back to an older build would not read the new cookies (users sign in again). Make sure `ENCRYPTION_KEY` is a random secret, not a short passphrase.
+8. Nothing else needs configuring. There is no database and no session file.
 
 ### Added
+
+- **Proceeds targets.** A spec product with `"measure": "proceeds"` targets what you receive (net of tax and the store's commission) instead of the customer price: App Store prices snap to the price point with the nearest proceeds; Google Play prices `target / (1 - commission)` as the tax-exclusive price (`"commission"`, default 15%). Plans record proceeds and Play's tax per op, and `pricingkit diff` shows Proceeds and Tax columns.
+- **What existing subscribers see.** Every base-price change in a plan is classified per territory (lower price, new subscribers only, notified without consent, needs consent) from App Store Connect's consent rules and per-storefront thresholds and Play's legacy-cohort and opt-out rules; `pricingkit diff` shows it, with the assumptions it made. `"consent": { "maxIncreaseWithoutConsent": true }` refuses a plan in which any territory would need consent (`CONSENT_REQUIRED`); `billingPeriod` and `lastIncreaseAt` sharpen the check. The Apple subscription preview in the web app shows the same, plus current proceeds.
+- **Custom multipliers.** The `custom` strategy works: a per-territory multiplier table in the spec, or a CSV (`multipliersFile`, e.g. a price export with a `multiplier` column), validated. The web app's bulk pricing modals offer Custom again, with a table input; territories without a multiplier are not priced.
+- **Reference data freshness.** Plans record the data their targets came from and its age, and warn when it is older than a limit (`freshness.maxAgeDays`; `freshness.refuseStale` refuses). Stale PPP data is skipped (default: older than 3 years) or inflated by CPI ratios (`pppStaleness`). `/api/ppp` reports each country's PPP data year, applies the same policy (`?pppStale=cap|inflate&pppMaxAge=`, CPI from the World Bank), and returns freshness metadata and the exchange-rate timestamp; the index checker and bulk pricing modals show freshness badges.
+- **`scripts/fetch-apple-price-tiers.ts`** regenerates the static Apple price tier table from the live API (read-only, needs credentials, `--dry-run`).
 
 - **`pricingkit apply --allow-base-prices`** applies plans that change base prices (a base-price spec, a combined `plan --spec --rules` plan, or the undo plan of such a run), App Store and Google Play. Same safety as offer plans: `--confirm` with the plan hash before anything is read, the run log saved before and after every write, `--resume`, `undo`, the subscription checked against the plan's app, the `PRICINGKIT_EXPECT_*` pins, and in a combined plan offers applied only after the base prices they were derived from. Without the flag such a plan is refused before any store request. The printed resume command keeps the flags it needs. **App Store caveat:** two App Store Connect behaviours this relies on (an immediate price change replacing the territory's older entries; a second scheduled price created before the old one is deleted) are not yet confirmed on a test app; `plan` and `apply` say so. Try a small plan on a test app before relying on it.
 - **`pricingkit offer deactivate|activate|delete`** plans one lifecycle change of an existing App Store or Google Play offer and writes it as a plan file; apply it with `pricingkit apply --confirm` (and `--force-delete` for deletes). Deactivating an App Store introductory or win-back offer sets its end date (`--end-date`). What the store doesn't allow (deactivating a promotional offer, deleting an offer code or an active Play offer) is refused with the reason and no plan is written.
@@ -59,6 +66,10 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 - `SECURITY.md` with private vulnerability reporting and the credential-handling model.
 
 ### Changed
+
+- Strategy plans now warn when the built-in data they use is stale; the fallback exchange rates (2026-02-01) already are by the default 45-day limit. Give `exchangeRates` with `exchangeRatesAsOf` in the spec, or raise `freshness.maxAgeDays`. From 2028, PPP strategy plans skip territories unless the PPP snapshot is refreshed, `pppStaleness.maxAgeYears` is raised, or the inflate policy is used.
+- Plans of base prices carry two new planner-note fields, `priceChanges` and `dataFreshness` (not part of the plan hash). Older PricingKit builds refuse plan files that contain them.
+- The Apple "Preserve existing subscriber prices" copy now says it applies to increases; decreases always reach existing subscribers.
 
 - **Undo plans now revert base-price ops that failed after being sent**, since an App Store create that answered 5xx may have taken effect; if it didn't, applying the revert skips it as already at target. The executor now checks a `confirm` hash whenever one is passed, not only for offer plans.
 - **`pricingkit apply` no longer refuses every plan with base prices**: it asks for `--allow-base-prices` instead (see Added). Earlier entries below that say `apply` applies offer plans only describe the behaviour before this change.
@@ -114,6 +125,10 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 - Network failures while fetching a Google access token are now retried.
 
 ### Security
+
+- Session cookies are encrypted with a key derived once from `ENCRYPTION_KEY` with HKDF-SHA-256 instead of 100,000 PBKDF2 iterations per request. Existing cookies are still read and re-encrypted on their next request, so nobody is signed out. `ENCRYPTION_KEY` must be a random secret (`openssl rand -base64 32`); a key under 32 characters gets a warning, since HKDF doesn't stretch weak keys.
+- CLI output files (plans, state snapshots, run logs) are always written to a new temporary file and renamed into place; a target that is a symbolic link, not a plain file, or has more than one hard link is refused. The MCP server refuses a `plan` call sent as a notification (no id), decodes UTF-8 split across reads, and `apply_command` says how many ops a resume log already records as done.
+- The `apply-on-merge.yml` template checks the run to resume by workflow ID and that its commit is on main, not by workflow name.
 
 - Apple JWTs and Google access tokens are cached per full credential (SHA-256 of the key, 50-entry LRU). On a shared instance, two users whose keys share a Key ID or client email can no longer receive each other's token.
 - Reading a session cookie without `ENCRYPTION_KEY` no longer falls back to plaintext base64 outside `next dev`; the cookie is ignored and the request is treated as signed out. Previously any build without the key, production included, would accept a plaintext base64 cookie.
