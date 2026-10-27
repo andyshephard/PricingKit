@@ -98,7 +98,7 @@ describe('v3 session envelopes', () => {
     const bytes = Buffer.from(value.slice(3), 'base64url');
     bytes[bytes.length - 1] ^= 1;
     expect(await openSession('google', `v3.${bytes.toString('base64url')}`)).toBeNull();
-    vi.stubEnv('ENCRYPTION_KEY', Buffer.alloc(32, 9).toString('base64'));
+    vi.stubEnv('ENCRYPTION_KEY', Buffer.from(Array.from({ length: 32 }, (_, i) => (i * 11 + 5) % 256)).toString('base64'));
     expect(await openSession('google', value)).toBeNull();
   });
 

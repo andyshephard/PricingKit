@@ -79,6 +79,9 @@ describe('ENCRYPTION_KEY strength', () => {
     ['a passphrase', 'test-encryption-key-at-least-32-characters!'],
     ['base64 of 16 bytes', Buffer.alloc(16, 1).toString('base64')],
     ['text with spaces', 'correct horse battery staple correct horse'],
+    ['a repeated character', 'A'.repeat(44)],
+    ['a repeated pattern', 'ab'.repeat(32)],
+    ['a repeated word', 'password'.repeat(6)],
   ])('outside next dev, refuses %s: no session is created or read', async (_label, key) => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('ENCRYPTION_KEY', TEST_ENCRYPTION_KEY);
@@ -92,8 +95,8 @@ describe('ENCRYPTION_KEY strength', () => {
 
   it.each([
     ['openssl rand -base64 32', TEST_ENCRYPTION_KEY],
-    ['base64url', Buffer.alloc(32, 250).toString('base64url')],
-    ['openssl rand -hex 32 (64 characters, valid base64)', 'ab'.repeat(32)],
+    ['base64url', Buffer.from(Array.from({ length: 32 }, (_, i) => (i * 37 + 250) % 256)).toString('base64url')],
+    ['openssl rand -hex 32 (64 characters, valid base64)', '3f9c1e07a4b28d56e0c7f19a2b3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f'],
   ])('accepts %s', async (_label, key) => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('ENCRYPTION_KEY', key);
@@ -104,7 +107,7 @@ describe('ENCRYPTION_KEY strength', () => {
 
   it('uses the decoded bytes: two spellings of the same bytes open each other', async () => {
     vi.stubEnv('NODE_ENV', 'production');
-    const bytes = Buffer.alloc(32, 250);
+    const bytes = Buffer.from(Array.from({ length: 32 }, (_, i) => (i * 37 + 250) % 256));
     vi.stubEnv('ENCRYPTION_KEY', bytes.toString('base64'));
     const { value } = await sealSession('google', googleCreds);
     vi.stubEnv('ENCRYPTION_KEY', bytes.toString('base64url'));

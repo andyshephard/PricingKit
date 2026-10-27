@@ -1,8 +1,11 @@
 // Session cookie encryption (AES-256-GCM, Web Crypto, so it runs on Workers).
 //
-// The key: ENCRYPTION_KEY must be base64 (or base64url) of at least 32 random
-// bytes (`openssl rand -base64 32`). Outside `next dev` anything else is
-// refused: sessions can't be created or read. The decoded bytes are the HKDF
+// The key: ENCRYPTION_KEY must be base64 (or base64url) of at least 32 bytes
+// with at least 16 distinct byte values (`openssl rand -base64 32` always
+// qualifies). Outside `next dev` anything else is refused: sessions can't be
+// created or read. This checks format, length and that the bytes aren't an
+// obvious repeat; it can't tell whether the key is random, so generate it,
+// never type it. The decoded bytes are the HKDF
 // input, so a cookie's known plaintext can't be used to guess a short
 // passphrase cheaply. Under `next dev` a non-conforming key still works, with
 // a warning (its UTF-8 bytes are the HKDF input).
@@ -29,6 +32,12 @@ const KEY_LENGTH = 32;
 const PBKDF2_ITERATIONS = 100000;
 /** ENCRYPTION_KEY must decode to at least this many bytes */
 export const MIN_ENCRYPTION_KEY_BYTES = 32;
+/**
+ * ...with at least this many distinct byte values. 32 random bytes have
+ * about 30 (never below 24 in 20,000 trials); "AAAA...", "abab..." or a
+ * repeated word have a handful.
+ */
+export const MIN_ENCRYPTION_KEY_DISTINCT_BYTES = 16;
 
 /**
  * Legacy (v1 and v2) session cookies are accepted until this instant and
@@ -96,13 +105,13 @@ export function fromBase64(value: string): Uint8Array {
 
 export type EncryptionKeyProblem = 'missing' | 'weak';
 
-/** The decoded key bytes, or null when ENCRYPTION_KEY isn't base64 of at least 32 bytes */
+/** The decoded key bytes, or null when ENCRYPTION_KEY isn't base64 of at least 32 bytes with enough distinct values */
 function decodedKeyBytes(secret: string): Uint8Array | null {
   const trimmed = secret.trim();
   if (!BASE64_ANY.test(trimmed)) return null;
   try {
     const bytes = fromBase64(trimmed);
-    return bytes.length >= MIN_ENCRYPTION_KEY_BYTES ? bytes : null;
+    return bytes.length >= MIN_ENCRYPTION_KEY_BYTES && new Set(bytes).size >= MIN_ENCRYPTION_KEY_DISTINCT_BYTES ? bytes : null;
   } catch {
     return null;
   }
@@ -128,7 +137,7 @@ export const MISSING_ENCRYPTION_KEY_MESSAGE =
   'ENCRYPTION_KEY is not set, so credentials cannot be stored securely. Set ENCRYPTION_KEY to 32 random bytes in base64 (`openssl rand -base64 32`) and restart the server.';
 
 export const WEAK_ENCRYPTION_KEY_MESSAGE =
-  'ENCRYPTION_KEY must be base64 of at least 32 random bytes (generate one with `openssl rand -base64 32`). Sessions are refused until it is replaced; everyone signs in again afterwards.';
+  'ENCRYPTION_KEY must be base64 of at least 32 bytes that are not an obvious repeat; generate one with `openssl rand -base64 32` (PricingKit checks the format, not the randomness). Sessions are refused until it is replaced; everyone signs in again afterwards.';
 
 /** The message for the current key problem (safe to show: it contains no secrets) */
 export function encryptionKeyMessage(): string {

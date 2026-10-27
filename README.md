@@ -864,7 +864,8 @@ Create a `.env.local` file (optional):
 
 ```env
 # Encrypts credentials in the session cookie. Required everywhere except `next dev`:
-# base64 of at least 32 random bytes; anything else is refused outside `next dev`.
+# base64 of at least 32 bytes (at least 16 distinct byte values); anything else is refused
+# outside `next dev`. Only the format is checked, so generate it, don't type it.
 # Generate with: openssl rand -base64 32
 ENCRYPTION_KEY=
 

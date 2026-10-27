@@ -44,9 +44,11 @@ key (`.p8` private key, Key ID, Issuer ID) and/or a Google Play service account 
    Google keys only as RSA keys of 2048 to 4096 bits (checked before the key is imported) and
    is rate limited: 10 attempts per client per 10 minutes when `TRUSTED_CLIENT_IP_HEADER` is
    set, and 300 per server instance.
-6. **`ENCRYPTION_KEY` is required, and must be random.** It must be base64 (or base64url)
-   of at least 32 bytes, as `openssl rand -base64 32` prints. Without it, or with anything
-   else (a passphrase, a short value), the server refuses to create or read sessions. The only
+6. **`ENCRYPTION_KEY` is required, and should be random.** The server checks its format: it
+   must be base64 (or base64url) of at least 32 bytes with at least 16 distinct byte values, as
+   `openssl rand -base64 32` prints. Without it, or with anything else (a passphrase, a short
+   value, a repeated pattern), the server refuses to create or read sessions. The check can't
+   tell whether a key is random: generate it, don't type it. The only
    exception is `next dev` (`NODE_ENV=development`), which accepts any key (with a warning)
    and without one falls back to an unencrypted cookie for local convenience. Never expose a
    dev server to a network.
@@ -95,7 +97,7 @@ with only the permissions PricingKit needs, and revoke it when you are done.
 
 **Self-hosted.** You control the server, `ENCRYPTION_KEY`, and logs, so credentials never
 reach a third party apart from Apple and Google. This is the recommended setup for
-production accounts. Set `ENCRYPTION_KEY` to 32 random bytes in base64
+production accounts. Set `ENCRYPTION_KEY` to 32 bytes from a random generator, in base64
 (`openssl rand -base64 32`), serve over HTTPS, and keep it secret. Rotating it signs every
 user out: there is one key and no key ID, so cookies made under the old key no longer decrypt
 and are treated as signed out. Rotate it (set a new random value and restart or redeploy) when

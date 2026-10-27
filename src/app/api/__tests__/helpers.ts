@@ -17,8 +17,8 @@ export function createCookieStore(initial: Record<string, string> = {}) {
 
 export type TestCookieStore = ReturnType<typeof createCookieStore>;
 
-/** A valid ENCRYPTION_KEY for tests: base64 of 32 bytes */
-export const TEST_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
+/** A valid ENCRYPTION_KEY for tests: base64 of 32 distinct bytes (fixed, so runs are repeatable) */
+export const TEST_ENCRYPTION_KEY = Buffer.from(Array.from({ length: 32 }, (_, i) => (i * 7 + 3) % 256)).toString('base64');
 
 /** A session cookie value as the login routes write it */
 export async function sessionCookieValue(kind: 'google' | 'apple', credentials: unknown): Promise<string> {
