@@ -157,3 +157,40 @@ describe('pricingkit apply', () => {
     expect(store.writes()).toEqual([]);
   });
 });
+
+describe('pricingkit undo', () => {
+  it('writes the undo plan offline, prints its hash and what needs --force-delete, and the undo applies', async () => {
+    const { hash } = await planFile();
+    expect((await run(['apply', 'plan.json', '--confirm', hash], { env, cwd: tmp.dir })).code).toBe(0);
+    const calls = appleApiRequest.mock.calls.length;
+
+    const r = await run(['undo', 'plan.json', 'plan.run.json'], { env: {}, cwd: tmp.dir });
+    expect(r.code).toBe(2);
+    expect(appleApiRequest.mock.calls.length).toBe(calls); // offline, no credentials needed
+    const undo = parseChangeSet(readFileSync(join(tmp.dir, 'plan.undo.json'), 'utf8'));
+    expect(undo.ops.map((op) => op.kind)).toEqual(['deleteOffer', 'deleteOffer']);
+    const undoHash = changeSetHash(undo);
+    expect(r.stdout).toContain(`Plan hash: ${undoHash}`);
+    expect(r.stdout).toMatch(/Not reversible:[\s\S]*redemptions/);
+    expect(r.stdout).toContain('--force-delete');
+
+    // Not replaced without --force
+    expect((await run(['undo', 'plan.json', 'plan.run.json'], { env: {}, cwd: tmp.dir })).code).toBe(1);
+
+    const blocked = await run(['apply', 'plan.undo.json', '--confirm', undoHash], { env, cwd: tmp.dir });
+    expect(blocked.code).toBe(1);
+    expect(blocked.stdout).toMatch(/REDEMPTIONS_UNCHECKED|force/);
+    const applied = await run(['apply', 'plan.undo.json', '--confirm', undoHash, '--force-delete', '--run-out', 'undo.run.json'], { env, cwd: tmp.dir });
+    expect(applied.code).toBe(0);
+    expect(store.offers).toEqual([]);
+  });
+
+  it('refuses a run log of another plan', async () => {
+    const { hash } = await planFile();
+    await run(['apply', 'plan.json', '--confirm', hash], { env, cwd: tmp.dir });
+    writeFileSync(join(tmp.dir, 'other.json'), JSON.stringify({ schemaVersion: 1, kind: 'pricingkit.changeset', id: 'o', createdAt: 'x', app: { bundleId: BUNDLE }, ops: [] }));
+    const r = await run(['undo', 'other.json', 'plan.run.json'], { env: {}, cwd: tmp.dir });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/different plan/);
+  });
+});

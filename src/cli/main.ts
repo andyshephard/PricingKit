@@ -17,6 +17,7 @@ import { CliError, EXIT_ERROR, EXIT_OK, UsageError, type ExitCode } from './erro
 import { Redactor } from './redact';
 import { applyCommand } from './commands/apply';
 import { diffCommand } from './commands/diff';
+import { undoCommand } from './commands/undo';
 import { driftCommand } from './commands/drift';
 import { exportCommand } from './commands/export';
 import { offersCommand } from './commands/offers';
@@ -31,6 +32,7 @@ const HANDLERS: Record<CommandName, (ctx: CommandContext) => Promise<CommandResu
   offers: offersCommand,
   drift: driftCommand,
   apply: applyCommand,
+  undo: undoCommand,
 };
 
 export interface CliIO {

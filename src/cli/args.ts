@@ -4,7 +4,7 @@
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { UsageError } from './errors';
 
-export const COMMANDS = ['export', 'plan', 'diff', 'offers', 'drift', 'apply'] as const;
+export const COMMANDS = ['export', 'plan', 'diff', 'offers', 'drift', 'apply', 'undo'] as const;
 export type CommandName = (typeof COMMANDS)[number];
 
 type OptionSpec = NonNullable<ParseArgsConfig['options']>;
@@ -46,9 +46,10 @@ const OPTIONS: Record<CommandName, OptionSpec> = {
     force: { type: 'boolean' },
     'force-delete': { type: 'boolean' },
   },
+  undo: { ...COMMON, out: { type: 'string', short: 'o' }, force: { type: 'boolean' } },
 };
 
-const ALLOWS_POSITIONAL: Partial<Record<CommandName, true>> = { diff: true, apply: true };
+const ALLOWS_POSITIONAL: Partial<Record<CommandName, true>> = { diff: true, apply: true, undo: true };
 
 export type Flags = Record<string, string | boolean | undefined>;
 
@@ -153,6 +154,7 @@ Commands:
   offers   List an App Store subscription's offers with their prices per territory
   drift    Check an App Store offer's prices against a percent-of-current rule
   apply    Apply a reviewed App Store offer plan (needs --confirm <plan hash>); saves the run log
+  undo     Turn a plan and its run log into an undo plan (offline), to review and apply
 
 ${SHARED_HELP}
 
@@ -250,6 +252,21 @@ failed or interrupted run with --resume. Deleting an offer needs --force-delete,
 App Store Connect doesn't report redemptions.
 
 Exit code 0 when every op is done, 1 otherwise (the log says which).
+
+${SHARED_HELP}`,
+  undo: `Usage:
+  pricingkit undo <plan.json> <run.json> [--out <undo.json>] [--force]
+
+Builds the plan that undoes what the run changed (newest first, from each
+op's "before"), writes it (default <plan>.undo.json, never replaced unless
+--force), and prints its summary, its hash and anything that can't be
+reversed (e.g. offer codes already redeemed). Sends no store requests and
+needs no credentials. Works for runs from the CLI and from the web app (save
+the plan and the run log from its offer dialog). Apply the undo plan like any
+other: pricingkit apply <undo.json> --confirm <hash>, with --force-delete when
+it deletes offers.
+
+Exit code 2 when there is something to undo, 0 otherwise.
 
 ${SHARED_HELP}`,
 };
