@@ -360,4 +360,63 @@ describe('POST /api/bulk', () => {
     }
     expect(getInAppProduct).not.toHaveBeenCalled();
   });
+
+  describe('each product and base plan once, written only at the previewed price', () => {
+    it('deduplicates repeated items and a base plan also covered by its subscription', async () => {
+      getInAppProduct.mockResolvedValue(product);
+      updateInAppProductPrices.mockResolvedValue(product);
+      getSubscription.mockResolvedValue(twoPlanSubscription);
+      updateBasePlanPrices.mockResolvedValue({});
+      const body = await (
+        await POST(
+          bulkRequest({
+            items: [
+              { type: 'product', id: 'coins_100' },
+              { type: 'product', id: 'coins_100' },
+              { type: 'subscription', id: 'premium' },
+              { type: 'subscription', id: 'premium', basePlanId: 'monthly' },
+              { type: 'subscription', id: 'premium' },
+            ],
+            operation: { type: 'percentage', value: 10 },
+            targetRegions: ['US'],
+            expectedPrices: { coins_100: { US: 'USD 12' }, 'premium/monthly': { US: 'USD 10' }, 'premium/yearly': { US: 'USD 100' } },
+          })
+        )
+      ).json();
+      expect(updateInAppProductPrices).toHaveBeenCalledTimes(1);
+      expect(updateBasePlanPrices.mock.calls.map((c) => c[3])).toEqual(['monthly', 'yearly']);
+      expect(body.results.map((r: { id: string; basePlanId?: string }) => `${r.id}/${r.basePlanId ?? ''}`)).toEqual(['coins_100/', 'premium/monthly', 'premium/yearly']);
+    });
+
+    it('hands the previewed prices to the write helpers, which re-check them against their own fresh read', async () => {
+      getInAppProduct.mockResolvedValue(product);
+      updateInAppProductPrices.mockResolvedValue(product);
+      getSubscription.mockResolvedValue(twoPlanSubscription);
+      updateBasePlanPrices.mockResolvedValue({});
+      await POST(
+        bulkRequest({
+          items: [{ type: 'product', id: 'coins_100' }, { type: 'subscription', id: 'premium', basePlanId: 'yearly' }],
+          operation: { type: 'percentage', value: 10 },
+          targetRegions: ['US'],
+          expectedPrices: { coins_100: { US: 'USD 12' }, 'premium/yearly': { US: 'USD 100' } },
+        })
+      );
+      expect(updateInAppProductPrices.mock.calls[0][6]).toEqual({ expected: { US: { currencyCode: 'USD', units: '12' } } });
+      expect(updateBasePlanPrices.mock.calls[0][6]).toEqual({ expected: { US: { currencyCode: 'USD', units: '100' } } });
+    });
+
+    it('reports PRICE_CHANGED when the price moved between this request\'s read and the write', async () => {
+      getInAppProduct.mockResolvedValue(product);
+      const { assertExpectedPrices } = await import('@/lib/google-play/expected-prices');
+      updateInAppProductPrices.mockImplementation(async (...args: unknown[]) => {
+        // The helper's own fresh read finds another price
+        assertExpectedPrices({ US: { currencyCode: 'USD', units: '13' } }, (args[6] as { expected: Record<string, never> }).expected);
+      });
+      const body = await (
+        await POST(bulkRequest({ items: [{ type: 'product', id: 'coins_100' }], operation: { type: 'percentage', value: 10 }, targetRegions: ['US'], expectedPrices: { coins_100: { US: 'USD 12' } } }))
+      ).json();
+      expect(body.results[0]).toMatchObject({ success: false, committed: false, error: expect.stringMatching(/^PRICE_CHANGED/) });
+    });
+  });
 });
+

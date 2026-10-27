@@ -31,6 +31,12 @@ import { currencyCodeSchema, googlePlayBasePlanIdSchema, googlePlaySkuSchema, re
 //
 // "fixed" sets one amount in one currency (`currency`); regions billed in
 // another currency are left alone, never converted.
+//
+// The previewed prices are checked twice: against this request's read, and
+// again by the write helper against its own fresh read just before the PATCH
+// (`expected`), so a price changed in between refuses the write
+// (PRICE_CHANGED). Items are deduplicated on product / base plan, so no base
+// plan is written twice in one request.
 
 type SkippedRegion = { regionCode: string; reason: string; code?: 'NO_PRICE' | 'OTHER_CURRENCY' | 'PRICE_CHANGED' | 'NOT_PREVIEWED' };
 
@@ -86,7 +92,7 @@ function formatMoney(money: Money): string {
 }
 
 interface RegionPlan {
-  changes: Array<{ regionCode: string; oldPrice: string; newPrice: string; price: Money }>;
+  changes: Array<{ regionCode: string; oldPrice: string; newPrice: string; price: Money; current: Money }>;
   skippedRegions: SkippedRegion[];
 }
 
@@ -108,7 +114,7 @@ function planRegions(prices: Record<string, Money | undefined>, targetRegions: s
       continue;
     }
     const price = calculateNewPrice(current, operation);
-    plan.changes.push({ regionCode, oldPrice: formatMoney(current), newPrice: formatMoney(price), price });
+    plan.changes.push({ regionCode, oldPrice: formatMoney(current), newPrice: formatMoney(price), price, current });
   }
   return plan;
 }
@@ -172,6 +178,9 @@ export async function POST(request: NextRequest) {
 
     const results: BulkResult[] = [];
     let stopped = false;
+    // Each product / base plan at most once per request (first occurrence wins)
+    const seen = new Set<string>();
+    const firstTime = (key: string) => (seen.has(key) ? false : (seen.add(key), true));
 
     /** Plans one product or base plan, writes it unless this is a dry run, and records the result */
     const run = async (
@@ -184,6 +193,7 @@ export async function POST(request: NextRequest) {
       const plan = dryRun ? planned : confirmedAgainst(planned, expectedPrices?.[key]);
       const changes = plan.changes.map(({ regionCode, oldPrice, newPrice }) => ({ regionCode, oldPrice, newPrice }));
       const skipped = plan.skippedRegions.length > 0 ? { skippedRegions: plan.skippedRegions } : {};
+      if (!firstTime(key)) return; // already handled in this request (a subscription item and one of its base plans)
       // Nothing to write is a failure, not a successful no-op
       if (plan.changes.length === 0) {
         results.push({ ...head, success: false, committed: false, error: 'None of the target regions can be changed', ...skipped });
@@ -194,7 +204,9 @@ export async function POST(request: NextRequest) {
       results.push({ ...head, success: true, committed: !dryRun, changes, ...skipped });
     };
 
-    for (const item of items) {
+    const uniqueItems = items.filter((item) => firstTime(`${item.type}:${item.id}/${item.basePlanId ?? '*'}`));
+    seen.clear();
+    for (const item of uniqueItems) {
       if (stopped) {
         results.push({ id: item.id, basePlanId: item.basePlanId, success: false, committed: false, error: 'Skipped due to earlier failure (stopOnFailure)' });
         continue;
@@ -215,7 +227,8 @@ export async function POST(request: NextRequest) {
               item.id,
               Object.fromEntries(plan.changes.map((c) => [c.regionCode, c.price])),
               undefined,
-              ctx
+              ctx,
+              { expected: Object.fromEntries(plan.changes.map((c) => [c.regionCode, c.current])) }
             )
           );
         } else {
@@ -256,7 +269,9 @@ export async function POST(request: NextRequest) {
               await run(`${item.id}/${basePlan.basePlanId}`, head, prices, (plan) => {
                 // Same price maths as products; everything else in the config is sent back as fetched
                 const newConfigs: RegionalBasePlanConfig[] = plan.changes.map((c) => ({ ...configs.get(c.regionCode)!, price: c.price }));
-                return updateBasePlanPrices(auth.credentials, auth.packageName, item.id, basePlan.basePlanId, newConfigs, ctx);
+                return updateBasePlanPrices(auth.credentials, auth.packageName, item.id, basePlan.basePlanId, newConfigs, ctx, {
+                  expected: Object.fromEntries(plan.changes.map((c) => [c.regionCode, c.current])),
+                });
               });
             } catch (error) {
               // One failing base plan must not hide the outcome of the others
