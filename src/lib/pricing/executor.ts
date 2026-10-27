@@ -39,7 +39,7 @@ import {
 import { mapWithConcurrency } from './concurrency';
 import { describePrice, productKey, samePrice, type PriceValue, type ProductPriceState } from './model';
 import type { ApplyContext, BudgetView, OfferApplyContext, OpResponse, PlatformAdapter } from './adapter';
-import { classifyOfferOp, isOfferOp, offerKindLabel, type AnyOfferOp } from './offer-ops';
+import { classifyOfferOp, isAppleOfferOp, isOfferOp, offerKindLabel, type AnyOfferOp } from './offer-ops';
 import type { StoreOffer } from './offers';
 import { assertRunMatches, createRun, type ApplyRun, type OpError, type OpRecord } from './run';
 
@@ -332,10 +332,13 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
           const result = classifyOfferOp(op, offers, today(), offerHistory(record));
           // A resume that finds territories of an intro create already in place, after an attempt
           // was sent (e.g. a create that answered 5xx but took effect), attributes them to this run,
-          // so undo can delete them instead of listing them for manual clean-up
+          // so undo can delete them instead of listing them for manual clean-up. Only territories
+          // this run actually sent (`sentTerritories`, saved before each send): an identical intro
+          // offer someone else made in another territory is not this run's, and undo must not delete it.
           if (record.attempts > 0 && op.kind === 'createOffer' && result.kind !== 'drifted' && result.found) {
             const known = (record.response?.createdIds as Record<string, string> | undefined) ?? {};
-            const fresh = Object.fromEntries(Object.entries(result.found).filter(([t]) => !known[t]));
+            const sent = new Set(sentTerritoriesOf(record));
+            const fresh = Object.fromEntries(Object.entries(result.found).filter(([t]) => !known[t] && sent.has(t)));
             if (Object.keys(fresh).length > 0) {
               update(record, { response: mergeResponses(record.response, { ...(record.response ?? {}), createdIds: fresh, foundOnResume: Object.keys(fresh).sort() }) });
             }
@@ -503,10 +506,16 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
     // Record the attempt and persist it BEFORE sending, so a crash mid-request
     // leaves a log that shows the op may have been sent (attempts > 0). On
     // resume, an op found at its target is then counted as this run's change.
-    const previous = unit.map(({ op }) => {
-      const record = records.get(op.id)!;
-      const before = { attempts: record.attempts, startedAt: record.startedAt };
+    const previous = unit.map((item) => {
+      const record = records.get(item.op.id)!;
+      const before = { attempts: record.attempts, startedAt: record.startedAt, response: record.response };
       update(record, { attempts: record.attempts + 1, startedAt: now() });
+      // An intro create sends one request per territory: record which, across attempts, before sending
+      if (item.offer && isAppleOfferOp(item.op) && item.op.kind === 'createOffer' && item.op.target.offer.kind === 'apple.intro') {
+        const sending = item.context.pending ?? Object.keys(item.op.after?.prices ?? {});
+        const sentTerritories = [...new Set([...sentTerritoriesOf(record), ...sending])].sort();
+        update(record, { response: { ...(record.response ?? {}), sentTerritories } });
+      }
       return before;
     });
     // Only a failed save cancels a unit that already holds its budget
@@ -583,12 +592,22 @@ function partialResponse(error: unknown): OpResponse | undefined {
   return partial && typeof partial === 'object' ? (partial as OpResponse) : undefined;
 }
 
-/** A new response for a record, keeping resource IDs created by earlier attempts */
+/** Intro territories this op's attempts have sent (saved before each send) */
+function sentTerritoriesOf(record: OpRecord): string[] {
+  const sent = record.response?.sentTerritories;
+  return Array.isArray(sent) ? sent.filter((t): t is string => typeof t === 'string') : [];
+}
+
+/** A new response for a record, keeping resource IDs created and territories sent by earlier attempts */
 function mergeResponses(previous: OpResponse | undefined, next: OpResponse): OpResponse {
+  const merged: OpResponse = { ...next };
   const prevIds = previous?.createdIds;
-  const nextIds = next.createdIds;
-  if (!prevIds || typeof prevIds !== 'object') return next;
-  return { ...next, createdIds: { ...(prevIds as Record<string, string>), ...((nextIds as Record<string, string> | undefined) ?? {}) } };
+  if (prevIds && typeof prevIds === 'object') {
+    merged.createdIds = { ...(prevIds as Record<string, string>), ...((next.createdIds as Record<string, string> | undefined) ?? {}) };
+  }
+  const sent = [...(Array.isArray(previous?.sentTerritories) ? (previous!.sentTerritories as string[]) : []), ...(Array.isArray(next.sentTerritories) ? (next.sentTerritories as string[]) : [])];
+  if (sent.length > 0) merged.sentTerritories = [...new Set(sent)].sort();
+  return merged;
 }
 
 /** One line per op, for logs and CLI output. */
