@@ -1,7 +1,9 @@
 // AppleAdapter: App Store Connect behind the core's PlatformAdapter interface.
 //
-// Phase 1 covers subscription base prices (current and scheduled). In-app
-// purchase prices and offers come later; the adapter refuses them clearly.
+// Phase 1 covers subscription base prices (current and scheduled). Phase 2a
+// adds read-only subscription offers, offer price previews and drift checks.
+// In-app purchase prices and offer writes come later; the adapter refuses
+// them clearly.
 
 import {
   decimalEquals,
@@ -22,7 +24,22 @@ import {
   type ResolveTarget,
   type SnapMode,
   type TerritoryPriceState,
+  appleSubscriptionPeriodToIso,
+  checkOfferDrift,
+  deriveOfferPrices,
+  type AppleOfferKind,
+  type BillingPeriod,
+  type Decimal,
+  type OfferDerivation,
+  type OfferDriftReport,
+  type OfferDuration,
+  type OfferMode,
+  type PercentOfCurrentRule,
+  type PriceLadder,
+  type StoreOffer,
 } from '@/lib/pricing';
+import { getSubscriptionOffer, listSubscriptionOffers } from '@/lib/apple-connect/offers';
+import { getSubscriptionById } from '@/lib/apple-connect/subscriptions';
 import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
 import { deleteSubscriptionPrice, updateSubscriptionPrice } from '@/lib/apple-connect/subscriptions';
 import {
@@ -314,5 +331,104 @@ export class AppleAdapter implements PlatformAdapter {
 
   inverse(op: BasePriceOp) {
     return invertOp(op);
+  }
+
+  // -------------------------------------------------------------------------
+  // Offers (read-only)
+
+  /** Every offer of the subscription (intro, promotional, offer codes, win-back), with prices per territory */
+  async fetchOffers(product: ProductRef): Promise<StoreOffer[]> {
+    return listSubscriptionOffers(this.credentials, subscriptionId(product), this.ctx);
+  }
+
+  /** One offer by store ID or key; null if the subscription has none */
+  async fetchOffer(product: ProductRef, kind: AppleOfferKind, idOrKey: string): Promise<StoreOffer | null> {
+    return getSubscriptionOffer(this.credentials, subscriptionId(product), kind, idOrKey, this.ctx);
+  }
+
+  /** The subscription's billing period, as an ISO duration */
+  async fetchBillingPeriod(product: ProductRef): Promise<BillingPeriod> {
+    const id = subscriptionId(product);
+    const subscription = await getSubscriptionById(this.credentials, id, this.ctx);
+    if (!subscription) throw new ApiError(`Subscription ${id} not found`, { status: 404, code: 'NOT_FOUND', platform: 'apple', retryable: false });
+    const period = appleSubscriptionPeriodToIso(subscription.period);
+    if (!period) {
+      throw new ApiError(`Subscription ${id} has an unknown billing period ${JSON.stringify(subscription.period)}`, {
+        status: 422,
+        code: 'UNKNOWN_PERIOD',
+        platform: 'apple',
+        retryable: false,
+      });
+    }
+    return period;
+  }
+
+  /** Each territory's valid subscription price points (alpha-2 keyed), for offer derivation */
+  async fetchPriceLadders(product: ProductRef, territories: string[]): Promise<Record<string, PriceLadder>> {
+    const id = subscriptionId(product);
+    const alpha3 = [...new Set(territories)].map((t) => alpha2ToAlpha3(t)).filter((t): t is string => Boolean(t));
+    if (alpha3.length === 0) return {};
+    const ladders = await listSubscriptionPricePointsByTerritory(this.credentials, id, alpha3, this.ctx);
+    const out: Record<string, PriceLadder> = {};
+    for (const [territory, points] of ladders) {
+      const alpha2 = toAlpha2(territory);
+      if (!alpha2) continue;
+      out[alpha2] = {
+        ...(points[0]?.currency ? { currency: points[0].currency } : {}),
+        points: points.map((p) => ({ id: p.id, customerPrice: p.customerPrice, proceeds: p.proceeds })),
+      };
+    }
+    return out;
+  }
+
+  /**
+   * Preview a percent-of-current offer: reads the current prices, the
+   * billing period and each territory's price points, then derives the
+   * offer price per territory. Reads only.
+   */
+  async previewOffer(
+    product: ProductRef,
+    options: { rule: PercentOfCurrentRule; mode: OfferMode; duration: OfferDuration; territories?: 'all' | string[]; deviationThreshold?: Decimal }
+  ): Promise<OfferDerivation> {
+    const base = await this.fetchState(product);
+    const billingPeriod = await this.fetchBillingPeriod(product);
+    const wanted = options.territories === undefined || options.territories === 'all' ? Object.keys(base.territories) : options.territories;
+    const ladders = await this.fetchPriceLadders(product, wanted);
+    return deriveOfferPrices({
+      rule: options.rule,
+      offer: { mode: options.mode, duration: options.duration },
+      billingPeriod,
+      base,
+      ladders,
+      territories: options.territories,
+      deviationThreshold: options.deviationThreshold,
+    });
+  }
+
+  /**
+   * Check an existing offer against its rule: which territories' offer
+   * prices no longer match the rule applied to today's base prices. Returns
+   * null when the subscription has no such offer. Reads only.
+   */
+  async checkOfferDrift(
+    product: ProductRef,
+    options: { kind: AppleOfferKind; offer: string; rule: PercentOfCurrentRule; territories?: 'all' | string[]; deviationThreshold?: Decimal }
+  ): Promise<OfferDriftReport | null> {
+    const offer = await this.fetchOffer(product, options.kind, options.offer);
+    if (!offer) return null;
+    const base = await this.fetchState(product);
+    const billingPeriod = await this.fetchBillingPeriod(product);
+    const wanted = options.territories === undefined || options.territories === 'all' ? Object.keys(base.territories) : options.territories;
+    const ladders = await this.fetchPriceLadders(product, wanted);
+    return checkOfferDrift({
+      rule: options.rule,
+      offer,
+      billingPeriod,
+      base,
+      ladders,
+      territories: options.territories,
+      deviationThreshold: options.deviationThreshold,
+      now: (this.now?.() ?? new Date()).toISOString(),
+    });
   }
 }
