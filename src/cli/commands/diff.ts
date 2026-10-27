@@ -19,6 +19,8 @@ import {
   type PlanSkip,
   type PriceValue,
   type ProductRef,
+  type PriceChangeNote,
+  type FreshnessEntry,
 } from '@/lib/pricing';
 import { stringFlag } from '../args';
 import { readInputFile, type CommandContext, type CommandResult } from '../context';
@@ -55,8 +57,24 @@ export interface PlanSummary {
       note?: string;
       /** Offer ops: the base-price ops it waits for (sync plans) */
       dependsOn?: string[];
+      /** Base-price ops: what existing subscribers see (price-increase.ts classes) */
+      existingSubscribers?: string;
+      /** Google Play: what migrating the legacy cohort to this price would need */
+      ifMigrated?: string;
+      /** Developer proceeds after the change (Google Play: estimated) */
+      proceeds?: string;
+      proceedsBefore?: string;
+      proceedsEstimated?: boolean;
+      /** Google Play: tax included in the new price */
+      tax?: string;
     }>;
   }>;
+  /** Per base-price op: existing-subscriber class, reasons, assumptions, proceeds, tax (from the plan's priceChanges) */
+  priceChanges: PriceChangeNote[];
+  /** Base-price ops by existing-subscriber class */
+  byExistingSubscribers: Record<string, number>;
+  /** The reference data the plan's targets came from, with ages */
+  dataFreshness: FreshnessEntry[];
   /** Ops per group: base prices are applied before offers */
   byGroup: { basePrices: number; offers: number };
   skipped: { count: number; byReason: Record<string, number>; territories: PlanSkip[] };
@@ -87,6 +105,7 @@ export interface PlanSummary {
 /** A plan's contents, grouped by product, for reviewers and machines. */
 export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
   const products = new Map<string, PlanSummary['products'][number]>();
+  const notes = new Map((changeSet.priceChanges ?? []).map((n) => [n.opId, n]));
   for (const op of changeSet.ops) {
     const key = productKey(op.target.product);
     if (!products.has(key)) products.set(key, { product: op.target.product, key, ops: [] });
@@ -95,6 +114,7 @@ export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
       continue;
     }
     const change = percentChange(op.before, op.after);
+    const note = notes.get(op.id);
     products.get(key)!.ops.push({
       id: op.id,
       kind: op.kind,
@@ -103,6 +123,12 @@ export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
       after: op.after,
       ...(change ? { change } : {}),
       ...(op.note ? { note: op.note } : {}),
+      ...(note ? { existingSubscribers: note.classification } : {}),
+      ...(note?.ifMigrated ? { ifMigrated: note.ifMigrated } : {}),
+      ...(note?.proceeds?.after !== undefined ? { proceeds: note.proceeds.after } : {}),
+      ...(note?.proceeds?.before !== undefined ? { proceedsBefore: note.proceeds.before } : {}),
+      ...(note?.proceeds?.estimated ? { proceedsEstimated: true } : {}),
+      ...(note?.tax !== undefined ? { tax: note.tax } : {}),
     });
   }
   const skipped = changeSet.skipped ?? [];
@@ -123,6 +149,9 @@ export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
     warnings: changeSet.warnings ?? [],
     notReversible: changeSet.notReversible ?? [],
     manualActions: changeSet.manualActions ?? [],
+    priceChanges: changeSet.priceChanges ?? [],
+    byExistingSubscribers: countBy(changeSet.priceChanges ?? [], (n) => n.classification),
+    dataFreshness: changeSet.dataFreshness ?? [],
     playOffers: changeSet.ops.filter(isOfferOp).filter(isPlayOfferOp).map((op) => {
       const state = (op.after ?? op.before)!;
       const tagsBefore = op.before?.tags ?? null;
@@ -219,10 +248,14 @@ export function formatPlanSummary(summary: PlanSummary): string {
     for (const product of summary.products) {
       const rows = product.ops.filter(pick);
       if (rows.length === 0) continue;
+      // Proceeds, tax and existing-subscriber columns only for plans that carry the notes
+      const withProceeds = rows.some((r) => r.proceeds !== undefined || r.proceedsBefore !== undefined);
+      const withTax = rows.some((r) => r.tax !== undefined);
+      const withSubscribers = rows.some((r) => r.existingSubscribers !== undefined);
       lines.push('', product.key);
       lines.push(
         table([
-          ['Op', 'Territory', 'Kind', 'Before', 'After', 'Change'],
+          ['Op', 'Territory', 'Kind', 'Before', 'After', 'Change', ...(withProceeds ? ['Proceeds'] : []), ...(withTax ? ['Tax'] : []), ...(withSubscribers ? ['Existing subscribers'] : [])],
           ...rows.map((op) => [
             op.id,
             op.territory,
@@ -230,6 +263,9 @@ export function formatPlanSummary(summary: PlanSummary): string {
             priceCell(op.before),
             priceCell(op.after),
             op.change ?? (op.territory === '-' || op.offer?.kind === 'play.offer' ? op.note ?? '' : ''),
+            ...(withProceeds ? [proceedsCell(op)] : []),
+            ...(withTax ? [op.tax ?? ''] : []),
+            ...(withSubscribers ? [subscribersCell(op)] : []),
           ]),
         ])
       );
@@ -272,9 +308,48 @@ export function formatPlanSummary(summary: PlanSummary): string {
       lines.push(table(notable.map((s) => [productKey(s.product), s.territory, s.reason, s.detail ?? ''])));
     }
   }
+  if (summary.priceChanges.length > 0) {
+    lines.push('', `Existing subscribers: ${describeCounts(summary.byExistingSubscribers)}`);
+    const consent = summary.priceChanges.filter((n) => n.classification === 'increase-needs-consent');
+    if (consent.length > 0) {
+      lines.push(`  Needs consent (subscribers who don't agree are lost at renewal): ${consent.map((n) => n.territory).join(', ')}`);
+    }
+    const assumptions = [...new Set(summary.priceChanges.flatMap((n) => n.assumptions ?? []))];
+    if (assumptions.length > 0) lines.push('  Assumed (not checked):', ...assumptions.map((a) => `    - ${a}`));
+    if (summary.priceChanges.some((n) => n.proceeds?.estimated)) {
+      const rates = [...new Set(summary.priceChanges.map((n) => n.proceeds?.commission).filter(Boolean))];
+      lines.push(`  Google Play proceeds are estimates: (price - tax) x (1 - commission), commission ${rates.join(', ')}.`);
+    }
+  }
+  if (summary.dataFreshness.length > 0) {
+    lines.push('', 'Reference data:', ...summary.dataFreshness.map((f) => `  ${f.stale ? 'STALE ' : ''}${f.message}`));
+  }
   if (summary.warnings.length > 0) lines.push('', 'Warnings:', ...summary.warnings.map((w) => `  ${w.opId}: ${w.message}`));
   if (summary.notReversible.length > 0) lines.push('', 'Not reversible:', ...summary.notReversible.map((w) => `  ${w.opId}: ${w.reason}`));
   return lines.join('\n');
+}
+
+const SUBSCRIBER_LABELS: Record<string, string> = {
+  decrease: 'decrease',
+  unchanged: 'unchanged',
+  'new-price': 'new territory',
+  'increase-to-new-subscribers-only': 'new subscribers only',
+  'increase-within-no-consent-threshold': 'notified, no consent',
+  'increase-needs-consent': 'NEEDS CONSENT',
+  'one-time-product': '-',
+};
+const MIGRATION_LABELS: Record<string, string> = { 'no-consent': 'no consent', 'opt-out-possible': 'opt-out possible', 'opt-in-required': 'opt-in' };
+
+function subscribersCell(op: PlanSummary['products'][number]['ops'][number]): string {
+  if (!op.existingSubscribers) return '';
+  const label = SUBSCRIBER_LABELS[op.existingSubscribers] ?? op.existingSubscribers;
+  return op.ifMigrated ? `${label} (migrating: ${MIGRATION_LABELS[op.ifMigrated] ?? op.ifMigrated})` : label;
+}
+
+function proceedsCell(op: PlanSummary['products'][number]['ops'][number]): string {
+  const after = op.proceeds !== undefined ? `${op.proceeds}${op.proceedsEstimated ? ' (est.)' : ''}` : '';
+  if (op.proceedsBefore !== undefined && op.proceeds !== undefined) return `${op.proceedsBefore} -> ${after}`;
+  return after;
 }
 
 export async function diffCommand(ctx: CommandContext): Promise<CommandResult> {

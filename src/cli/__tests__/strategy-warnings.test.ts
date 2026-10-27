@@ -55,6 +55,8 @@ describe('strategy warnings', () => {
     expect(changeSet.warnings).toEqual([
       { opId: '-', message: 'google:subscription:pro/annual GB (no change): Minimum price not enforced: no exchange rate for XXX' },
       { opId: changeSet.ops[0].id, message: 'US: Minimum price not enforced: no exchange rate for XXX' },
+      // The built-in fallback exchange rates are years old by 2030
+      { opId: '-', message: expect.stringMatching(/^Reference data: Fallback exchange rates \(static\): as of 2026-02-01, \d+ days old \(older than 45 days; refresh it\)$/) },
     ]);
   });
 });

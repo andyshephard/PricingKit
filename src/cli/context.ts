@@ -8,7 +8,7 @@ import { lstat, open, readFile, rename, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { AppleAdapter } from '@/lib/adapters/apple';
 import { PlayAdapter } from '@/lib/adapters/play';
-import type { ProductPriceState, ProductRef, ResolveResult, ResolveTarget, SnapMode } from '@/lib/pricing';
+import type { ProductPriceState, ProductRef, ResolveOptions, ResolveResult, ResolveTarget } from '@/lib/pricing';
 import type { RequestBudget } from '@/lib/utils/request-budget';
 import type { Flags } from './args';
 import { appleCredentialsFromEnv, googleCredentialsFromEnv } from './credentials';
@@ -128,7 +128,7 @@ export async function playAdapter(ctx: CommandContext, packageName: string): Pro
  */
 export interface PriceReader {
   fetchState(product: ProductRef): Promise<ProductPriceState>;
-  resolvePricePoints(product: ProductRef, targets: Record<string, ResolveTarget>, options?: { mode?: SnapMode }): Promise<ResolveResult>;
+  resolvePricePoints(product: ProductRef, targets: Record<string, ResolveTarget>, options?: ResolveOptions): Promise<ResolveResult>;
   /** Google Play: the regions version to record in a base-price plan (read-only price conversion) */
   fetchRegionsVersion?(): Promise<string | undefined>;
 }

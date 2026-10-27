@@ -9,8 +9,10 @@
 // several documents in one file, duplicate keys and alias bombs are refused.
 // Error messages give the line and column only, never the file's text.
 
-import { extname } from 'node:path';
+import { readFile, realpath } from 'node:fs/promises';
+import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
 import { isPair, isScalar, parseDocument, visit } from 'yaml';
+import { parseMultiplierCsv } from '@/lib/pricing';
 import { readInputFile, type CommandContext } from './context';
 import { CliError } from './errors';
 
@@ -24,6 +26,13 @@ const INTEGER_KEYS = new Set([
   'minimum',
   'maximum',
   'waitBetweenOffersInMonths',
+  // pricing spec: pppStaleness.maxAgeYears and freshness.maxAgeDays.<data set>
+  'maxAgeYears',
+  'ppp',
+  'bigmac',
+  'netflix',
+  'fallbackExchangeRates',
+  'appleTiers',
 ]);
 
 export function isYamlPath(path: string): boolean {
@@ -85,4 +94,53 @@ function position(text: string, offset: number): string {
 export async function readSpecText(ctx: CommandContext, path: string, what: string): Promise<string> {
   const text = await readInputFile(ctx, path, what);
   return isYamlPath(path) ? yamlToJson(text, `${what} ${path}`) : text;
+}
+
+/**
+ * Custom strategy targets may name their multiplier table as a CSV file
+ * ("multipliersFile", see parseMultiplierCsv): read it and put the table in
+ * the spec as "multipliers", so the core parser checks it like an inline one.
+ * The path is relative to the spec file, must stay inside the working
+ * directory (symlinks resolved), and must be a .csv file. Errors never quote
+ * the file's contents.
+ */
+export async function inlineMultiplierFiles(ctx: CommandContext, specText: string, specPath: string): Promise<string> {
+  let spec: unknown;
+  try {
+    spec = JSON.parse(specText);
+  } catch {
+    return specText; // the spec parser reports it
+  }
+  const products = (spec as { products?: unknown })?.products;
+  if (!Array.isArray(products)) return specText;
+  let changed = false;
+  for (const [index, entry] of products.entries()) {
+    const targets = (entry as { targets?: Record<string, unknown> } | null)?.targets;
+    if (!targets || typeof targets !== 'object' || !Object.hasOwn(targets, 'multipliersFile')) continue;
+    const where = `products.${index}.targets.multipliersFile`;
+    const file = targets.multipliersFile;
+    if (typeof file !== 'string' || !/^[A-Za-z0-9._/-]+$/.test(file) || file.startsWith('/') || file.split('/').some((s) => s === '..' || s === '.' || s === '' || s === '.git') || extname(file).toLowerCase() !== '.csv') {
+      throw new CliError(`${where}: a relative .csv path (letters, digits, ".", "_", "-", "/"; no ".." segments)`, 'INVALID_SPEC');
+    }
+    if (targets.multipliers !== undefined) throw new CliError(`${where}: give multipliers or multipliersFile, not both`, 'INVALID_SPEC');
+    const full = resolve(ctx.cwd, dirname(specPath), file);
+    const [root, real] = await Promise.all([realpath(ctx.cwd), realpath(full).catch(() => undefined)]);
+    if (real === undefined) throw new CliError(`${where}: can't read ${file}`, 'INVALID_SPEC');
+    const rel = relative(root, real);
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) throw new CliError(`${where}: ${file} is outside the working directory`, 'INVALID_SPEC');
+    let text: string;
+    try {
+      text = await readFile(real, 'utf8');
+    } catch (error) {
+      throw new CliError(`${where}: can't read ${file}${(error as { code?: string }).code ? ` (${(error as { code?: string }).code})` : ''}`, 'INVALID_SPEC');
+    }
+    try {
+      targets.multipliers = parseMultiplierCsv(text);
+    } catch (error) {
+      throw new CliError(`${where}: ${(error as Error).message}`, 'INVALID_SPEC');
+    }
+    delete targets.multipliersFile;
+    changed = true;
+  }
+  return changed ? JSON.stringify(spec) : specText;
 }

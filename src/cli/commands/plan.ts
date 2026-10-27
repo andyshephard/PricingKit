@@ -28,10 +28,17 @@ import {
   describePlayRegionPrice,
   type OfferPlanEntry,
   type ProductRef,
+  checkFreshness,
+  DEFAULT_MAX_AGE_DAYS,
+  priceChangeNotes,
+  REFERENCE_DATA,
+  strategyReferenceData,
+  type FreshnessEntry,
+  type PriceNoteProductInput,
 } from '@/lib/pricing';
 import { appSelection, stringFlag } from '../args';
 import { appleAdapter, playAdapter, readOnly, writeOutputFile, type CommandContext, type CommandResult, type PriceReader } from '../context';
-import { readSpecText } from '../spec-file';
+import { inlineMultiplierFiles, readSpecText } from '../spec-file';
 import { CliError, EXIT_CHANGES, EXIT_ERROR, EXIT_OK, UsageError } from '../errors';
 import { BASE_PRICE_NOTE } from './apply';
 import { formatPlanSummary, summarizeChangeSet } from './diff';
@@ -48,33 +55,50 @@ export interface PlanOutcome {
 /**
  * Spec -> ChangeSet. Reads each product's state, builds its targets, snaps
  * them with the store and diffs. Takes only a PriceReader, so it can't write.
+ * Adds planner notes: per op what existing subscribers see, proceeds and tax
+ * (priceChanges), and the age of the reference data used (dataFreshness).
  */
 export async function planFromSpec(spec: PricingSpec, reader: PriceReader, createdAt: string): Promise<PlanOutcome> {
   const products: Parameters<typeof buildChangeSet>[0]['products'] = [];
   const unresolvedSkips: PlanSkip[] = [];
   const strategyWarnings: Array<{ product: ProductRef; territory: string; message: string }> = [];
   const states: ProductPriceState[] = [];
+  const noteInputs: PriceNoteProductInput[] = [];
+  const now = new Date(createdAt);
 
   for (const entry of spec.products) {
     const state = await reader.fetchState(entry.product);
     states.push(state);
-    const { targets: raw, skipped, warnings } = specTargets(entry, state);
+    const { targets: raw, skipped, warnings } = specTargets(entry, state, { now });
     unresolvedSkips.push(...skipped);
     for (const w of warnings ?? []) strategyWarnings.push({ product: entry.product, ...w });
 
-    const resolved = Object.keys(raw).length > 0 ? await reader.resolvePricePoints(entry.product, raw, { mode: entry.snap ?? 'nearest' }) : { resolved: {}, unresolved: {} };
+    const measure = entry.measure ?? 'customerPrice';
+    const resolveOptions = {
+      mode: entry.snap ?? 'nearest',
+      ...(measure === 'proceeds' ? { measure } : {}),
+      ...(entry.commission ? { commission: entry.commission } : {}),
+    } as const;
+    const resolved = Object.keys(raw).length > 0 ? await reader.resolvePricePoints(entry.product, raw, resolveOptions) : { resolved: {}, unresolved: {} };
     for (const [territory, reason] of Object.entries(resolved.unresolved)) {
       unresolvedSkips.push({ product: entry.product, territory, reason: 'UNRESOLVED_PRICE_POINT', detail: reason });
     }
     const targets: Record<string, TargetPrice> = {};
     for (const [territory, price] of Object.entries(resolved.resolved)) {
+      const note =
+        price.measure === 'proceeds'
+          ? `target proceeds ${price.target} ${price.currency}, proceeds ${price.proceeds ?? '?'}${price.proceedsEstimated ? ' (estimated)' : ''} at price ${price.amount} (${price.deviation}, ${price.deviationRatio})`
+          : price.deviation !== '0'
+            ? `target ${price.target} ${price.currency}, snapped by ${price.deviation} (${price.deviationRatio})`
+            : undefined;
       targets[territory] = {
         currency: price.currency,
         amount: price.amount,
         ...(price.pricePointId ? { pricePointId: price.pricePointId } : {}),
-        ...(price.proceeds ? { proceeds: price.proceeds } : {}),
+        // Only store-reported proceeds go into the op (Apple); Play's are estimates and stay in the notes
+        ...(price.proceeds && !price.proceedsEstimated ? { proceeds: price.proceeds } : {}),
         ...(entry.startDate ? { startDate: entry.startDate } : {}),
-        ...(price.deviation !== '0' ? { note: `target ${price.target} ${price.currency}, snapped by ${price.deviation} (${price.deviationRatio})` } : {}),
+        ...(note ? { note } : {}),
       };
     }
     // Google Play base plan edits send a regions version: record Play's current one in the plan
@@ -89,6 +113,21 @@ export async function planFromSpec(spec: PricingSpec, reader: PriceReader, creat
         ...(regionsVersion ? { regionsVersion } : {}),
       },
     });
+    const exchangeRates = entry.targets.type === 'strategy' ? entry.targets.exchangeRates : undefined;
+    const consent = entry.consent || exchangeRates
+      ? {
+          ...(entry.consent?.billingPeriod ? { billingPeriod: entry.consent.billingPeriod } : {}),
+          ...(entry.consent?.lastIncreaseAt ? { lastIncreaseAt: entry.consent.lastIncreaseAt } : {}),
+          ...(exchangeRates ? { exchangeRates } : {}),
+        }
+      : undefined;
+    noteInputs.push({
+      state,
+      ...(consent ? { consent } : {}),
+      measure,
+      ...(entry.commission ? { commission: entry.commission } : {}),
+      resolved: resolved.resolved,
+    });
   }
 
   const changeSet = buildChangeSet({ app: spec.app, ...(spec.description ? { description: spec.description } : {}), products, createdAt });
@@ -101,7 +140,64 @@ export async function planFromSpec(spec: PricingSpec, reader: PriceReader, creat
       return op ? { opId: op.id, message: `${w.territory}: ${w.message}` } : { opId: '-', message: `${productKey(w.product)} ${w.territory} (no change): ${w.message}` };
     }),
   ];
-  return { changeSet: { ...changeSet, ...(skipped.length > 0 ? { skipped } : {}), ...(warnings.length > 0 ? { warnings } : {}) }, states };
+  const priceChanges = priceChangeNotes(basePriceOps(changeSet), noteInputs, createdAt);
+  const dataFreshness = specFreshness(spec, states, now);
+  for (const f of dataFreshness) if (f.stale) warnings.push({ opId: '-', message: `Reference data: ${f.message}` });
+  return {
+    changeSet: {
+      ...changeSet,
+      ...(skipped.length > 0 ? { skipped } : {}),
+      ...(warnings.length > 0 ? { warnings } : {}),
+      ...(priceChanges.length > 0 ? { priceChanges } : {}),
+      ...(dataFreshness.length > 0 ? { dataFreshness } : {}),
+    },
+    states,
+  };
+}
+
+/** The reference data a spec's strategy targets read, with their ages */
+export function specFreshness(spec: PricingSpec, states: ProductPriceState[], now: Date): FreshnessEntry[] {
+  const maxAge = spec.freshness?.maxAgeDays ?? {};
+  const entries = new Map<string, FreshnessEntry>();
+  const add = (info: Parameters<typeof checkFreshness>[0]) => {
+    if (!entries.has(info.id)) entries.set(info.id, checkFreshness(info, now, maxAge[info.id] ?? DEFAULT_MAX_AGE_DAYS[info.id]));
+  };
+  spec.products.forEach((entry, i) => {
+    if (entry.targets.type !== 'strategy') return;
+    const t = entry.targets;
+    for (const id of strategyReferenceData(t.strategy)) add(REFERENCE_DATA[id]);
+    if (t.exchangeRates) add({ id: 'exchangeRates', label: 'Exchange rates (spec)', ...(t.exchangeRatesAsOf ? { asOf: t.exchangeRatesAsOf } : {}) });
+    // Any territory currency the spec gives no rate for is converted with the built-in fallback rates
+    const currencies = new Set(Object.values(states[i]?.territories ?? {}).map((s) => s.currency).filter((c) => c && c !== 'USD'));
+    if (t.base.currency && t.base.currency !== 'USD') currencies.add(t.base.currency);
+    if ([...currencies].some((c) => !t.exchangeRates?.[c])) add(REFERENCE_DATA.fallbackExchangeRates);
+  });
+  return [...entries.values()];
+}
+
+/** Planning stops here, before any file is written, when the spec's guards say so */
+function assertSpecGuards(spec: PricingSpec, changeSet: ChangeSet): void {
+  const ops = new Map(basePriceOps(changeSet).map((op) => [op.id, op]));
+  const refused: string[] = [];
+  spec.products.forEach((entry) => {
+    if (!entry.consent?.maxIncreaseWithoutConsent) return;
+    for (const note of changeSet.priceChanges ?? []) {
+      const op = ops.get(note.opId);
+      if (op && productKey(op.target.product) === productKey(entry.product) && note.classification === 'increase-needs-consent') {
+        refused.push(`${productKey(entry.product)} ${note.territory} (${note.percent ?? '?'}%): ${note.reasons[note.reasons.length - 1] ?? 'needs consent'}`);
+      }
+    }
+  });
+  if (refused.length > 0) {
+    throw new CliError(
+      `The spec sets maxIncreaseWithoutConsent, but ${refused.length} territories would need existing subscribers' consent; no plan was written:\n  ${refused.join('\n  ')}\nKeep their price for existing subscribers (preserveCurrentPrice), lower the increase, or remove the guard.`,
+      'CONSENT_REQUIRED'
+    );
+  }
+  const stale = (changeSet.dataFreshness ?? []).filter((f) => f.stale);
+  if (spec.freshness?.refuseStale && stale.length > 0) {
+    throw new CliError(`The spec sets freshness.refuseStale and the plan used stale reference data; no plan was written:\n  ${stale.map((f) => f.message).join('\n  ')}`, 'STALE_REFERENCE_DATA');
+  }
 }
 
 export async function planCommand(ctx: CommandContext): Promise<CommandResult> {
@@ -119,8 +215,9 @@ export async function planCommand(ctx: CommandContext): Promise<CommandResult> {
 
   if (rulesPath) return planSyncCommand(ctx, rulesPath, specPath, out, stateOut);
 
-  const specText = await readSpecText(ctx, specPath!, 'spec file');
-  if (specKind(specText) === OFFER_PLAN_SPEC_KIND) return planOffersCommand(ctx, specText, out);
+  const rawSpecText = await readSpecText(ctx, specPath!, 'spec file');
+  if (specKind(rawSpecText) === OFFER_PLAN_SPEC_KIND) return planOffersCommand(ctx, rawSpecText, out);
+  const specText = await inlineMultiplierFiles(ctx, rawSpecText, specPath!);
 
   let spec: PricingSpec;
   try {
@@ -137,6 +234,7 @@ export async function planCommand(ctx: CommandContext): Promise<CommandResult> {
 
   const adapter = 'bundleId' in spec.app ? await appleAdapter(ctx, spec.app.bundleId) : await playAdapter(ctx, spec.app.packageName);
   const { changeSet, states } = await planFromSpec(spec, readOnly(adapter), ctx.now().toISOString());
+  assertSpecGuards(spec, changeSet);
 
   const written = await writeOutputFile(ctx, out, serializeChangeSet(changeSet));
   const stateWritten = stateOut ? await writeOutputFile(ctx, stateOut, serializeStateSnapshot(createStateSnapshot(spec.app, states, ctx.now().toISOString()))) : undefined;
@@ -335,7 +433,7 @@ async function planSyncCommand(ctx: CommandContext, rulesPath: string, specPath:
 
   let spec: PricingSpec | undefined;
   if (specPath) {
-    const specText = await readSpecText(ctx, specPath, 'spec file');
+    const specText = await inlineMultiplierFiles(ctx, await readSpecText(ctx, specPath, 'spec file'), specPath);
     if (specKind(specText) === OFFER_PLAN_SPEC_KIND) {
       throw new UsageError('--rules goes with a base-price spec (pricingkit.spec), or on its own; an offer plan spec creates offers and is planned without --rules');
     }
@@ -351,6 +449,7 @@ async function planSyncCommand(ctx: CommandContext, rulesPath: string, specPath:
   const adapter = 'bundleId' in rules.app ? await appleAdapter(ctx, rules.app.bundleId) : await playAdapter(ctx, rules.app.packageName);
   const createdAt = ctx.now().toISOString();
   const basePlan = spec ? await planFromSpec(spec, readOnly(adapter), createdAt) : undefined;
+  if (spec && basePlan) assertSpecGuards(spec, basePlan.changeSet);
   const planner: OfferSyncPlanner = { planOfferSync: (input) => adapter.planOfferSync(input) };
   const plan = await planner.planOfferSync({
     rules,
