@@ -14,7 +14,7 @@ const googlePlayFetch = vi.fn();
 vi.mock('@/lib/google-play/client', () => ({ googlePlayFetch: (...args: unknown[]) => googlePlayFetch(...args) }));
 
 import { FakeAppleServer, SUB_ID } from '@/lib/adapters/__tests__/fake-apple';
-import { parseChangeSet, PRICING_SPEC_KIND, type BasePriceOp } from '@/lib/pricing';
+import { canonicalJson, fnv1a64, parseChangeSet, PRICING_SPEC_KIND, type BasePriceOp } from '@/lib/pricing';
 import { fakeAppleEnv, FakePlay, run, tempDir, throwawayRsaPem } from './fixtures';
 
 const BUNDLE = 'com.example.app';
@@ -120,17 +120,29 @@ describe('existing subscribers in plans and diff', () => {
 });
 
 describe('plan schema versions', () => {
-  it('a version 1 plan (no planner notes) keeps its confirm hash and still applies', async () => {
+  it('versions 1 and 2 keep their old FNV confirm hash and still apply, with a warning; version 3 plans use SHA-256', async () => {
     writeSpec([{ product, targets: { type: 'fixed', prices: { US: '29.99' } } }]);
     expect((await plan()).code).toBe(2);
-    const v2 = readPlan();
-    expect(v2.schemaVersion).toBe(2);
-    const { priceChanges: _notes, dataFreshness: _data, ...rest } = v2;
+    const v3 = readPlan();
+    expect(v3.schemaVersion).toBe(3);
+    const sha = JSON.parse((await run(['diff', 'plan.json', '--json'], { cwd: tmp.dir })).stdout).changeSetHash;
+    expect(sha).toMatch(/^[0-9a-f]{32}$/);
+    const fnv = fnv1a64(canonicalJson({ app: v3.app, ops: v3.ops }));
+
+    const { priceChanges: _notes, dataFreshness: _data, ...rest } = v3;
     writeFileSync(join(tmp.dir, 'v1.json'), JSON.stringify({ ...rest, schemaVersion: 1 }));
-    const diff = JSON.parse((await run(['diff', 'v1.json', '--json'], { cwd: tmp.dir })).stdout);
-    const hash = JSON.parse((await run(['diff', 'plan.json', '--json'], { cwd: tmp.dir })).stdout).changeSetHash;
-    expect(diff.changeSetHash).toBe(hash);
-    expect((await run(['apply', 'v1.json', '--confirm', hash, '--allow-base-prices'], { env: appleEnv, cwd: tmp.dir })).code).toBe(0);
+    writeFileSync(join(tmp.dir, 'v2.json'), JSON.stringify({ ...v3, schemaVersion: 2 }));
+    for (const file of ['v1.json', 'v2.json']) {
+      const diff = await run(['diff', file], { cwd: tmp.dir });
+      expect(diff.stdout).toContain(`Plan hash: ${fnv}`);
+      expect(diff.stdout).toMatch(/WARNING: .*old FNV-1a confirm hash/);
+    }
+    // The SHA-256 hash of the same ops doesn't confirm an old plan, and the old hash doesn't confirm a new one
+    expect((await run(['apply', 'v2.json', '--confirm', sha, '--allow-base-prices'], { env: appleEnv, cwd: tmp.dir })).code).toBe(1);
+    expect((await run(['apply', 'plan.json', '--confirm', fnv, '--allow-base-prices'], { env: appleEnv, cwd: tmp.dir })).code).toBe(1);
+    const applied = await run(['apply', 'v1.json', '--confirm', fnv, '--allow-base-prices'], { env: appleEnv, cwd: tmp.dir });
+    expect(applied.code).toBe(0);
+    expect(applied.stderr).toMatch(/WARNING: .*old FNV-1a confirm hash/);
     writeFileSync(join(tmp.dir, 'v9.json'), JSON.stringify({ ...rest, schemaVersion: 9 }));
     const newer = await run(['diff', 'v9.json', '--json'], { cwd: tmp.dir });
     expect(newer.code).toBe(1);

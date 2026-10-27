@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildWorkspacePlan,
+  legacyWorkspaceHashWarning,
   parsePricingSpec,
   parseWorkspace,
   parseWorkspacePlan,
@@ -200,6 +201,20 @@ describe('workspace plan index', () => {
     expect(workspacePlanHash([{ ...plans[0], ops: 99 } as WorkspacePlanEntry, plans[1]])).toBe(index.hash);
   });
 
+  it('hashes new indexes with SHA-256 and still reads version 1 indexes with their FNV hash, with a warning', () => {
+    const index = buildWorkspacePlan({ createdAt: '2030-01-01T00:00:00Z', plans });
+    expect(index.schemaVersion).toBe(2);
+    expect(index.hash).toMatch(/^[0-9a-f]{32}$/);
+    expect(legacyWorkspaceHashWarning(index)).toBeNull();
+    const v1 = { ...index, schemaVersion: 1, hash: workspacePlanHash(plans, 1) };
+    expect(v1.hash).toMatch(/^[0-9a-f]{16}$/);
+    const read = parseWorkspacePlan(v1);
+    expect(legacyWorkspaceHashWarning(read)).toMatch(/not collision-resistant/);
+    // A version 1 index can't borrow the SHA-256 hash, nor the other way round
+    expect(() => parseWorkspacePlan({ ...index, schemaVersion: 1 })).toThrow(/the hash doesn't match/);
+    expect(() => parseWorkspacePlan({ ...v1, schemaVersion: 2 })).toThrow(/the hash doesn't match/);
+  });
+
   it('refuses an index edited after planning, a plan listed twice or a path outside its folder', () => {
     const index = buildWorkspacePlan({ createdAt: '2030-01-01T00:00:00Z', plans });
     expect(() => parseWorkspacePlan({ ...index, plans: [plans[0], { ...plans[1], app: IOS2 }] })).toThrow(/the hash doesn't match/);
@@ -209,6 +224,6 @@ describe('workspace plan index', () => {
     expect(() => parseWorkspacePlan(sameApp)).toThrow(/has two prices plans/);
     const outside = buildWorkspacePlan({ createdAt: 'x', plans: [{ ...plans[0], file: '../ios.json' }] });
     expect(() => parseWorkspacePlan(outside)).toThrow(/a plan file name next to the index/);
-    expect(() => parseWorkspacePlan({ ...index, schemaVersion: 2 })).toThrow(/newer PricingKit/);
+    expect(() => parseWorkspacePlan({ ...index, schemaVersion: 3 })).toThrow(/newer PricingKit/);
   });
 });

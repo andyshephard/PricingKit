@@ -255,7 +255,7 @@ describe('diff', () => {
     expect(r.code).toBe(0);
     const summary = JSON.parse(r.stdout);
     expect(summary).toMatchObject({ kind: 'pricingkit.planSummary', schemaVersion: 1, opCount: 0, byKind: {}, products: [] });
-    expect(summary.changeSetHash).toMatch(/^[0-9a-f]{16}$/);
+    expect(summary.changeSetHash).toMatch(/^[0-9a-f]{32}$/);
   });
 
   it('groups ops per product in the JSON summary', async () => {

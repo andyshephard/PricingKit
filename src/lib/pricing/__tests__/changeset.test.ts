@@ -2,8 +2,12 @@ import { describe, it, expect } from 'vitest';
 import {
   basePriceOps,
   buildChangeSet,
+  canonicalJson,
   changeSetHash,
   ChangeSetValidationError,
+  fnv1a64,
+  legacyHashWarning,
+  sha256Hex,
   diffPrices,
   invertOp,
   parseChangeSet,
@@ -236,18 +240,38 @@ describe('invertOp', () => {
 });
 
 describe('ChangeSet schema versions', () => {
-  it('writes version 2, reads 1 and 2 with the same hash, and refuses newer ones with a clear message', () => {
+  it('writes version 3 with a SHA-256 confirm hash; versions 1 and 2 keep their FNV hash, with a warning; refuses newer ones', () => {
     const plan = applePlan();
-    expect(plan.schemaVersion).toBe(2);
-    const v1 = { ...JSON.parse(serializeChangeSet(plan)), schemaVersion: 1 };
-    const readV1 = parseChangeSet(JSON.stringify(v1));
-    expect(readV1.schemaVersion).toBe(1);
-    // The confirm hash covers app + ops only: unchanged across versions
-    expect(changeSetHash(readV1)).toBe(changeSetHash(plan));
+    expect(plan.schemaVersion).toBe(3);
+    const content = canonicalJson({ app: plan.app, ops: plan.ops });
+    // SHA-256 of app + ops, first 32 hex digits; unchanged by re-serialising
+    expect(changeSetHash(plan)).toBe(sha256Hex(content).slice(0, 32));
     expect(changeSetHash(parseChangeSet(serializeChangeSet(plan)))).toBe(changeSetHash(plan));
+    expect(legacyHashWarning(plan)).toBeNull();
 
-    expect(() => parseChangeSet(JSON.stringify({ ...v1, schemaVersion: 3 }))).toThrow(/written by a newer PricingKit .*; upgrade PricingKit/);
+    for (const version of [1, 2]) {
+      const old = parseChangeSet(JSON.stringify({ ...JSON.parse(serializeChangeSet(plan)), schemaVersion: version }));
+      expect(old.schemaVersion).toBe(version);
+      // What older builds printed and users confirmed
+      expect(changeSetHash(old)).toBe(fnv1a64(content));
+      expect(legacyHashWarning(old)).toMatch(/old FNV-1a confirm hash, which is not collision-resistant/);
+    }
+    const v1 = { ...JSON.parse(serializeChangeSet(plan)), schemaVersion: 1 };
+
+    expect(() => parseChangeSet(JSON.stringify({ ...v1, schemaVersion: 4 }))).toThrow(/written by a newer PricingKit .*; upgrade PricingKit/);
     expect(() => parseChangeSet(JSON.stringify({ ...v1, schemaVersion: 0 }))).toThrow(ChangeSetValidationError);
     expect(() => parseChangeSet(JSON.stringify({ ...v1, schemaVersion: '2' }))).toThrow(ChangeSetValidationError);
+  });
+});
+
+describe('sha256Hex', () => {
+  it('matches the FIPS 180-4 test vectors and node:crypto', async () => {
+    expect(sha256Hex('')).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+    expect(sha256Hex('abc')).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+    expect(sha256Hex('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq')).toBe('248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1');
+    const { createHash } = await import('node:crypto');
+    for (const text of ['x'.repeat(55), 'x'.repeat(56), 'x'.repeat(64), 'é∑ unicode ✓'.repeat(40), JSON.stringify({ a: [1, 2, 3] }).repeat(100)]) {
+      expect(sha256Hex(text)).toBe(createHash('sha256').update(text, 'utf8').digest('hex'));
+    }
   });
 });

@@ -33,14 +33,15 @@ import { z } from 'zod';
 import { compareDecimal, isDecimalString, normalizeDecimal } from './decimal';
 import type { AppRef, ProductRef } from './model';
 import { productKey } from './model';
-import { appRefSchema, canonicalJson, fnv1a64 } from './refs';
+import { appRefSchema, canonicalJson, confirmHashSchema, contentHash } from './refs';
 import { parsePricingSpec, PRICING_SPEC_KIND, PRICING_SPEC_SCHEMA_VERSION, PricingSpecError, type PricingSpec } from './spec';
 import { parityAppleProduct, parityPlayProduct, type ParityMapping, type ParityReport } from './parity';
 
 export const WORKSPACE_KIND = 'pricingkit.workspace' as const;
 export const WORKSPACE_SCHEMA_VERSION = 1 as const;
 export const WORKSPACE_PLAN_KIND = 'pricingkit.workspacePlan' as const;
-export const WORKSPACE_PLAN_SCHEMA_VERSION = 1 as const;
+/** 2: the index hash is SHA-256 (32 hex digits); version 1 indexes (FNV-1a 64) are still read, with a warning */
+export const WORKSPACE_PLAN_SCHEMA_VERSION = 2 as const;
 
 /** A path inside the workspace: relative, no ".." or "." segments, nothing under .git */
 export const WORKSPACE_PATH_PATTERN = /^[A-Za-z0-9._/-]+$/;
@@ -279,7 +280,7 @@ export interface WorkspacePlanEntry {
 
 export interface WorkspacePlan {
   kind: typeof WORKSPACE_PLAN_KIND;
-  schemaVersion: typeof WORKSPACE_PLAN_SCHEMA_VERSION;
+  schemaVersion: 1 | typeof WORKSPACE_PLAN_SCHEMA_VERSION;
   createdAt: string;
   description?: string;
   /** In apply order: app by app as the workspace lists them, prices before offers */
@@ -292,9 +293,20 @@ export interface WorkspacePlan {
 
 export const WORKSPACE_PLAN_FILE_PATTERN = /^[a-z0-9][a-z0-9.-]{0,80}\.json$/;
 
-/** Hash over every plan's app, file and hash, in order: what `apply --workspace-plan --confirm` must name */
-export function workspacePlanHash(plans: Array<Pick<WorkspacePlanEntry, 'appId' | 'app' | 'part' | 'file' | 'hash'>>): string {
-  return fnv1a64(canonicalJson(plans.map((p) => ({ appId: p.appId, app: p.app, part: p.part, file: p.file, hash: p.hash }))));
+/**
+ * Hash over every plan's app, file and hash, in order: what `apply
+ * --workspace-plan --confirm` must name. SHA-256 (32 hex digits) for
+ * indexes of schema version 2; version 1 indexes keep their FNV-1a 64 hash.
+ */
+export function workspacePlanHash(plans: Array<Pick<WorkspacePlanEntry, 'appId' | 'app' | 'part' | 'file' | 'hash'>>, schemaVersion: number = WORKSPACE_PLAN_SCHEMA_VERSION): string {
+  return contentHash(canonicalJson(plans.map((p) => ({ appId: p.appId, app: p.app, part: p.part, file: p.file, hash: p.hash }))), schemaVersion < 2 ? 'fnv1a64' : 'sha256');
+}
+
+/** A warning for a version 1 index (FNV-1a 64 hash, not collision-resistant); null for current ones */
+export function legacyWorkspaceHashWarning(plan: Pick<WorkspacePlan, 'schemaVersion'>): string | null {
+  return plan.schemaVersion < 2
+    ? 'This workspace plan index (schema version 1) uses the old FNV-1a hash, which is not collision-resistant. It is still accepted for now; plan the workspace again for a SHA-256 hash.'
+    : null;
 }
 
 const planEntrySchema = z
@@ -303,7 +315,7 @@ const planEntrySchema = z
     app: appRefSchema,
     part: z.enum(['prices', 'offers']),
     file: z.string().regex(WORKSPACE_PLAN_FILE_PATTERN, 'a plan file name next to the index'),
-    hash: z.string().regex(/^[0-9a-f]{16}$/),
+    hash: confirmHashSchema,
     ops: z.number().int().min(0),
     baseOps: z.number().int().min(0),
     offerOps: z.number().int().min(0),
@@ -314,12 +326,12 @@ const planEntrySchema = z
 const workspacePlanSchema = z
   .object({
     kind: z.literal(WORKSPACE_PLAN_KIND),
-    schemaVersion: z.literal(WORKSPACE_PLAN_SCHEMA_VERSION),
+    schemaVersion: z.union([z.literal(1), z.literal(WORKSPACE_PLAN_SCHEMA_VERSION)]),
     createdAt: z.string().min(1),
     description: z.string().optional(),
     plans: z.array(planEntrySchema),
     parity: z.unknown().optional(),
-    hash: z.string().regex(/^[0-9a-f]{16}$/),
+    hash: confirmHashSchema,
   })
   .strict();
 
@@ -366,7 +378,7 @@ export function parseWorkspacePlan(input: string | unknown): WorkspacePlan {
     if (parts.has(part)) problems.push(`${appLabel(entry.app)} has two ${entry.part} plans`);
     parts.add(part);
   }
-  if (plan.hash !== workspacePlanHash(plan.plans)) problems.push("the hash doesn't match the plans listed (the index was edited after planning)");
+  if (plan.hash !== workspacePlanHash(plan.plans, plan.schemaVersion)) problems.push("the hash doesn't match the plans listed (the index was edited after planning)");
   if (problems.length > 0) throw new WorkspaceError(problems);
   return plan;
 }

@@ -610,7 +610,13 @@ the hash you confirm. `pricingkit diff` marks them as such. It recomputes the ex
 class of every immediate price change from the op itself (before, after, `preserveCurrentPrice`),
 shows that value, and prints a WARNING where the stored note disagrees. Scheduled changes show the
 stored class marked "(unverified)", because the op doesn't hold the current price. Plans that
-carry notes are schema version 2; PricingKit reads versions 1 and 2, with the same hash for both.
+carry notes are schema version 2 or later; PricingKit reads versions 1 to 3.
+
+**Plan hashes.** Plans of schema version 3 (what this PricingKit writes) are confirmed with the first
+32 hex digits of a SHA-256 hash of their app and ops. Older plans (versions 1 and 2) keep the 16-digit
+FNV-1a hash they were planned with and still apply with it, but `diff` and `apply` warn: FNV-1a is
+not collision-resistant, so someone who writes two plans could give a harmful one the hash of a
+benign one. Plan again to get a SHA-256 hash. Workspace plan indexes moved to version 2 the same way.
 
 ```json
 { "product": { "platform": "google", "type": "subscription", "productId": "pro", "basePlanId": "annual" },

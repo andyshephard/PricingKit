@@ -12,6 +12,7 @@ import {
   parseRun,
   RunValidationError,
   summarizeRun,
+  confirmHashSchema,
 } from '@/lib/pricing';
 import { appleErrorResponse } from '../../../../_lib/error-response';
 import { rejectCrossSite, readJsonBody, LARGE_BODY_LIMIT } from '@/lib/request-guard';
@@ -20,7 +21,7 @@ const bodySchema = z
   .object({
     changeSet: z.unknown(),
     /** changeSetHash of the plan the user reviewed */
-    confirm: z.string().regex(/^[0-9a-f]{16}$/),
+    confirm: confirmHashSchema,
     /** A previous run of this plan, to resume */
     run: z.unknown().optional(),
   })

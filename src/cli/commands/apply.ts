@@ -12,6 +12,7 @@ import {
   assertRunMatches,
   changeSetHash,
   describeRun,
+  legacyHashWarning,
   isOfferOp,
   parseChangeSet,
   parseRun,
@@ -75,6 +76,8 @@ export async function applyCommand(ctx: CommandContext): Promise<CommandResult> 
     // Never print the right hash here: it must come from reviewing the plan
     throw new CliError(`--confirm doesn't match this plan. Review it with "pricingkit diff ${planPath}" and confirm the hash shown there.`, 'CONFIRM_MISMATCH');
   }
+  const hashWarning = legacyHashWarning(changeSet);
+  if (hashWarning) console.warn(`WARNING: ${hashWarning}`);
   const baseOps = changeSet.ops.filter((op) => !isOfferOp(op));
   if (baseOps.length > 0 && ctx.flags['allow-base-prices'] !== true) {
     // Base prices are an explicit opt-in: see BASE_PRICE_NOTE

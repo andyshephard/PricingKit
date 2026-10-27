@@ -2,6 +2,7 @@ import {
   changedPlayRegions,
   changedTerritories,
   changeSetHash,
+  legacyHashWarning,
   describePlayPhase,
   describePlayRegionPrice,
   describePlayTargeting,
@@ -40,6 +41,8 @@ export interface PlanSummary {
   changeSetId: string;
   /** Hash of app + ops: equal hashes mean the same store changes */
   changeSetHash: string;
+  /** Set when the plan's hash is the old FNV-1a (schema version 1 or 2) */
+  hashWarning?: string;
   createdAt: string;
   description?: string;
   app: AppRef;
@@ -154,6 +157,7 @@ export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
     schemaVersion: PLAN_SUMMARY_SCHEMA_VERSION,
     changeSetId: changeSet.id,
     changeSetHash: changeSetHash(changeSet),
+    ...(legacyHashWarning(changeSet) ? { hashWarning: legacyHashWarning(changeSet)! } : {}),
     createdAt: changeSet.createdAt,
     ...(changeSet.description ? { description: changeSet.description } : {}),
     app: changeSet.app,
@@ -260,6 +264,7 @@ export function formatPlanSummary(summary: PlanSummary): string {
         : 'No changes: every territory is already at its target.'
       : `${summary.opCount} changes (${describeCounts(summary.byKind)})`,
     ...(summary.opCount > 0 ? [`Plan hash: ${summary.changeSetHash} (what "pricingkit apply --confirm" needs once you have reviewed this plan)`] : []),
+    ...(summary.hashWarning ? [`WARNING: ${summary.hashWarning}`] : []),
   ];
   type Row = PlanSummary['products'][number]['ops'][number];
   const section = (pick: (op: Row) => boolean) => {
