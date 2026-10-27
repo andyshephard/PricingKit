@@ -59,11 +59,11 @@ export default function GoogleProductDetailPage({
         showSearch={false}
       />
 
-      <div className="flex-1 p-6 space-y-6">
+      <div className="flex-1 space-y-6 px-4 py-6 sm:px-8 lg:px-10 lg:py-7">
         <div className="flex items-center gap-4">
           <Button variant="ghost" size="icon" asChild>
-            <Link href="/dashboard/google/products">
-              <ArrowLeft className="h-4 w-4" />
+            <Link href="/dashboard/google/products" aria-label="Back to in-app purchases">
+              <ArrowLeft className="h-4 w-4" aria-hidden="true" />
             </Link>
           </Button>
           <div className="flex-1">
@@ -71,8 +71,8 @@ export default function GoogleProductDetailPage({
               <Skeleton className="h-8 w-64" />
             ) : (
               <>
-                <h1 className="text-2xl font-bold">{getProductTitle()}</h1>
-                <p className="text-muted-foreground font-mono">{decodedSku}</p>
+                <h1 className="text-[26px] leading-tight font-extrabold tracking-[-0.02em] sm:text-[28px]">{getProductTitle()}</h1>
+                <p className="font-mono text-sm text-muted-foreground">{decodedSku}</p>
               </>
             )}
           </div>

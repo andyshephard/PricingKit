@@ -1,15 +1,16 @@
 'use client';
 
-import { use } from 'react';
+import { use, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, CreditCard } from 'lucide-react';
+import { Calculator } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Header } from '@/components/layout';
+import { PageHeader, pageClass } from '@/components/layout/page-header';
+import { DetailList, PanelCard, StrategyPanel } from '@/components/pricing/strategy-panel';
 import { BasePlanEditor } from '@/components/subscriptions/base-plan-editor';
 import { PlaySubscriptionOffers } from '@/components/subscriptions/play-subscription-offers';
 import { ExportPricesButton } from '@/components/pricing/export-prices-button';
@@ -22,6 +23,7 @@ export default function GoogleSubscriptionDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
+  const [strategyPlanId, setStrategyPlanId] = useState<string | null>(null);
   const decodedId = decodeURIComponent(id);
 
   const { data, isLoading, error, refetch, isRefetching } = useQuery<SubscriptionResponse>({
@@ -74,6 +76,9 @@ export default function GoogleSubscriptionDetailPage({
     return 'Not set';
   };
 
+  const listHref = '/dashboard/google/subscriptions';
+  const basePlans = subscription?.basePlans ?? [];
+
   return (
     <div className="flex flex-col h-full">
       <Header
@@ -82,31 +87,30 @@ export default function GoogleSubscriptionDetailPage({
         showSearch={false}
       />
 
-      <div className="flex-1 p-6 space-y-6">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" asChild>
-            <Link href="/dashboard/google/subscriptions">
-              <ArrowLeft className="h-4 w-4" />
+      <div className={pageClass}>
+        <div>
+          <nav aria-label="Breadcrumb" className="text-[13px] text-muted-foreground">
+            <Link href={listHref} className="rounded-md hover:text-foreground">
+              Subscriptions
             </Link>
-          </Button>
-          <div className="flex-1">
-            {isLoading ? (
-              <Skeleton className="h-8 w-64" />
-            ) : (
-              <>
-                <h1 className="text-2xl font-bold">{getSubscriptionTitle()}</h1>
-                <p className="text-muted-foreground font-mono">{decodedId}</p>
-              </>
-            )}
-          </div>
-          {subscription && (
-            <ExportPricesButton
-              platform="google"
-              type="subscription"
-              id={subscription.productId || decodedId}
-              basePlanIds={subscription.basePlans?.map((bp) => bp.basePlanId) ?? []}
-            />
-          )}
+            <span aria-hidden="true"> / </span>
+            <span aria-current="page">{isLoading ? '…' : getSubscriptionTitle()}</span>
+          </nav>
+          <PageHeader
+            className="mt-1.5"
+            title={isLoading ? <Skeleton className="h-8 w-64" /> : getSubscriptionTitle()}
+            description={<span className="font-mono text-sm text-muted-foreground">{decodedId}</span>}
+            actions={
+              subscription && (
+                <ExportPricesButton
+                  platform="google"
+                  type="subscription"
+                  id={subscription.productId || decodedId}
+                  basePlanIds={subscription.basePlans?.map((bp) => bp.basePlanId) ?? []}
+                />
+              )
+            }
+          />
         </div>
 
         {isLoading ? (
@@ -116,65 +120,83 @@ export default function GoogleSubscriptionDetailPage({
           </div>
         ) : subscription ? (
           <>
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg flex items-center gap-2">
-                  <CreditCard className="h-5 w-5" />
-                  Subscription Details
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Status</p>
-                    <Badge
-                      variant={subscription.archived ? 'secondary' : 'default'}
-                      className="mt-1"
-                    >
-                      {subscription.archived ? 'Archived' : 'Active'}
-                    </Badge>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Base Plans</p>
-                    <p className="font-medium mt-1">
-                      {subscription.basePlans?.length || 0} total
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Base Price</p>
-                    <p className="font-medium mt-1">{getBasePrice()}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Regions</p>
-                    <p className="font-medium mt-1">{getTotalRegions()}</p>
-                  </div>
+            <div className="flex flex-wrap items-start gap-5">
+              <section
+                aria-labelledby="prices-heading"
+                className="min-w-0 flex-[1_1_560px] overflow-hidden rounded-2xl border bg-card"
+              >
+                <div className="flex flex-wrap items-center gap-3 border-b border-line px-5 py-4">
+                  <h2 id="prices-heading" className="flex-1 text-[17px] font-bold">
+                    Prices by country
+                  </h2>
+                  <span className="text-[13px] text-muted-foreground">
+                    {basePlans.length} base plan{basePlans.length === 1 ? '' : 's'} · {getTotalRegions()} regions
+                  </span>
                 </div>
+                <div className="p-4 sm:p-5">
+                  <BasePlanEditor
+                    subscription={subscription}
+                    bulkPricingPlanId={strategyPlanId}
+                    onBulkPricingPlanIdChange={setStrategyPlanId}
+                  />
+                </div>
+              </section>
 
-                {subscription.listings?.[0]?.description && (
-                  <div className="mt-4 pt-4 border-t">
-                    <p className="text-sm text-muted-foreground">Description</p>
-                    <p className="mt-1">{subscription.listings[0].description}</p>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+              <div className="flex min-w-0 flex-[1_1_320px] flex-col gap-5">
+                <StrategyPanel note="Google Play keeps existing subscribers on their current price. New prices apply to new subscribers.">
+                  {basePlans.map((bp, i) => (
+                    <Button
+                      key={bp.basePlanId}
+                      className="w-full"
+                      size="lg"
+                      variant={i === 0 ? 'default' : 'outline'}
+                      onClick={() => setStrategyPlanId(bp.basePlanId)}
+                    >
+                      <Calculator aria-hidden="true" />
+                      <span className="truncate">
+                        Price {basePlans.length > 1 ? <span className="font-mono">{bp.basePlanId}</span> : 'base plan'} by strategy
+                      </span>
+                    </Button>
+                  ))}
+                  {basePlans.length === 0 && (
+                    <p className="text-sm text-muted-foreground">This subscription has no base plans yet.</p>
+                  )}
+                </StrategyPanel>
 
-            <div>
-              <h2 className="text-lg font-semibold mb-4">Base Plans</h2>
-              <BasePlanEditor subscription={subscription} />
+                <PanelCard title="Details">
+                  <DetailList
+                    items={[
+                      {
+                        label: 'Status',
+                        value: (
+                          <Badge variant={subscription.archived ? 'secondary' : 'success'}>
+                            {subscription.archived ? 'Archived' : 'Active'}
+                          </Badge>
+                        ),
+                      },
+                      { label: 'Base plans', value: basePlans.length },
+                      { label: 'Base price', value: <span className="font-mono font-medium">{getBasePrice()}</span> },
+                      { label: 'Regions', value: getTotalRegions() },
+                    ]}
+                  />
+                  {subscription.listings?.[0]?.description && (
+                    <p className="mt-4 border-t border-line pt-4 text-sm leading-relaxed text-soft">
+                      {subscription.listings[0].description}
+                    </p>
+                  )}
+                </PanelCard>
+              </div>
             </div>
 
             <PlaySubscriptionOffers productId={subscription.productId || decodedId} />
           </>
         ) : (
-          <Card>
-            <CardContent className="py-12 text-center">
-              <p className="text-muted-foreground">Subscription not found</p>
-              <Button variant="outline" className="mt-4" asChild>
-                <Link href="/dashboard/google/subscriptions">Back to Subscriptions</Link>
-              </Button>
-            </CardContent>
-          </Card>
+          <div className="rounded-2xl border bg-card px-6 py-12 text-center">
+            <p className="text-muted-foreground">Subscription not found</p>
+            <Button variant="outline" className="mt-4" asChild>
+              <Link href={listHref}>Back to subscriptions</Link>
+            </Button>
+          </div>
         )}
       </div>
     </div>

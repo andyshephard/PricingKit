@@ -323,7 +323,7 @@ export function SubscriptionsTable({
 
   if (sortedSubscriptions.length === 0 && statusFilter === 'all' && !searchQuery) {
     return (
-      <div className="text-center py-12">
+      <div className="rounded-2xl border bg-card py-12 text-center">
         <p className="text-muted-foreground">No subscriptions found</p>
       </div>
     );
@@ -333,11 +333,12 @@ export function SubscriptionsTable({
     <div className="space-y-4">
       {/* Status Filter */}
       <div className="flex items-center gap-2">
-        <span className="text-sm text-muted-foreground">Filter:</span>
-        <div className="flex gap-1">
+        <span id="status-filter-label" className="text-sm text-muted-foreground">Show</span>
+        <div className="flex flex-wrap gap-1" role="group" aria-labelledby="status-filter-label">
           <Button
             variant={statusFilter === 'all' ? 'default' : 'outline'}
             size="sm"
+            aria-pressed={statusFilter === 'all'}
             onClick={() => setStatusFilter('all')}
           >
             All ({statusCounts.all})
@@ -345,6 +346,7 @@ export function SubscriptionsTable({
           <Button
             variant={statusFilter === 'active' ? 'default' : 'outline'}
             size="sm"
+            aria-pressed={statusFilter === 'active'}
             onClick={() => setStatusFilter('active')}
           >
             Active ({statusCounts.active})
@@ -352,6 +354,7 @@ export function SubscriptionsTable({
           <Button
             variant={statusFilter === 'inactive' ? 'default' : 'outline'}
             size="sm"
+            aria-pressed={statusFilter === 'inactive'}
             onClick={() => setStatusFilter('inactive')}
           >
             Inactive ({statusCounts.inactive})
@@ -360,7 +363,7 @@ export function SubscriptionsTable({
       </div>
 
       {sortedSubscriptions.length === 0 ? (
-        <div className="text-center py-12 border rounded-md">
+        <div className="rounded-2xl border bg-card py-12 text-center">
           <p className="text-muted-foreground">
             {searchQuery
               ? 'No subscriptions match your search'
@@ -368,7 +371,7 @@ export function SubscriptionsTable({
           </p>
         </div>
       ) : (
-      <div className="rounded-md border">
+      <div className="overflow-hidden rounded-2xl border bg-card [&_thead_tr]:bg-muted/40 [&_thead_tr]:hover:bg-muted/40">
       <Table>
         <TableHeader>
           <TableRow>
@@ -474,6 +477,8 @@ export function SubscriptionsTable({
                         variant="ghost"
                         size="icon"
                         className="h-6 w-6"
+                        aria-expanded={isExpanded}
+                        aria-label={`${isExpanded ? 'Hide' : 'Show'} base plans for ${subscription.productId}`}
                         onClick={() => toggleExpanded(subscription.productId)}
                       >
                         <ChevronRight
@@ -487,12 +492,12 @@ export function SubscriptionsTable({
                   <TableCell>
                     <Link
                       href={detailHref}
-                      className="hover:underline"
+                      className="group rounded-md"
                     >
-                      <div className="font-medium">
+                      <div className="font-bold text-foreground group-hover:text-link">
                         {getSubscriptionTitle(subscription)}
                       </div>
-                      <div className="text-sm text-muted-foreground font-mono">
+                      <div className="font-mono text-xs text-muted-foreground">
                         {subscription.productId}
                       </div>
                     </Link>
@@ -503,7 +508,7 @@ export function SubscriptionsTable({
                         {subscription.basePlans?.length || 0}
                       </TableCell>
                       <TableCell>
-                        <Badge variant="default">
+                        <Badge variant={getActiveBasePlansCount(subscription) > 0 ? 'success' : 'secondary'}>
                           {getActiveBasePlansCount(subscription)} active
                         </Badge>
                       </TableCell>
@@ -515,7 +520,7 @@ export function SubscriptionsTable({
                       </TableCell>
                       <TableCell>
                         {getBasePrice(subscription) ? (
-                          <span className="font-medium">
+                          <span className="font-mono font-medium">
                             {formatMoney(getBasePrice(subscription)!)}
                           </span>
                         ) : (
@@ -531,8 +536,8 @@ export function SubscriptionsTable({
                         </span>
                       </TableCell>
                       <TableCell>
-                        <Badge variant={isSubscriptionActive(subscription, 'apple') ? 'default' : 'secondary'}>
-                          {isSubscriptionActive(subscription, 'apple') ? 'active' : 'inactive'}
+                        <Badge variant={isSubscriptionActive(subscription, 'apple') ? 'success' : 'warning'}>
+                          {isSubscriptionActive(subscription, 'apple') ? 'Active' : 'Inactive'}
                         </Badge>
                       </TableCell>
                     </>
@@ -542,7 +547,7 @@ export function SubscriptionsTable({
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon">
                           <MoreHorizontal className="h-4 w-4" />
-                          <span className="sr-only">Actions</span>
+                          <span className="sr-only">Actions for {subscription.productId}</span>
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">

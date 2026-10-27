@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Header } from '@/components/layout';
+import { PageHeader, pageClass, useAppContextLabel } from '@/components/layout/page-header';
 import { ProductsTable } from '@/components/products/products-table';
 import { Button } from '@/components/ui/button';
 import { useSelectionStore } from '@/store/selection-store';
@@ -11,6 +12,7 @@ import { parseMoney } from '@/lib/google-play/types';
 import type { RawAppleProduct, ProductsListResponse } from '@/types/api';
 
 export default function AppleProductsPage() {
+  const context = useAppContextLabel('apple');
   const [searchQuery, setSearchQuery] = useState('');
 
   const { data, isLoading, refetch, isRefetching, error } = useQuery<ProductsListResponse>({
@@ -69,17 +71,14 @@ export default function AppleProductsPage() {
         onSearchChange={setSearchQuery}
       />
 
-      <div className="flex-1 p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold">In-App Products</h1>
-            <p className="text-muted-foreground">
-              Manage pricing for one-time purchase products
-            </p>
-          </div>
-
-          {selectedProductSkus.length > 0 && (
-            <div className="flex items-center gap-2">
+      <div className={pageClass}>
+        <PageHeader
+          eyebrow={context}
+          title="In-app purchases"
+          description="One-time purchase prices in every territory."
+          actions={
+            selectedProductSkus.length > 0 && (
+            <>
               <span className="text-sm text-muted-foreground">
                 {selectedProductSkus.length} selected
               </span>
@@ -87,11 +86,12 @@ export default function AppleProductsPage() {
                 variant="outline"
                 onClick={() => setSelectedProducts([])}
               >
-                Clear Selection
+                Clear selection
               </Button>
-            </div>
-          )}
-        </div>
+            </>
+            )
+          }
+        />
 
         <ProductsTable
           products={products}

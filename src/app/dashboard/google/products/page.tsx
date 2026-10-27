@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Header } from '@/components/layout';
+import { PageHeader, pageClass, useAppContextLabel } from '@/components/layout/page-header';
 import { ProductsTable } from '@/components/products/products-table';
 import { BulkUpdateModal } from '@/components/pricing/bulk-update-modal';
 import { Button } from '@/components/ui/button';
@@ -11,6 +12,7 @@ import { useSelectionStore } from '@/store/selection-store';
 import type { ProductsListResponse } from '@/types/api';
 
 export default function GoogleProductsPage() {
+  const context = useAppContextLabel('google');
   const [searchQuery, setSearchQuery] = useState('');
   const [bulkModalOpen, setBulkModalOpen] = useState(false);
 
@@ -46,32 +48,30 @@ export default function GoogleProductsPage() {
         onSearchChange={setSearchQuery}
       />
 
-      <div className="flex-1 p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold">In-App Products</h1>
-            <p className="text-muted-foreground">
-              Manage pricing for one-time purchase products
-            </p>
-          </div>
-
-          {selectedProductSkus.length > 0 && (
-            <div className="flex items-center gap-2">
+      <div className={pageClass}>
+        <PageHeader
+          eyebrow={context}
+          title="In-app purchases"
+          description="One-time product prices in every region."
+          actions={
+            selectedProductSkus.length > 0 && (
+            <>
               <span className="text-sm text-muted-foreground">
                 {selectedProductSkus.length} selected
               </span>
               <Button onClick={() => setBulkModalOpen(true)}>
-                Bulk Update Prices
+                Update prices
               </Button>
               <Button
                 variant="outline"
                 onClick={() => setSelectedProducts([])}
               >
-                Clear Selection
+                Clear selection
               </Button>
-            </div>
-          )}
-        </div>
+            </>
+            )
+          }
+        />
 
         <ProductsTable
           products={products}

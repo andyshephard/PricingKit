@@ -96,10 +96,10 @@ export default function AppleAppPricePage() {
         showSearch={false}
       />
 
-      <div className="flex-1 p-6 space-y-6">
+      <div className="flex-1 space-y-6 px-4 py-6 sm:px-8 lg:px-10 lg:py-7">
         <div className="flex items-center gap-4">
           <div className="flex-1">
-            <h1 className="text-2xl font-bold">App Price</h1>
+            <h1 className="text-[26px] leading-tight font-extrabold tracking-[-0.02em] sm:text-[28px]">App price</h1>
             <p className="text-muted-foreground">
               Manage your app&apos;s pricing across territories
             </p>

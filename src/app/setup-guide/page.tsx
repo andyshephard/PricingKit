@@ -1,61 +1,47 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
-import { ArrowLeft, ArrowRight } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { ArrowRight } from 'lucide-react';
+
+export const metadata: Metadata = {
+  title: 'Setup guide',
+  description: 'Step-by-step guides for connecting PricingKit to App Store Connect and Google Play.',
+  alternates: { canonical: '/setup-guide' },
+};
+
+const GUIDES = [
+  {
+    href: '/setup-guide/apple',
+    title: 'App Store Connect',
+    body: 'Generate an API key with the App Manager role and connect your Apple Developer account.',
+  },
+  {
+    href: '/setup-guide/google',
+    title: 'Google Play',
+    body: 'Set up a service account, grant it access in Play Console and connect your developer account.',
+  },
+] as const;
 
 export default function SetupGuideIndexPage() {
   return (
-    <div className="min-h-screen bg-gradient-to-b from-background to-muted">
-      <div className="container mx-auto px-4 py-8 max-w-4xl">
-        <div className="mb-8">
-          <Button variant="ghost" asChild className="mb-4">
-            <Link href="/">
-              <ArrowLeft className="mr-2 h-4 w-4" />
-              Back to Home
+    <article className="min-w-0 max-w-[740px]">
+      <h1 className="text-[32px] leading-tight font-extrabold tracking-[-0.02em] sm:text-[40px]">Setup guide</h1>
+      <p className="mt-4 text-[18px] leading-[1.7] text-soft">
+        PricingKit talks to each store with credentials you create. Pick the store you sell on; each guide takes about ten
+        minutes.
+      </p>
+      <ul className="mt-8 grid gap-4 sm:grid-cols-2">
+        {GUIDES.map((g) => (
+          <li key={g.href}>
+            <Link href={g.href} className="group block h-full rounded-2xl border bg-card p-6 transition-colors hover:border-primary">
+              <span className="flex items-center justify-between text-[19px] font-bold">
+                {g.title}
+                <ArrowRight className="size-4 text-muted-foreground group-hover:text-primary" aria-hidden="true" />
+              </span>
+              <span className="mt-2 block text-[15px] leading-relaxed text-soft">{g.body}</span>
             </Link>
-          </Button>
-          <h1 className="text-3xl font-bold mb-2">Setup Guide</h1>
-          <p className="text-muted-foreground">
-            Choose the platform you want to connect.
-          </p>
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Card>
-            <CardHeader>
-              <CardTitle>Google Play</CardTitle>
-              <CardDescription>
-                Set up a service account and connect your Google Play Developer account.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button asChild className="w-full">
-                <Link href="/setup-guide/google">
-                  Open Google Play Guide
-                  <ArrowRight className="ml-2 h-4 w-4" />
-                </Link>
-              </Button>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>App Store Connect</CardTitle>
-              <CardDescription>
-                Generate an API key and connect your Apple Developer account.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button asChild className="w-full">
-                <Link href="/setup-guide/apple">
-                  Open Apple Guide
-                  <ArrowRight className="ml-2 h-4 w-4" />
-                </Link>
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-    </div>
+          </li>
+        ))}
+      </ul>
+    </article>
   );
 }

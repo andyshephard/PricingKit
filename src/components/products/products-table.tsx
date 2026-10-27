@@ -159,7 +159,7 @@ export function ProductsTable({
 
   if (sortedProducts.length === 0) {
     return (
-      <div className="text-center py-12">
+      <div className="rounded-2xl border bg-card py-12 text-center">
         <p className="text-muted-foreground">
           {searchQuery
             ? 'No products match your search'
@@ -170,7 +170,7 @@ export function ProductsTable({
   }
 
   return (
-    <div className="rounded-md border">
+    <div className="overflow-hidden rounded-2xl border bg-card [&_thead_tr]:bg-muted/40 [&_thead_tr]:hover:bg-muted/40">
       <Table>
         <TableHeader>
           <TableRow>
@@ -252,40 +252,46 @@ export function ProductsTable({
                 <TableCell>
                   <Link
                     href={detailHref}
-                    className="hover:underline"
+                    className="group rounded-md"
                   >
-                    <div className="font-medium">{getProductTitle(product)}</div>
-                    <div className="text-sm text-muted-foreground font-mono">
+                    <div className="font-bold text-foreground group-hover:text-link">{getProductTitle(product)}</div>
+                    <div className="font-mono text-xs text-muted-foreground">
                       {product.sku}
                     </div>
                   </Link>
                 </TableCell>
                 <TableCell>
                   <Badge
-                    variant={product.status === 'active' ? 'default' : 'secondary'}
+                    variant={product.status === 'active' ? 'success' : 'secondary'}
+                    className="capitalize"
                   >
                     {product.status}
                   </Badge>
                 </TableCell>
-                <TableCell>
-                  {product.defaultPrice && product.defaultPrice.units !== '0' ? (
-                    formatMoney(product.defaultPrice)
-                  ) : (
-                    <span className="text-muted-foreground">—</span>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <div className="flex items-center gap-1">
-                    <Globe className="h-4 w-4 text-muted-foreground" />
-                    <span>{getRegionCount(product)}</span>
-                  </div>
-                </TableCell>
+                {/* Price and regions columns are Google-only, as in the header */}
+                {platform !== 'apple' && (
+                  <TableCell className="font-mono">
+                    {product.defaultPrice && product.defaultPrice.units !== '0' ? (
+                      formatMoney(product.defaultPrice)
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                )}
+                {platform !== 'apple' && (
+                  <TableCell>
+                    <div className="flex items-center gap-1">
+                      <Globe className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                      <span>{getRegionCount(product)}</span>
+                    </div>
+                  </TableCell>
+                )}
                 <TableCell>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button variant="ghost" size="icon">
                         <MoreHorizontal className="h-4 w-4" />
-                        <span className="sr-only">Actions</span>
+                        <span className="sr-only">Actions for {product.sku}</span>
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">

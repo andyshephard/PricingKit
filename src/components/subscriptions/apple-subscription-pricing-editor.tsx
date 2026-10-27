@@ -141,6 +141,9 @@ interface AppleSubscriptionData {
 
 interface AppleSubscriptionPricingEditorProps {
   subscription: AppleSubscriptionData;
+  /** Optional control of the strategy (bulk pricing) dialog, e.g. from a side panel. */
+  bulkPricingOpen?: boolean;
+  onBulkPricingOpenChange?: (open: boolean) => void;
 }
 
 interface RegionPriceChange {
@@ -154,12 +157,16 @@ interface RegionPriceChange {
 
 export function AppleSubscriptionPricingEditor({
   subscription,
+  bulkPricingOpen: bulkPricingOpenProp,
+  onBulkPricingOpenChange,
 }: AppleSubscriptionPricingEditorProps) {
   const [addRegionOpen, setAddRegionOpen] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [editingTerritory, setEditingTerritory] = useState<string | null>(null);
   const [pendingChanges, setPendingChanges] = useState<Map<string, RegionPriceChange>>(new Map());
-  const [bulkPricingOpen, setBulkPricingOpen] = useState(false);
+  const [bulkPricingOpenState, setBulkPricingOpenState] = useState(false);
+  const bulkPricingOpen = bulkPricingOpenProp ?? bulkPricingOpenState;
+  const setBulkPricingOpen = onBulkPricingOpenChange ?? setBulkPricingOpenState;
   const [clearScheduledConfirmOpen, setClearScheduledConfirmOpen] = useState(false);
   const [preserveCurrentPrice, setPreserveCurrentPrice] = useState(true);
 

@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Header } from '@/components/layout';
+import { PageHeader, pageClass, useAppContextLabel } from '@/components/layout/page-header';
 import { SubscriptionsTable } from '@/components/subscriptions/subscriptions-table';
 import { Button } from '@/components/ui/button';
 import { useSelectionStore } from '@/store/selection-store';
@@ -15,6 +16,7 @@ import type { SubscriptionsListResponse } from '@/types/api';
 const EMPTY_BASES: Record<string, string> = {};
 
 export default function AppleSubscriptionsPage() {
+  const context = useAppContextLabel('apple');
   const [searchQuery, setSearchQuery] = useState('');
   const appleBaseCountry = useAuthStore((state) => state.appleBaseCountry) || 'US';
   const bundleId = useAuthStore((state) => state.bundleId);
@@ -60,17 +62,14 @@ export default function AppleSubscriptionsPage() {
         onSearchChange={setSearchQuery}
       />
 
-      <div className="flex-1 p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold">Subscriptions</h1>
-            <p className="text-muted-foreground">
-              Manage subscription pricing across territories
-            </p>
-          </div>
-
-          {selectedSubscriptionIds.length > 0 && (
-            <div className="flex items-center gap-2">
+      <div className={pageClass}>
+        <PageHeader
+          eyebrow={context}
+          title="Subscriptions"
+          description="Subscription prices in every territory."
+          actions={
+            selectedSubscriptionIds.length > 0 && (
+            <>
               <span className="text-sm text-muted-foreground">
                 {selectedSubscriptionIds.length} selected
               </span>
@@ -78,11 +77,12 @@ export default function AppleSubscriptionsPage() {
                 variant="outline"
                 onClick={() => setSelectedSubscriptions([])}
               >
-                Clear Selection
+                Clear selection
               </Button>
-            </div>
-          )}
-        </div>
+            </>
+            )
+          }
+        />
 
         <SubscriptionsTable
           subscriptions={subscriptions}

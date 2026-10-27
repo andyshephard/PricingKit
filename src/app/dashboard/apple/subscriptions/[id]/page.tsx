@@ -1,15 +1,16 @@
 'use client';
 
-import { use, useEffect, useRef } from 'react';
+import { use, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, CreditCard, Loader2 } from 'lucide-react';
+import { Calculator, Loader2 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Header } from '@/components/layout';
+import { PageHeader, pageClass } from '@/components/layout/page-header';
+import { DetailList, PanelCard, StrategyPanel } from '@/components/pricing/strategy-panel';
 import { AppleSubscriptionPricingEditor } from '@/components/subscriptions/apple-subscription-pricing-editor';
 import { AppleSubscriptionOffers } from '@/components/subscriptions/apple-subscription-offers';
 import { ExportPricesButton } from '@/components/pricing/export-prices-button';
@@ -32,18 +33,18 @@ interface AppleSubscriptionResponse {
 
 function formatAppleStatus(state?: string): {
   label: string;
-  variant: 'default' | 'secondary' | 'outline';
+  variant: 'success' | 'secondary' | 'outline' | 'warning';
 } {
   if (!state) return { label: 'Unknown', variant: 'secondary' };
   const statusMap: Record<
     string,
-    { label: string; variant: 'default' | 'secondary' | 'outline' }
+    { label: string; variant: 'success' | 'secondary' | 'outline' | 'warning' }
   > = {
-    APPROVED: { label: 'Active', variant: 'default' },
-    READY_TO_SUBMIT: { label: 'Ready to Submit', variant: 'secondary' },
-    WAITING_FOR_REVIEW: { label: 'In Review', variant: 'outline' },
-    DEVELOPER_ACTION_NEEDED: { label: 'Action Needed', variant: 'secondary' },
-    IN_REVIEW: { label: 'In Review', variant: 'outline' },
+    APPROVED: { label: 'Active', variant: 'success' },
+    READY_TO_SUBMIT: { label: 'Ready to submit', variant: 'secondary' },
+    WAITING_FOR_REVIEW: { label: 'In review', variant: 'warning' },
+    DEVELOPER_ACTION_NEEDED: { label: 'Action needed', variant: 'warning' },
+    IN_REVIEW: { label: 'In review', variant: 'warning' },
     REJECTED: { label: 'Rejected', variant: 'secondary' },
     DEVELOPER_REMOVED_FROM_SALE: { label: 'Removed', variant: 'secondary' },
     REMOVED_FROM_SALE: { label: 'Removed', variant: 'secondary' },
@@ -57,6 +58,7 @@ export default function AppleSubscriptionDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
+  const [strategyOpen, setStrategyOpen] = useState(false);
   const decodedId = decodeURIComponent(id);
 
   const { data, isLoading, error, refetch, isRefetching } =
@@ -122,6 +124,9 @@ export default function AppleSubscriptionDetailPage({
     return enLocalization?.description;
   };
 
+  const status = formatAppleStatus(subscription?.state);
+  const listHref = '/dashboard/apple/subscriptions';
+
   return (
     <div className="flex flex-col h-full">
       <Header
@@ -130,38 +135,35 @@ export default function AppleSubscriptionDetailPage({
         showSearch={false}
       />
 
-      <div className="flex-1 p-6 space-y-6">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" asChild>
-            <Link href="/dashboard/apple/subscriptions">
-              <ArrowLeft className="h-4 w-4" />
+      <div className={pageClass}>
+        <div>
+          <nav aria-label="Breadcrumb" className="text-[13px] text-muted-foreground">
+            <Link href={listHref} className="rounded-md hover:text-foreground">
+              Subscriptions
             </Link>
-          </Button>
-          <div className="flex-1">
-            {isLoading ? (
-              <Skeleton className="h-8 w-64" />
-            ) : (
-              <>
-                <h1 className="text-2xl font-bold">{getSubscriptionTitle()}</h1>
-                <p className="text-muted-foreground font-mono">
-                  {subscription?.productId || decodedId}
-                </p>
-              </>
-            )}
-          </div>
-          {subscription && (
-            <ExportPricesButton
-              platform="apple"
-              type="subscription"
-              id={subscription.productId || decodedId}
-            />
-          )}
+            <span aria-hidden="true"> / </span>
+            <span aria-current="page">{isLoading ? '…' : getSubscriptionTitle()}</span>
+          </nav>
+          <PageHeader
+            className="mt-1.5"
+            title={isLoading ? <Skeleton className="h-8 w-64" /> : getSubscriptionTitle()}
+            description={<span className="font-mono text-sm text-muted-foreground">{subscription?.productId || decodedId}</span>}
+            actions={
+              subscription && (
+                <ExportPricesButton
+                  platform="apple"
+                  type="subscription"
+                  id={subscription.productId || decodedId}
+                />
+              )
+            }
+          />
         </div>
 
         {isLoading ? (
           <div className="space-y-4">
-            <div className="flex items-center gap-2 text-muted-foreground py-4">
-              <Loader2 className="h-4 w-4 animate-spin" />
+            <div className="flex items-center gap-2 text-muted-foreground py-4" role="status">
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
               <span className="text-sm">Fetching subscription information, please wait...</span>
             </div>
             <Skeleton className="h-32 w-full" />
@@ -169,79 +171,76 @@ export default function AppleSubscriptionDetailPage({
           </div>
         ) : subscription ? (
           <>
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg flex items-center gap-2">
-                  <CreditCard className="h-5 w-5" />
-                  Subscription Details
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Status</p>
-                    {(() => {
-                      const status = formatAppleStatus(subscription.state);
-                      return (
-                        <Badge variant={status.variant} className="mt-1">
-                          {status.label}
-                        </Badge>
-                      );
-                    })()}
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">
-                      Subscription Group
-                    </p>
-                    <p className="font-medium mt-1">
-                      {subscription.groupName || 'None'}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Base Price</p>
-                    <p className="font-medium mt-1">{getBasePrice()}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Regions</p>
-                    <p className="font-medium mt-1">{getTotalTerritories()}</p>
-                  </div>
+            <div className="flex flex-wrap items-start gap-5">
+              <section
+                aria-labelledby="prices-heading"
+                className="min-w-0 flex-[1_1_560px] overflow-hidden rounded-2xl border bg-card"
+              >
+                <div className="flex flex-wrap items-center gap-3 border-b border-line px-5 py-4">
+                  <h2 id="prices-heading" className="flex-1 text-[17px] font-bold">
+                    Prices by country
+                  </h2>
+                  <span className="text-[13px] text-muted-foreground">{getTotalTerritories()} territories</span>
                 </div>
+                <div className="p-4 sm:p-5">
+                  <AppleSubscriptionPricingEditor
+                    subscription={subscription}
+                    bulkPricingOpen={strategyOpen}
+                    onBulkPricingOpenChange={setStrategyOpen}
+                  />
+                </div>
+              </section>
 
-                {getDescription() && (
-                  <div className="mt-4 pt-4 border-t">
-                    <p className="text-sm text-muted-foreground">Description</p>
-                    <p className="mt-1">{getDescription()}</p>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+              <div className="flex min-w-0 flex-[1_1_320px] flex-col gap-5">
+                <StrategyPanel
+                  note={
+                    <>
+                      Existing subscribers keep their price when &ldquo;Preserve existing subscriber prices&rdquo; is on.
+                      Decreases reach everyone.
+                    </>
+                  }
+                >
+                  <Button className="w-full" size="lg" onClick={() => setStrategyOpen(true)}>
+                    <Calculator aria-hidden="true" />
+                    Price by strategy
+                  </Button>
+                </StrategyPanel>
 
-            <div>
-              <h2 className="text-lg font-semibold mb-4">Subscription Plan</h2>
-              <AppleSubscriptionPricingEditor subscription={subscription} />
+                <PanelCard title="Details">
+                  <DetailList
+                    items={[
+                      { label: 'Status', value: <Badge variant={status.variant}>{status.label}</Badge> },
+                      { label: 'Group', value: subscription.groupName || 'None' },
+                      { label: 'Base price', value: <span className="font-mono font-medium">{getBasePrice()}</span> },
+                      { label: 'Territories', value: getTotalTerritories() },
+                    ]}
+                  />
+                  {getDescription() && (
+                    <p className="mt-4 border-t border-line pt-4 text-sm leading-relaxed text-soft">{getDescription()}</p>
+                  )}
+                </PanelCard>
+              </div>
             </div>
 
             <AppleSubscriptionOffers subscriptionId={subscription.id} />
           </>
         ) : (
-          <Card>
-            <CardContent className="py-12 text-center">
-              {/* Distinguish a failed load from a genuinely missing subscription */}
-              <p className={error ? 'text-destructive' : 'text-muted-foreground'}>
-                {error ? `Could not load subscription: ${error.message}` : 'Subscription not found'}
-              </p>
+          <div className="rounded-2xl border bg-card px-6 py-12 text-center">
+            {/* Distinguish a failed load from a genuinely missing subscription */}
+            <p className={error ? 'text-destructive' : 'text-muted-foreground'}>
+              {error ? `Could not load subscription: ${error.message}` : 'Subscription not found'}
+            </p>
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
               {error && (
-                <Button variant="outline" className="mt-4 mr-2" onClick={() => refetch()}>
+                <Button variant="outline" onClick={() => refetch()}>
                   Retry
                 </Button>
               )}
-              <Button variant="outline" className="mt-4" asChild>
-                <Link href="/dashboard/apple/subscriptions">
-                  Back to Subscriptions
-                </Link>
+              <Button variant="outline" asChild>
+                <Link href={listHref}>Back to subscriptions</Link>
               </Button>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
         )}
       </div>
     </div>

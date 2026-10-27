@@ -69,6 +69,9 @@ function formatBillingPeriod(duration: string): string {
 
 interface BasePlanEditorProps {
   subscription: Subscription;
+  /** Optional control of which base plan's strategy (bulk pricing) dialog is open. */
+  bulkPricingPlanId?: string | null;
+  onBulkPricingPlanIdChange?: (basePlanId: string | null) => void;
 }
 
 interface RegionPriceChange {
@@ -90,6 +93,8 @@ function BasePlanPricingSection({
   onPriceChange,
   onAddRegion,
   onCancelChange,
+  bulkPricingOpen: bulkPricingOpenProp,
+  onBulkPricingOpenChange,
 }: {
   subscription: Subscription;
   basePlan: BasePlan;
@@ -97,9 +102,13 @@ function BasePlanPricingSection({
   onPriceChange: (regionCode: string, value: string) => void;
   onAddRegion: (regionCode: string) => void;
   onCancelChange: (regionCode: string) => void;
+  bulkPricingOpen?: boolean;
+  onBulkPricingOpenChange?: (open: boolean) => void;
 }) {
   const [addRegionOpen, setAddRegionOpen] = useState(false);
-  const [bulkPricingOpen, setBulkPricingOpen] = useState(false);
+  const [bulkPricingOpenState, setBulkPricingOpenState] = useState(false);
+  const bulkPricingOpen = bulkPricingOpenProp ?? bulkPricingOpenState;
+  const setBulkPricingOpen = onBulkPricingOpenChange ?? setBulkPricingOpenState;
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
   const deleteMutation = useDeleteBasePlanRegionPrice();
@@ -352,7 +361,7 @@ function BasePlanPricingSection({
   );
 }
 
-export function BasePlanEditor({ subscription }: BasePlanEditorProps) {
+export function BasePlanEditor({ subscription, bulkPricingPlanId, onBulkPricingPlanIdChange }: BasePlanEditorProps) {
   const [allChanges, setAllChanges] = useState<Map<string, BasePlanChanges>>(
     new Map()
   );
@@ -525,7 +534,7 @@ export function BasePlanEditor({ subscription }: BasePlanEditorProps) {
                     {basePlan.basePlanId}
                   </Badge>
                   <Badge
-                    variant={basePlan.state === 'active' ? 'default' : 'secondary'}
+                    variant={basePlan.state === 'active' ? 'success' : 'secondary'}
                   >
                     {basePlan.state}
                   </Badge>
@@ -540,7 +549,7 @@ export function BasePlanEditor({ subscription }: BasePlanEditorProps) {
                     </span>
                   )}
                   {hasChanges && (
-                    <Badge variant="outline" className="bg-amber-100 text-amber-800">
+                    <Badge variant="warning">
                       {planChanges.changes.size} changes
                     </Badge>
                   )}
@@ -560,6 +569,13 @@ export function BasePlanEditor({ subscription }: BasePlanEditorProps) {
                   onCancelChange={(regionCode) =>
                     handleCancelChange(basePlan.basePlanId, regionCode)
                   }
+                  {...(onBulkPricingPlanIdChange
+                    ? {
+                        bulkPricingOpen: bulkPricingPlanId === basePlan.basePlanId,
+                        onBulkPricingOpenChange: (open: boolean) =>
+                          onBulkPricingPlanIdChange(open ? basePlan.basePlanId : null),
+                      }
+                    : {})}
                 />
 
                 {hasChanges && (

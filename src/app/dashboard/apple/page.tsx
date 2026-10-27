@@ -3,10 +3,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { Package, CreditCard } from 'lucide-react';
 import Link from 'next/link';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader, pageClass, useAppContextLabel } from '@/components/layout/page-header';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Header } from '@/components/layout';
-import { useAuthStore } from '@/store/auth-store';
 
 interface StatsResponse {
   products: {
@@ -35,27 +34,26 @@ function StatCard({
   isLoading?: boolean;
 }) {
   return (
-    <Link href={href}>
-      <Card className="hover:border-primary/50 transition-colors cursor-pointer">
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium">{title}</CardTitle>
-          <Icon className="h-4 w-4 text-muted-foreground" />
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <Skeleton className="h-8 w-16" />
-          ) : (
-            <div className="text-2xl font-bold">{value}</div>
-          )}
-          <p className="text-xs text-muted-foreground">{description}</p>
-        </CardContent>
-      </Card>
+    <Link
+      href={href}
+      className="group block rounded-2xl border bg-card p-6 transition-colors hover:border-primary"
+    >
+      <div className="flex items-center justify-between">
+        <h2 className="text-[15px] font-bold">{title}</h2>
+        <Icon className="h-4 w-4 text-muted-foreground group-hover:text-primary" aria-hidden="true" />
+      </div>
+      {isLoading ? (
+        <Skeleton className="mt-3 h-9 w-16" />
+      ) : (
+        <p className="mt-2 font-mono text-[32px] font-medium leading-tight">{value}</p>
+      )}
+      <p className="mt-1 text-sm text-muted-foreground">{description}</p>
     </Link>
   );
 }
 
 export default function AppleDashboardPage() {
-  const bundleId = useAuthStore((state) => state.bundleId);
+  const context = useAppContextLabel('apple');
 
   const { data: stats, isLoading, refetch, isRefetching } = useQuery<StatsResponse>({
     queryKey: ['stats', 'apple'],
@@ -100,17 +98,12 @@ export default function AppleDashboardPage() {
         showSearch={false}
       />
 
-      <div className="flex-1 p-6 space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold">App Store Dashboard</h1>
-          <p className="text-muted-foreground">
-            Overview for <span className="font-mono">{bundleId}</span>
-          </p>
-        </div>
+      <div className={pageClass}>
+        <PageHeader eyebrow={context} title="Overview" description="Your App Store products and subscriptions at a glance." />
 
         <div className="grid gap-4 md:grid-cols-2">
           <StatCard
-            title="In-App Products"
+            title="In-app purchases"
             value={stats?.products.total ?? 0}
             description={`${stats?.products.active ?? 0} approved`}
             icon={Package}

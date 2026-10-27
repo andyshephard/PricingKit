@@ -1,8 +1,10 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Settings, Key, RefreshCw, Check, ExternalLink, Trash2 } from 'lucide-react';
+import { Key, RefreshCw, Check, ExternalLink, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { cn } from '@/lib/utils';
+import { PageHeader, pageClass } from '@/components/layout/page-header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -93,16 +95,8 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold flex items-center gap-2">
-          <Settings className="h-6 w-6" />
-          Settings
-        </h1>
-        <p className="text-muted-foreground mt-1">
-          Configure your pricing tool settings
-        </p>
-      </div>
+    <div className={cn(pageClass, 'max-w-3xl')}>
+      <PageHeader title="Settings" description="Exchange rates and other options for this browser session." />
 
       <Card>
         <CardHeader>
@@ -123,14 +117,14 @@ export default function SettingsPage() {
               Loading...
             </div>
           ) : status?.hasKey ? (
-            <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-950/20 rounded-lg border border-green-200 dark:border-green-900">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-success p-3.5">
               <div className="flex items-center gap-3">
-                <Check className="h-5 w-5 text-green-600" />
+                <Check className="h-5 w-5 text-success-foreground" aria-hidden="true" />
                 <div>
-                  <p className="font-medium text-green-800 dark:text-green-200">
+                  <p className="font-semibold text-success-foreground">
                     API Key Configured
                   </p>
-                  <p className="text-sm text-green-600 dark:text-green-400">
+                  <p className="text-sm text-success-foreground">
                     {status.source === 'environment'
                       ? 'Set by the server operator'
                       : status.apiKey}
@@ -147,18 +141,19 @@ export default function SettingsPage() {
                     size="sm"
                     onClick={handleRemove}
                     className="text-destructive hover:text-destructive"
+                    aria-label="Remove API key"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    <Trash2 className="h-4 w-4" aria-hidden="true" />
                   </Button>
                 )}
               </div>
             </div>
           ) : (
-            <div className="p-3 bg-amber-50 dark:bg-amber-950/20 rounded-lg border border-amber-200 dark:border-amber-900">
-              <p className="font-medium text-amber-800 dark:text-amber-200">
+            <div className="rounded-xl border border-warn-border bg-warn p-3.5">
+              <p className="font-semibold text-warn-foreground">
                 No API Key Configured
               </p>
-              <p className="text-sm text-amber-600 dark:text-amber-400">
+              <p className="text-sm text-warn-foreground">
                 Using fallback exchange rates. Add an API key for real-time rates.
               </p>
             </div>
@@ -169,7 +164,7 @@ export default function SettingsPage() {
             <Label htmlFor="api-key">
               {status?.hasKey ? 'Update API Key' : 'Add API Key'}
             </Label>
-            <div className="flex gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row">
               <Input
                 id="api-key"
                 type="password"
@@ -195,7 +190,7 @@ export default function SettingsPage() {
                 href="https://openexchangerates.org/signup/free"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-primary hover:underline inline-flex items-center gap-1"
+                className="text-link font-semibold hover:underline inline-flex items-center gap-1"
               >
                 openexchangerates.org
                 <ExternalLink className="h-3 w-3" />

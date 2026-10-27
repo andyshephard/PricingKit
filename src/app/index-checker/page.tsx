@@ -3,8 +3,9 @@
 import { ReferenceDataBadges, referenceDataFor } from '@/components/pricing/reference-data-badges';
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { AlertTriangle, ArrowLeft, ArrowUpDown, ChevronUp, ChevronDown, Hamburger, Globe, RefreshCw, Tv } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { SiteHeader } from '@/components/site/site-header';
+import { SiteFooter } from '@/components/site/site-footer';
+import { AlertTriangle, ArrowUpDown, ChevronUp, ChevronDown, Hamburger, Globe, RefreshCw, Tv } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -193,17 +194,12 @@ export default function IndexCheckerPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-background to-muted">
-      <div className="container mx-auto px-4 py-8 max-w-6xl">
+    <div className="min-h-screen bg-background">
+      <SiteHeader current="index-checker" />
+      <main className="mx-auto max-w-6xl px-4 py-10 sm:px-8 sm:py-14">
         <div className="mb-8">
-          <Button variant="ghost" asChild className="mb-4">
-            <Link href="/">
-              <ArrowLeft className="mr-2 h-4 w-4" />
-              Back to Home
-            </Link>
-          </Button>
-          <h1 className="text-3xl font-bold mb-2">Index Checker</h1>
-          <p className="text-muted-foreground">
+          <h1 className="text-[32px] leading-tight font-extrabold tracking-[-0.02em] sm:text-4xl">Index checker</h1>
+          <p className="mt-3 max-w-2xl text-[17px] leading-relaxed text-soft">
             Calculate equivalent prices across countries using PPP (World Bank), Big Mac Index, or Netflix Index data.
           </p>
         </div>
@@ -211,14 +207,14 @@ export default function IndexCheckerPage() {
         {pppMetadata?.warning && (
           <div
             role="status"
-            className="mb-6 rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-900 dark:border-yellow-900/40 dark:bg-yellow-900/20 dark:text-yellow-100"
+            className="mb-6 rounded-xl border border-warn-border bg-warn px-4 py-3 text-sm text-warn-foreground"
           >
             <strong className="font-medium">Heads up: </strong>
             {pppMetadata.warning}
             {pppMetadata.exchangeRatesSnapshotDate && (
               <>
                 {' '}Add an Open Exchange Rates API key in{' '}
-                <Link href="/dashboard/settings" className="underline">
+                <Link href="/dashboard/settings" className="font-semibold underline">
                   Settings
                 </Link>{' '}
                 for live rates.
@@ -240,14 +236,14 @@ export default function IndexCheckerPage() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)]">
           {/* Strategy */}
-          <div className="space-y-2">
-            <Label>Index</Label>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <div className="space-y-2" role="radiogroup" aria-labelledby="index-label">
+            <Label id="index-label">Index</Label>
+            <div className="flex flex-wrap gap-2">
               <label
-                className={`flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer flex-1 transition-colors ${
-                  strategy === 'ppp' ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'
+                className={`flex h-10 items-center gap-2 whitespace-nowrap px-3.5 rounded-full border cursor-pointer transition-colors has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-ring ${
+                  strategy === 'ppp' ? 'border-primary bg-accent text-accent-foreground font-semibold' : 'bg-card hover:bg-muted/50'
                 }`}
               >
                 <input
@@ -258,12 +254,12 @@ export default function IndexCheckerPage() {
                   onChange={() => setStrategy('ppp')}
                   className="sr-only"
                 />
-                <Globe className="h-4 w-4" />
+                <Globe className="h-4 w-4" aria-hidden="true" />
                 <span className="text-sm">PPP (World Bank)</span>
               </label>
               <label
-                className={`flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer flex-1 transition-colors ${
-                  strategy === 'bigmac' ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'
+                className={`flex h-10 items-center gap-2 whitespace-nowrap px-3.5 rounded-full border cursor-pointer transition-colors has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-ring ${
+                  strategy === 'bigmac' ? 'border-primary bg-accent text-accent-foreground font-semibold' : 'bg-card hover:bg-muted/50'
                 }`}
               >
                 <input
@@ -274,12 +270,12 @@ export default function IndexCheckerPage() {
                   onChange={() => setStrategy('bigmac')}
                   className="sr-only"
                 />
-                <Hamburger className="h-4 w-4" />
+                <Hamburger className="h-4 w-4" aria-hidden="true" />
                 <span className="text-sm">Big Mac Index</span>
               </label>
               <label
-                className={`flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer flex-1 transition-colors ${
-                  strategy === 'netflix' ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'
+                className={`flex h-10 items-center gap-2 whitespace-nowrap px-3.5 rounded-full border cursor-pointer transition-colors has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-ring ${
+                  strategy === 'netflix' ? 'border-primary bg-accent text-accent-foreground font-semibold' : 'bg-card hover:bg-muted/50'
                 }`}
               >
                 <input
@@ -290,7 +286,7 @@ export default function IndexCheckerPage() {
                   onChange={() => setStrategy('netflix')}
                   className="sr-only"
                 />
-                <Tv className="h-4 w-4" />
+                <Tv className="h-4 w-4" aria-hidden="true" />
                 <span className="text-sm">Netflix Index</span>
               </label>
             </div>
@@ -346,41 +342,46 @@ export default function IndexCheckerPage() {
             Enter a base amount to see equivalent prices.
           </div>
         ) : (
-          <div className="border rounded-lg">
+          <div className="overflow-hidden rounded-2xl border bg-card">
             <ScrollArea className="h-[60vh]">
               <TooltipProvider delayDuration={100}>
                 <Table>
-                  <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
+                  <TableHeader className="sticky top-0 z-10 bg-card shadow-sm">
                     <TableRow>
-                      <TableHead
-                        className="w-20 cursor-pointer hover:bg-muted/50"
-                        onClick={() => requestSort('region')}
+                      <TableHead className="w-20"
+                        aria-sort={sortConfig.key === 'region' && sortConfig.direction ? (sortConfig.direction === 'asc' ? 'ascending' : 'descending') : 'none'}
                       >
-                        Region {sortIcon('region')}
+                        <button type="button" onClick={() => requestSort('region')} className="inline-flex items-center rounded-md hover:text-foreground">
+                          Region {sortIcon('region')}
+                        </button>
                       </TableHead>
                       <TableHead
-                        className="cursor-pointer hover:bg-muted/50"
-                        onClick={() => requestSort('name')}
+                        aria-sort={sortConfig.key === 'name' && sortConfig.direction ? (sortConfig.direction === 'asc' ? 'ascending' : 'descending') : 'none'}
                       >
-                        Country {sortIcon('name')}
+                        <button type="button" onClick={() => requestSort('name')} className="inline-flex items-center rounded-md hover:text-foreground">
+                          Country {sortIcon('name')}
+                        </button>
                       </TableHead>
                       <TableHead
-                        className="cursor-pointer hover:bg-muted/50"
-                        onClick={() => requestSort('currency')}
+                        aria-sort={sortConfig.key === 'currency' && sortConfig.direction ? (sortConfig.direction === 'asc' ? 'ascending' : 'descending') : 'none'}
                       >
-                        Currency {sortIcon('currency')}
+                        <button type="button" onClick={() => requestSort('currency')} className="inline-flex items-center rounded-md hover:text-foreground">
+                          Currency {sortIcon('currency')}
+                        </button>
                       </TableHead>
-                      <TableHead
-                        className="text-right cursor-pointer hover:bg-muted/50"
-                        onClick={() => requestSort('multiplier')}
+                      <TableHead className="text-right"
+                        aria-sort={sortConfig.key === 'multiplier' && sortConfig.direction ? (sortConfig.direction === 'asc' ? 'ascending' : 'descending') : 'none'}
                       >
-                        Multiplier {sortIcon('multiplier')}
+                        <button type="button" onClick={() => requestSort('multiplier')} className="inline-flex items-center rounded-md hover:text-foreground justify-end w-full">
+                          Multiplier {sortIcon('multiplier')}
+                        </button>
                       </TableHead>
-                      <TableHead
-                        className="text-right cursor-pointer hover:bg-muted/50"
-                        onClick={() => requestSort('price')}
+                      <TableHead className="text-right"
+                        aria-sort={sortConfig.key === 'price' && sortConfig.direction ? (sortConfig.direction === 'asc' ? 'ascending' : 'descending') : 'none'}
                       >
-                        Calculated Price {sortIcon('price')}
+                        <button type="button" onClick={() => requestSort('price')} className="inline-flex items-center rounded-md hover:text-foreground justify-end w-full">
+                          Calculated Price {sortIcon('price')}
+                        </button>
                       </TableHead>
                     </TableRow>
                   </TableHeader>
@@ -394,15 +395,15 @@ export default function IndexCheckerPage() {
                         <TableCell className="text-sm text-muted-foreground">
                           {calc.currencyCode}
                         </TableCell>
-                        <TableCell className="text-right text-sm">
+                        <TableCell className="text-right font-mono text-sm">
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <span
                                 className={
                                   calc.multiplier < 1
-                                    ? 'text-green-600 cursor-help'
+                                    ? 'text-success-foreground cursor-help'
                                     : calc.multiplier > 1
-                                      ? 'text-orange-600 cursor-help'
+                                      ? 'text-change cursor-help'
                                       : 'text-muted-foreground cursor-help'
                                 }
                               >
@@ -430,7 +431,7 @@ export default function IndexCheckerPage() {
                             </TooltipContent>
                           </Tooltip>
                         </TableCell>
-                        <TableCell className="text-right font-medium">
+                        <TableCell className="text-right font-mono font-medium">
                           {calc.error ? (
                             <Tooltip>
                               <TooltipTrigger asChild>
@@ -461,7 +462,8 @@ export default function IndexCheckerPage() {
           Calculations are estimates — actual store pricing may apply rounding, tier snapping, or local rules
           that this tool does not.
         </div>
-      </div>
+      </main>
+      <SiteFooter />
     </div>
   );
 }

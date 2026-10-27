@@ -1,14 +1,12 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import {
-  ArrowLeft,
   ExternalLink,
   CheckCircle2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import {
   Accordion,
   AccordionContent,
@@ -19,46 +17,37 @@ import { Badge } from '@/components/ui/badge';
 
 function StepNumber({ num }: { num: number }) {
   return (
-    <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-bold">
+    <div className="flex-shrink-0 size-9 rounded-full bg-accent text-accent-foreground flex items-center justify-center text-sm font-extrabold">
       {num}
     </div>
   );
 }
 
 export default function SetupGuidePage() {
-  const router = useRouter();
   return (
-    <div className="min-h-screen bg-gradient-to-b from-background to-muted">
-      <div className="container mx-auto px-4 py-8 max-w-4xl">
-        <div className="mb-8">
-          <Button variant="ghost" className="mb-4" onClick={() => router.back()}>
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back
-          </Button>
-          <h1 className="text-3xl font-bold mb-2">Setup Guide</h1>
-          <p className="text-muted-foreground">
-            Follow these steps to connect your Google Play Developer account
-          </p>
-        </div>
+    <article className="min-w-0 max-w-[740px]">
+        <p className="text-[13px] font-semibold text-accent-foreground">Setup guide</p>
+        <h1 className="mt-2 text-[32px] leading-tight font-extrabold tracking-[-0.02em] sm:text-[40px]">Set up Google Play</h1>
+        <p className="mt-4 text-[18px] leading-[1.7] text-soft">Create a service account, give it access in Play Console, then connect it to PricingKit.</p>
 
-        <div className="space-y-6">
+        <div className="mt-10 space-y-12">
           {/* Prerequisites */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-xl">Prerequisites</CardTitle>
+              <h2 className="text-2xl font-bold tracking-tight">Prerequisites</h2>
             </CardHeader>
             <CardContent>
               <ul className="space-y-2">
                 <li className="flex items-start gap-2">
-                  <CheckCircle2 className="h-5 w-5 text-green-500 mt-0.5 flex-shrink-0" />
+                  <CheckCircle2 className="h-5 w-5 text-success-foreground mt-0.5 flex-shrink-0" />
                   <span>A Google Play Developer account ($25 one-time registration fee)</span>
                 </li>
                 <li className="flex items-start gap-2">
-                  <CheckCircle2 className="h-5 w-5 text-green-500 mt-0.5 flex-shrink-0" />
+                  <CheckCircle2 className="h-5 w-5 text-success-foreground mt-0.5 flex-shrink-0" />
                   <span>At least one app published (or in draft) in Google Play Console</span>
                 </li>
                 <li className="flex items-start gap-2">
-                  <CheckCircle2 className="h-5 w-5 text-green-500 mt-0.5 flex-shrink-0" />
+                  <CheckCircle2 className="h-5 w-5 text-success-foreground mt-0.5 flex-shrink-0" />
                   <span>Permission to invite users in Google Play Console</span>
                 </li>
               </ul>
@@ -70,21 +59,21 @@ export default function SetupGuidePage() {
             <CardHeader>
               <div className="flex items-center gap-3">
                 <StepNumber num={1} />
-                <CardTitle className="text-xl">Create a Google Cloud Project</CardTitle>
+                <h2 className="text-2xl font-bold tracking-tight">Create a Google Cloud Project</h2>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <ol className="list-decimal list-inside space-y-3 text-sm">
+              <ol className="list-decimal space-y-3 pl-5 text-[15px] leading-relaxed text-soft">
                 <li>
                   Go to the{' '}
                   <a
                     href="https://console.cloud.google.com/"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-primary hover:underline inline-flex items-center gap-1"
+                    className="inline-flex items-center gap-1 font-semibold text-link hover:underline"
                   >
                     Google Cloud Console
-                    <ExternalLink className="h-3 w-3" />
+                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
                   </a>
                 </li>
                 <li>Click the project dropdown at the top of the page</li>
@@ -101,21 +90,21 @@ export default function SetupGuidePage() {
             <CardHeader>
               <div className="flex items-center gap-3">
                 <StepNumber num={2} />
-                <CardTitle className="text-xl">Enable the Google Play Developer API</CardTitle>
+                <h2 className="text-2xl font-bold tracking-tight">Enable the Google Play Developer API</h2>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <ol className="list-decimal list-inside space-y-3 text-sm">
+              <ol className="list-decimal space-y-3 pl-5 text-[15px] leading-relaxed text-soft">
                 <li>
                   In your Google Cloud project, go to{' '}
                   <a
                     href="https://console.cloud.google.com/apis/library/androidpublisher.googleapis.com"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-primary hover:underline inline-flex items-center gap-1"
+                    className="inline-flex items-center gap-1 font-semibold text-link hover:underline"
                   >
                     Google Play Android Developer API
-                    <ExternalLink className="h-3 w-3" />
+                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
                   </a>
                 </li>
                 <li>Click <Badge variant="secondary">Enable</Badge></li>
@@ -129,21 +118,21 @@ export default function SetupGuidePage() {
             <CardHeader>
               <div className="flex items-center gap-3">
                 <StepNumber num={3} />
-                <CardTitle className="text-xl">Create a Service Account</CardTitle>
+                <h2 className="text-2xl font-bold tracking-tight">Create a Service Account</h2>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <ol className="list-decimal list-inside space-y-3 text-sm">
+              <ol className="list-decimal space-y-3 pl-5 text-[15px] leading-relaxed text-soft">
                 <li>
                   Go to{' '}
                   <a
                     href="https://console.cloud.google.com/iam-admin/serviceaccounts"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-primary hover:underline inline-flex items-center gap-1"
+                    className="inline-flex items-center gap-1 font-semibold text-link hover:underline"
                   >
                     Service Accounts
-                    <ExternalLink className="h-3 w-3" />
+                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
                   </a>
                   {' '}in Google Cloud Console
                 </li>
@@ -168,11 +157,11 @@ export default function SetupGuidePage() {
             <CardHeader>
               <div className="flex items-center gap-3">
                 <StepNumber num={4} />
-                <CardTitle className="text-xl">Download the Service Account Key</CardTitle>
+                <h2 className="text-2xl font-bold tracking-tight">Download the Service Account Key</h2>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <ol className="list-decimal list-inside space-y-3 text-sm">
+              <ol className="list-decimal space-y-3 pl-5 text-[15px] leading-relaxed text-soft">
                 <li>In the Service Accounts list, find your newly created service account</li>
                 <li>Click on the service account email to open its details</li>
                 <li>Go to the <Badge variant="secondary">Keys</Badge> tab</li>
@@ -184,8 +173,8 @@ export default function SetupGuidePage() {
                 <li>The JSON file will download automatically</li>
               </ol>
 
-              <div className="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 p-4 mt-4">
-                <p className="text-sm text-amber-800 dark:text-amber-200">
+              <div className="rounded-xl border border-warn-border bg-warn p-4 mt-4">
+                <p className="text-sm text-warn-foreground">
                   <strong>Important:</strong> Keep this JSON file safe! It contains credentials to access your Play Console.
                   Also note the <strong>service account email address</strong> - you&apos;ll need it in the next step.
                 </p>
@@ -199,7 +188,7 @@ export default function SetupGuidePage() {
               <div className="flex items-center gap-3">
                 <StepNumber num={5} />
                 <div>
-                  <CardTitle className="text-xl">Invite Service Account to Play Console</CardTitle>
+                  <h2 className="text-2xl font-bold tracking-tight">Invite Service Account to Play Console</h2>
                   <p className="text-sm text-muted-foreground mt-1">
                     This is the most important step!
                   </p>
@@ -207,17 +196,17 @@ export default function SetupGuidePage() {
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <ol className="list-decimal list-inside space-y-3 text-sm">
+              <ol className="list-decimal space-y-3 pl-5 text-[15px] leading-relaxed text-soft">
                 <li>
                   Go to{' '}
                   <a
                     href="https://play.google.com/console/"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-primary hover:underline inline-flex items-center gap-1"
+                    className="inline-flex items-center gap-1 font-semibold text-link hover:underline"
                   >
                     Google Play Console
-                    <ExternalLink className="h-3 w-3" />
+                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
                   </a>
                 </li>
                 <li>
@@ -229,7 +218,7 @@ export default function SetupGuidePage() {
                 <li>
                   Enter your <strong>service account email address</strong>
                   <ul className="list-disc list-inside ml-4 mt-2 space-y-1 text-muted-foreground">
-                    <li>Find this in your downloaded JSON file (the <code className="bg-muted px-1 rounded">client_email</code> field)</li>
+                    <li>Find this in your downloaded JSON file (the <code className="rounded-md bg-chip px-1 font-mono text-foreground">client_email</code> field)</li>
                     <li>It looks like: <code className="bg-muted px-1 rounded text-xs">name@project-id.iam.gserviceaccount.com</code></li>
                   </ul>
                 </li>
@@ -252,7 +241,7 @@ export default function SetupGuidePage() {
             <CardHeader>
               <div className="flex items-center gap-3">
                 <StepNumber num={6} />
-                <CardTitle className="text-xl">Configure Permissions</CardTitle>
+                <h2 className="text-2xl font-bold tracking-tight">Configure Permissions</h2>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -265,15 +254,15 @@ export default function SetupGuidePage() {
                   <h4 className="font-medium mb-2">Required Permissions</h4>
                   <ul className="space-y-2 text-sm">
                     <li className="flex items-center gap-2">
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                      <CheckCircle2 className="h-4 w-4 text-success-foreground" />
                       <strong>View app information and download bulk reports</strong>
                     </li>
                     <li className="flex items-center gap-2">
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                      <CheckCircle2 className="h-4 w-4 text-success-foreground" />
                       <strong>View financial data, orders, and cancellation survey responses</strong>
                     </li>
                     <li className="flex items-center gap-2">
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                      <CheckCircle2 className="h-4 w-4 text-success-foreground" />
                       <strong>Manage orders and subscriptions</strong>
                     </li>
                   </ul>
@@ -283,11 +272,11 @@ export default function SetupGuidePage() {
                   <h4 className="font-medium mb-2">For Managing Pricing (also recommended)</h4>
                   <ul className="space-y-2 text-sm">
                     <li className="flex items-center gap-2">
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                      <CheckCircle2 className="h-4 w-4 text-success-foreground" />
                       <strong>Manage store presence</strong>
                     </li>
                     <li className="flex items-center gap-2">
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                      <CheckCircle2 className="h-4 w-4 text-success-foreground" />
                       <strong>Manage pricing and distribution</strong>
                     </li>
                   </ul>
@@ -305,13 +294,13 @@ export default function SetupGuidePage() {
             <CardHeader>
               <div className="flex items-center gap-3">
                 <StepNumber num={7} />
-                <CardTitle className="text-xl">Find Your Package Name</CardTitle>
+                <h2 className="text-2xl font-bold tracking-tight">Find Your Package Name</h2>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
               <p className="text-sm text-muted-foreground">
                 Your package name uniquely identifies your Android app. It looks like:{' '}
-                <code className="bg-muted px-1.5 py-0.5 rounded text-xs">com.company.appname</code>
+                <code className="rounded-md bg-chip px-1.5 py-0.5 font-mono text-xs text-foreground">com.company.appname</code>
               </p>
 
               <Accordion type="single" collapsible className="w-full">
@@ -346,7 +335,7 @@ export default function SetupGuidePage() {
                   </AccordionTrigger>
                   <AccordionContent className="text-sm text-muted-foreground">
                     <p className="mb-2">Check your app&apos;s build.gradle file:</p>
-                    <pre className="bg-muted p-3 rounded-lg text-xs overflow-x-auto">
+                    <pre className="overflow-x-auto rounded-xl border border-line bg-code p-4 font-mono text-xs leading-[1.7] text-code-foreground">
 {`android {
     namespace = "com.yourcompany.yourapp"
 }`}
@@ -361,7 +350,7 @@ export default function SetupGuidePage() {
           <Card className="bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-900">
             <CardContent className="pt-6">
               <div className="flex items-center gap-3 mb-4">
-                <CheckCircle2 className="h-8 w-8 text-green-500" />
+                <CheckCircle2 className="h-8 w-8 text-success-foreground" />
                 <div>
                   <h3 className="font-semibold text-lg">You&apos;re Ready!</h3>
                   <p className="text-sm text-muted-foreground">
@@ -380,7 +369,7 @@ export default function SetupGuidePage() {
           {/* Troubleshooting */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-xl">Troubleshooting</CardTitle>
+              <h2 className="text-2xl font-bold tracking-tight">Troubleshooting</h2>
             </CardHeader>
             <CardContent>
               <Accordion type="single" collapsible className="w-full">
@@ -420,7 +409,7 @@ export default function SetupGuidePage() {
                     <p>The JSON key file is invalid or corrupted.</p>
                     <ol className="list-decimal list-inside space-y-1">
                       <li>Verify you&apos;re uploading the service account JSON file</li>
-                      <li>The file should contain <code className="bg-muted px-1 rounded">&quot;type&quot;: &quot;service_account&quot;</code></li>
+                      <li>The file should contain <code className="rounded-md bg-chip px-1 font-mono text-foreground">&quot;type&quot;: &quot;service_account&quot;</code></li>
                       <li>Try creating and downloading a new key from Google Cloud Console</li>
                     </ol>
                   </AccordionContent>
@@ -458,24 +447,24 @@ export default function SetupGuidePage() {
           {/* Security note */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-xl">Security</CardTitle>
+              <h2 className="text-2xl font-bold tracking-tight">Security</h2>
             </CardHeader>
             <CardContent>
               <ul className="space-y-2 text-sm text-muted-foreground">
                 <li className="flex items-start gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-green-500 mt-0.5 flex-shrink-0" />
+                  <CheckCircle2 className="h-4 w-4 text-success-foreground mt-0.5 flex-shrink-0" />
                   Your service account JSON is never stored on our servers
                 </li>
                 <li className="flex items-start gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-green-500 mt-0.5 flex-shrink-0" />
+                  <CheckCircle2 className="h-4 w-4 text-success-foreground mt-0.5 flex-shrink-0" />
                   Credentials are encrypted into an HttpOnly session cookie and used in memory per request
                 </li>
                 <li className="flex items-start gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-green-500 mt-0.5 flex-shrink-0" />
+                  <CheckCircle2 className="h-4 w-4 text-success-foreground mt-0.5 flex-shrink-0" />
                   Sessions automatically expire after 24 hours
                 </li>
                 <li className="flex items-start gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-green-500 mt-0.5 flex-shrink-0" />
+                  <CheckCircle2 className="h-4 w-4 text-success-foreground mt-0.5 flex-shrink-0" />
                   You can disconnect at any time from Settings
                 </li>
               </ul>
@@ -485,7 +474,7 @@ export default function SetupGuidePage() {
           {/* Reference */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-xl">Reference</CardTitle>
+              <h2 className="text-2xl font-bold tracking-tight">Reference</h2>
             </CardHeader>
             <CardContent>
               <p className="text-sm text-muted-foreground">
@@ -494,16 +483,15 @@ export default function SetupGuidePage() {
                   href="https://developers.google.com/android-publisher/getting_started"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-primary hover:underline inline-flex items-center gap-1"
+                  className="inline-flex items-center gap-1 font-semibold text-link hover:underline"
                 >
                   Getting Started with the Google Play Developer API
-                  <ExternalLink className="h-3 w-3" />
+                  <ExternalLink className="h-3 w-3" aria-hidden="true" />
                 </a>
               </p>
             </CardContent>
           </Card>
         </div>
-      </div>
-    </div>
+    </article>
   );
 }

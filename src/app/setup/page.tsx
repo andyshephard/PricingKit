@@ -3,24 +3,50 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, ArrowRight, BookOpen } from 'lucide-react';
+import { Lock } from 'lucide-react';
 import { ServiceAccountUpload } from '@/components/auth/service-account-upload';
 import { AppleConnectUpload } from '@/components/auth/apple-connect-upload';
 import { useAuthStore } from '@/store/auth-store';
 import { Button } from '@/components/ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { SiteFooter } from "@/components/site/site-footer";
+import { SiteHeader } from '@/components/site/site-header';
+import { SiteFooter } from '@/components/site/site-footer';
+import { REPO_LINKS } from '@/config/site';
+import { cn } from '@/lib/utils';
 
 type PlatformTab = 'google' | 'apple';
 
+const STORES: Record<PlatformTab, { name: string; body: string; needs: string[]; guide: string }> = {
+  apple: {
+    name: 'App Store',
+    body: 'Use an App Store Connect API key with the App Manager role.',
+    needs: [
+      'An Apple Developer Program membership',
+      'An API key (.p8 file) from App Store Connect',
+      'Its Key ID and your Issuer ID',
+    ],
+    guide: '/setup-guide/apple',
+  },
+  google: {
+    name: 'Google Play',
+    body: 'Use a service account JSON key with access to your app in Play Console.',
+    needs: [
+      'A Google Cloud project with the Play Developer API enabled',
+      'A service account JSON key file',
+      "Your app's package name (for example com.example.app)",
+    ],
+    guide: '/setup-guide/google',
+  },
+};
+
+// The upload components render their own card; inside the selected panel
+// that card's chrome is removed so the panel is the only card.
+const flattenCard =
+  '[&_[data-slot=card]]:max-w-none [&_[data-slot=card]]:border-0 [&_[data-slot=card]]:bg-transparent [&_[data-slot=card]]:py-0 [&_[data-slot=card]]:gap-5 [&_[data-slot=card-header]]:px-0 [&_[data-slot=card-content]]:px-0 [&_[data-slot=card-title]]:text-[22px]';
+
 export default function SetupPage() {
   const router = useRouter();
-  const isGoogleAuthenticated = useAuthStore(
-    (state) => state.isGoogleAuthenticated
-  );
-  const isAppleAuthenticated = useAuthStore(
-    (state) => state.isAppleAuthenticated
-  );
+  const isGoogleAuthenticated = useAuthStore((state) => state.isGoogleAuthenticated);
+  const isAppleAuthenticated = useAuthStore((state) => state.isAppleAuthenticated);
   const [activeTab, setActiveTab] = useState<PlatformTab>('apple');
 
   useEffect(() => {
@@ -30,100 +56,74 @@ export default function SetupPage() {
   }, [isGoogleAuthenticated, isAppleAuthenticated, router]);
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="container mx-auto px-4 py-12">
-        <div className="mb-10">
-          <Button variant="ghost" size="sm" asChild>
-            <Link href="/">
-              <ArrowLeft className="h-4 w-4 mr-1.5" />
-              Back to home
-            </Link>
-          </Button>
+    <div className="flex min-h-screen flex-col bg-background">
+      <SiteHeader compact />
+
+      <main className="mx-auto w-full max-w-[920px] flex-1 px-4 py-12 sm:px-8 sm:py-[72px]">
+        <h1 className="text-center text-[32px] leading-tight font-extrabold tracking-[-0.02em] sm:text-4xl">
+          Connect a store
+        </h1>
+        <p className="mx-auto mt-3 max-w-[560px] text-center text-[17px] leading-relaxed text-soft">
+          Choose where your app is sold. You can connect the other store later.
+        </p>
+
+        <div className="mt-10 grid gap-5 md:grid-cols-2">
+          {(['apple', 'google'] as const).map((id) => {
+            const store = STORES[id];
+            const selected = activeTab === id;
+            return (
+              <section
+                key={id}
+                aria-labelledby={`store-${id}`}
+                className={cn('min-w-0 rounded-2xl bg-card p-6 sm:p-7', selected ? 'border-2 border-primary' : 'border')}
+              >
+                {selected ? (
+                  <>
+                    <p className="text-[13px] font-bold text-accent-foreground">Selected</p>
+                    <h2 id={`store-${id}`} className="sr-only">
+                      {store.name}
+                    </h2>
+                    <div className={cn('mt-2', flattenCard)}>
+                      {id === 'apple' ? <AppleConnectUpload /> : <ServiceAccountUpload />}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <h2 id={`store-${id}`} className="text-[22px] font-bold md:mt-6">
+                      {store.name}
+                    </h2>
+                    <p className="mt-1.5 text-[15px] leading-relaxed text-soft">{store.body}</p>
+                    <Button variant="outline" size="lg" className="mt-5 w-full" onClick={() => setActiveTab(id)}>
+                      Choose {store.name}
+                    </Button>
+                  </>
+                )}
+                <div className="mt-6 border-t border-line pt-4 text-sm text-soft">
+                  <p className="font-semibold text-foreground">What you&apos;ll need</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    {store.needs.map((n) => (
+                      <li key={n}>{n}</li>
+                    ))}
+                  </ul>
+                  <Link href={store.guide} className="mt-3 inline-block rounded-md font-semibold text-link hover:underline">
+                    {store.name} setup guide
+                  </Link>
+                </div>
+              </section>
+            );
+          })}
         </div>
 
-        <div className="flex flex-col items-center text-center mb-14">
-          <h1 className="text-4xl font-bold tracking-tight mb-4">Connect your account</h1>
-          <p className="text-lg text-muted-foreground max-w-lg">
-            Upload your API credentials to start managing your app pricing.
+        <div className="mt-7 flex items-start gap-3 rounded-[14px] border bg-card px-5 py-[18px] text-sm leading-relaxed text-soft">
+          <Lock className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />
+          <p>
+            Your key is sent to this server, encrypted into a short-lived session cookie, and never stored.{' '}
+            <a href={REPO_LINKS.security} className="font-semibold text-link hover:underline" rel="noopener noreferrer">
+              How keys are handled
+            </a>
           </p>
         </div>
-
-        <div className="grid md:grid-cols-2 gap-12 max-w-5xl mx-auto">
-          <div className="flex flex-col justify-center space-y-8">
-            <div className="rounded-xl border bg-card p-5">
-              <div className="flex items-start gap-3">
-                <div className="rounded-lg bg-primary/10 p-2">
-                  <BookOpen className="h-5 w-5 text-primary" />
-                </div>
-                <div className="flex-1">
-                  <h4 className="font-semibold mb-1">New here?</h4>
-                  <p className="text-sm text-muted-foreground mb-3">
-                    Follow our step-by-step guides to set up your API access.
-                  </p>
-                  <div className="flex gap-2">
-                    <Button variant="outline" size="sm" asChild>
-                      <Link href="/setup-guide/google">
-                        Google Play Guide
-                        <ArrowRight className="ml-2 h-4 w-4" />
-                      </Link>
-                    </Button>
-                    <Button variant="outline" size="sm" asChild>
-                      <Link href="/setup-guide/apple">
-                        Apple Guide
-                        <ArrowRight className="ml-2 h-4 w-4" />
-                      </Link>
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {activeTab === 'google' ? (
-              <div className="text-sm text-muted-foreground">
-                <p className="font-semibold mb-2">What you&apos;ll need:</p>
-                <ul className="space-y-1">
-                  <li>
-                    &bull; A Google Cloud project with Play Developer API enabled
-                  </li>
-                  <li>&bull; A service account JSON key file</li>
-                  <li>
-                    &bull; Your app&apos;s package name (e.g., com.example.app)
-                  </li>
-                </ul>
-              </div>
-            ) : (
-              <div className="text-sm text-muted-foreground">
-                <p className="font-semibold mb-2">What you&apos;ll need:</p>
-                <ul className="space-y-1">
-                  <li>&bull; An Apple Developer Program membership ($99/year)</li>
-                  <li>&bull; An API key (.p8 file) from App Store Connect</li>
-                  <li>&bull; Your Key ID and Issuer ID</li>
-                  <li>&bull; Your app&apos;s Bundle ID (e.g., com.example.app)</li>
-                </ul>
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-start justify-center pt-4">
-            <Tabs
-              value={activeTab}
-              onValueChange={(v) => setActiveTab(v as PlatformTab)}
-              className="w-full max-w-md"
-            >
-              <TabsList className="grid w-full grid-cols-2 mb-4">
-                <TabsTrigger value="google">Google Play</TabsTrigger>
-                <TabsTrigger value="apple">Apple App Store</TabsTrigger>
-              </TabsList>
-              <TabsContent value="google">
-                <ServiceAccountUpload />
-              </TabsContent>
-              <TabsContent value="apple">
-                <AppleConnectUpload />
-              </TabsContent>
-            </Tabs>
-          </div>
-        </div>
-      </div>
+      </main>
 
       <SiteFooter />
     </div>
