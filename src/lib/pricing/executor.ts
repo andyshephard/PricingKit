@@ -305,6 +305,16 @@ export async function applyChangeSet(changeSet: ChangeSet, options: ApplyOptions
         for (const op of offerOps) {
           const record = records.get(op.id)!;
           const result = classifyOfferOp(op, offers, today(), offerHistory(record));
+          // A resume that finds territories of an intro create already in place, after an attempt
+          // was sent (e.g. a create that answered 5xx but took effect), attributes them to this run,
+          // so undo can delete them instead of listing them for manual clean-up
+          if (record.attempts > 0 && op.kind === 'createOffer' && result.kind !== 'drifted' && result.found) {
+            const known = (record.response?.createdIds as Record<string, string> | undefined) ?? {};
+            const fresh = Object.fromEntries(Object.entries(result.found).filter(([t]) => !known[t]));
+            if (Object.keys(fresh).length > 0) {
+              update(record, { response: mergeResponses(record.response, { ...(record.response ?? {}), createdIds: fresh, foundOnResume: Object.keys(fresh).sort() }) });
+            }
+          }
           if (result.kind === 'atTarget') {
             // As for prices: an op found at its target after an attempt was sent took effect
             // (e.g. a create that answered 5xx); it is found by its key, never sent again

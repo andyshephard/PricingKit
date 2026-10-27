@@ -314,9 +314,10 @@ export function introEntriesByTerritory(offers: StoreOffer[]): Map<string, Intro
 // Classification: compare an op with what the store holds now
 
 export type OfferClassification =
-  | { kind: 'atTarget'; observed: OfferState | null }
+  /** `found`: intro creates, the resource already in place in each done territory */
+  | { kind: 'atTarget'; observed: OfferState | null; found?: Record<string, string> }
   /** `pending`: intro territories still to write (all of them for other kinds) */
-  | { kind: 'ready'; observed: OfferState | null; pending?: string[]; offer?: StoreOffer; storeRefs?: Record<string, string> }
+  | { kind: 'ready'; observed: OfferState | null; pending?: string[]; offer?: StoreOffer; storeRefs?: Record<string, string>; found?: Record<string, string> }
   | { kind: 'drifted'; observed: OfferState | null; message: string };
 
 function locateKeyed(op: OfferOp, offers: StoreOffer[]): { offer?: StoreOffer; state: OfferState | null; problem?: string } {
@@ -373,6 +374,7 @@ function classifyIntro(op: OfferOp, offers: StoreOffer[], today: string, history
   const pending: string[] = [];
   const drift: string[] = [];
   const storeRefs: Record<string, string> = {};
+  const found: Record<string, string> = {};
   const observedPrices: Record<string, OfferTerritoryPrice> = {};
 
   for (const territory of Object.keys(scope.prices).sort()) {
@@ -404,6 +406,7 @@ function classifyIntro(op: OfferOp, offers: StoreOffer[], today: string, history
           else pending.push(territory);
         } else if (sameOfferPrice(entry.price, wanted) && end === endOf(op.after)) {
           // done
+          if (entry.storeId) found[territory] = entry.storeId;
         } else {
           drift.push(`${territory}: an introductory offer with these terms already exists at another price or end date`);
         }
@@ -439,8 +442,9 @@ function classifyIntro(op: OfferOp, offers: StoreOffer[], today: string, history
     const more = drift.length > 5 ? ` (and ${drift.length - 5} more)` : '';
     return { kind: 'drifted', observed, message: `${drift.slice(0, 5).join('; ')}${more}. ${NOTHING_SENT}` };
   }
-  if (pending.length === 0) return { kind: 'atTarget', observed };
-  return { kind: 'ready', observed, pending, storeRefs };
+  const foundPart = Object.keys(found).length > 0 ? { found } : {};
+  if (pending.length === 0) return { kind: 'atTarget', observed, ...foundPart };
+  return { kind: 'ready', observed, pending, storeRefs, ...foundPart };
 }
 
 /** Compare an offer op with the product's offers as read now. `today` is YYYY-MM-DD. */

@@ -556,3 +556,44 @@ describe('undo after a refused create', () => {
     expect(undo.ops.map((op) => (op as OfferOp).target.offer.key)).toEqual(['example_annual_alt_50']);
   });
 });
+
+describe('undo after an attempt that may have taken effect', () => {
+  it('keeps a create in undo when a timeout was followed by a 409', async () => {
+    const plan = await planBoth();
+    store.failures.push({ method: 'POST', path: /^\/subscriptionPromotionalOffers$/, status: 504 });
+    const first = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash, concurrency: 1 });
+    expect(first.ops[0]).toMatchObject({ status: 'failed', attempts: 1, error: { status: 504 } });
+    store.failures.push({ method: 'POST', path: /^\/subscriptionPromotionalOffers$/, status: 409 });
+    const second = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash, run: first });
+    expect(second.ops[0]).toMatchObject({ status: 'failed', attempts: 2, error: { status: 409 } });
+    // The 409 doesn't prove the timed-out attempt wrote nothing: the create stays in the undo plan
+    const undo = buildUndoChangeSet(plan.changeSet, second);
+    expect(undo.ops.map((op) => [(op as OfferOp).kind, (op as OfferOp).target.offer.key])).toEqual([
+      ['deleteOffer', 'example_annual_alt_50'],
+      ['deleteOffer', 'example_annual_50'],
+    ]);
+  });
+
+  it('a resume records the intro resource a timed-out create left behind, so undo can delete it', async () => {
+    const trial: OfferSpec = { id: 'trial', productRef: annual, kind: 'apple.intro', mode: 'FREE_TRIAL', duration: 'P1W', pricing: { type: 'free' }, territories: ['GB', 'US'], schedule: { start: '2030-04-01' }, syncWithBase: false };
+    const plan = await adapter().planOffers({ app, offers: [trial] });
+    // The first create (GB) takes effect but answers 504: no ID comes back
+    store.failures.push({ method: 'POST', path: /^\/subscriptionIntroductoryOffers$/, status: 504, afterWrite: true });
+    const first = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash });
+    expect(first.ops[0]).toMatchObject({ status: 'failed', attempts: 1 });
+    expect(first.ops[0].response?.createdIds).toBeUndefined();
+
+    const resumed = await applyChangeSet(plan.changeSet, { adapter: adapter(), confirm: plan.hash, run: first });
+    expect(resumed.status).toBe('completed');
+    const ids = resumed.ops[0].response!.createdIds as Record<string, string>;
+    expect(Object.keys(ids).sort()).toEqual(['GB', 'US']);
+    expect(store.intros.map((i) => i.id).sort()).toEqual(Object.values(ids).sort());
+    expect(store.calls.filter((c) => c.method === 'POST')).toHaveLength(2); // GB never sent again
+
+    const undo = buildUndoChangeSet(plan.changeSet, resumed);
+    expect(undo.notReversible?.filter((n) => /No created resource/.test(n.reason)) ?? []).toEqual([]);
+    const { changeSetHash } = await import('@/lib/pricing');
+    await applyChangeSet(undo, { adapter: adapter(), confirm: changeSetHash(undo), force: { deleteOffers: true } });
+    expect(store.intros).toEqual([]);
+  });
+});

@@ -222,9 +222,11 @@ export function buildUndoChangeSet(
   for (const record of [...run.ops].reverse()) {
     const op = byId.get(record.opId)!;
     const createdIds = record.response?.createdIds as Record<string, string> | undefined;
-    // A failed offer op may still have taken effect (a create that answered 5xx or timed out),
-    // unless the store refused it (4xx) without writing anything
-    const refused = record.error?.status !== undefined && record.error.status >= 400 && record.error.status < 500 && !createdIds;
+    // A failed offer op may still have taken effect (a create that answered 5xx or timed out).
+    // It is left out only when its one and only attempt was refused (4xx) with nothing recorded as
+    // written: after a timeout, a later 409 may mean the first attempt took effect.
+    const refused =
+      record.attempts === 1 && record.error?.status !== undefined && record.error.status >= 400 && record.error.status < 500 && !createdIds;
     const mayHaveApplied = record.status === 'ok' || (isOfferOp(op) && record.status === 'failed' && record.attempts > 0 && !refused);
     if (!mayHaveApplied) continue;
     if (isOfferOp(op)) {
