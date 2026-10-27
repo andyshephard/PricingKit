@@ -493,8 +493,11 @@ spec and rules files, with the credentials in its environment). Tools:
 | `diff` | Summarises a plan file, with its hash. Offline. |
 | `apply_command` | Returns the exact `pricingkit apply <plan> --confirm <hash>` command (with `--allow-base-prices` / `--force-delete` when needed) for a person to review and run. It applies nothing. |
 
-There is no apply tool. Arguments are typed and can't start with `-`, and file paths must stay
-inside the server's working directory.
+There is no apply tool. Arguments are typed and can't start with `-`. File paths are relative,
+use only letters, digits, `.`, `_`, `-` and `/`, have no `..` segments, nothing under `.git/`, and
+must resolve (following links) inside the server's working directory; `plan` writes only `.json`
+files and never replaces a file that isn't already a plan (or state) file. The command
+`apply_command` returns is shell-quoted, and a `resume` log must belong to the plan.
 
 **Shared options.** `--json` prints machine-readable JSON on stdout: the document itself
 (`pricingkit.state`, `pricingkit.changeset`, `pricingkit.planSummary`, `pricingkit.offers` or
