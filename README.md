@@ -257,7 +257,8 @@ territories: price points are read only for the territories of offers a rule can
 one `pricingkit.rulesDrift` report (each offer's
 `pricingkit.offerDrift` report inside). Exit code 2 when any offer drifted or doesn't exist; 1 when
 nothing drifted but an offer couldn't be checked (for example a rule on a free trial); 0 when all
-are in sync. This is what a weekly CI job runs (`examples/github-actions/drift.yml`).
+are in sync. The text report's first line says `DRIFT`, `NOT CHECKED` or `In sync`, and offers that
+couldn't be checked are listed right under it, also when the exit code is 2 for drift. This is what a weekly CI job runs (`examples/github-actions/drift.yml`).
 
 **Sync plans.** `pricingkit plan --rules offer-rules.json` re-derives every `syncWithBase` offer
 against the current base prices and plans `updateOfferPrices` for the ones out of step, for

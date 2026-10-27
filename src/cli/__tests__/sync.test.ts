@@ -77,7 +77,14 @@ describe('pricingkit drift --rules', () => {
     writeJson('trial.json', rulesFile([promoRules[0], { product: subA, kind: 'apple.intro', key: 'intro:FREE_TRIAL:ONE_WEEK:1::', pricing: half, syncWithBase: false }]));
     const trial = await run(['drift', '--rules', 'trial.json'], { env, cwd: tmp.dir });
     expect(trial.code).toBe(1);
-    expect(trial.stdout).toMatch(/error\s+.*free trial/);
+    expect(trial.stdout).toMatch(/^NOT CHECKED: 2 offers/m);
+    expect(trial.stdout).toMatch(/^ERRORS: 1 offer could not be checked:\n  9600000001 apple\.intro "intro:FREE_TRIAL:ONE_WEEK:1::": .*free trial/m);
+
+    // Drift and an error: exit 2 for the drift, and the error is still printed up front
+    writeJson('both.json', rulesFile([promoRules[1], { product: subA, kind: 'apple.intro', key: 'intro:FREE_TRIAL:ONE_WEEK:1::', pricing: half, syncWithBase: false }]));
+    const both = await run(['drift', '--rules', 'both.json'], { env, cwd: tmp.dir });
+    expect(both.code).toBe(2);
+    expect(both.stdout).toMatch(/^DRIFT: 2 offers: 0 in sync, 1 drifted, 0 not found, 1 not checkable\nERRORS: 1 offer could not be checked \(the exit code reports the drift; fix these too\):/m);
   });
 
   it('refuses single-offer flags with --rules, an invalid rules file, and Play rules', async () => {

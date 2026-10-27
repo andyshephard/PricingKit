@@ -276,7 +276,8 @@ With --rules, checks every offer in a pricingkit.offerRules file (the app
 comes from the file) and prints one pricingkit.rulesDrift report with each
 offer's pricingkit.offerDrift report. Exit code 2 when any offer drifted or
 doesn't exist, otherwise 1 when an offer couldn't be checked (e.g. a rule on a
-free trial), otherwise 0. App Store offers only: Google Play offers aren't
+free trial), otherwise 0. The text report starts with DRIFT, NOT CHECKED or
+In sync and lists offers that couldn't be checked right below, with drift too. App Store offers only: Google Play offers aren't
 supported yet.
 
 ${SHARED_HELP}`,

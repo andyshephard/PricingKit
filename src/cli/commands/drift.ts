@@ -113,9 +113,19 @@ export function rulesDriftExitCode(report: RulesDriftReport): ExitCode {
 export function formatRulesDriftReport(report: RulesDriftReport): string {
   const app = 'bundleId' in report.app ? report.app.bundleId : report.app.packageName;
   const s = report.summary;
+  // DRIFT whenever an offer drifted or is missing (exit 2, even with errors); NOT CHECKED when
+  // nothing drifted but an offer couldn't be checked (exit 1)
+  const status = report.inSync ? 'In sync' : s.drifted > 0 || s.notFound > 0 ? 'DRIFT' : 'NOT CHECKED';
+  const errors = report.offers.filter((o) => o.status === 'error');
   const lines = [
     `Offer rules for ${app}, checked ${report.checkedAt}`,
-    `${report.inSync ? 'In sync' : 'DRIFT'}: ${s.offers} offers: ${s.inSync} in sync, ${s.drifted} drifted, ${s.notFound} not found, ${s.errors} not checkable`,
+    `${status}: ${s.offers} offers: ${s.inSync} in sync, ${s.drifted} drifted, ${s.notFound} not found, ${s.errors} not checkable`,
+    ...(errors.length > 0
+      ? [
+          `ERRORS: ${errors.length} ${errors.length === 1 ? 'offer' : 'offers'} could not be checked${status === 'DRIFT' ? ' (the exit code reports the drift; fix these too)' : ''}:`,
+          ...errors.map((o) => `  ${o.product.platform === 'apple' ? o.product.id : ''} ${o.kind} "${o.key}": ${o.error?.message ?? 'unknown error'}`),
+        ]
+      : []),
     table(
       report.offers.map((o) => [
         o.product.platform === 'apple' ? o.product.id : '',
