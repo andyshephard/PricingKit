@@ -166,8 +166,9 @@ export function parseRun(input: string | unknown): ApplyRun {
   if (typeof input === 'string') {
     try {
       raw = JSON.parse(input);
-    } catch (error) {
-      throw new RunValidationError([`not valid JSON: ${(error as Error).message}`]);
+    } catch {
+      // JSON.parse messages quote the input, which may be anything (even a secret); never pass them on
+      throw new RunValidationError(['not valid JSON']);
     }
   }
   const result = runSchema.safeParse(raw);

@@ -315,8 +315,9 @@ export function parseChangeSet(input: string | unknown): ChangeSet {
   if (typeof input === 'string') {
     try {
       raw = JSON.parse(input);
-    } catch (error) {
-      throw new ChangeSetValidationError([`not valid JSON: ${(error as Error).message}`]);
+    } catch {
+      // JSON.parse messages quote the input, which may be anything (even a secret); never pass them on
+      throw new ChangeSetValidationError(['not valid JSON']);
     }
   }
   const result = changeSetSchema.safeParse(raw);

@@ -172,6 +172,22 @@ describe('ChangeSet files', () => {
     expect(() => parseChangeSet(plan)).toThrow(/reserved for a later phase/);
   });
 
+  it('never quotes malformed input back (plan, state and run files)', async () => {
+    const { parseRun, parseStateSnapshot } = await import('@/lib/pricing');
+    const input = 'SECRET_VALUE=do-not-echo-this-text';
+    for (const parse of [parseChangeSet, parseStateSnapshot, parseRun]) {
+      let message = '';
+      try {
+        parse(input);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toMatch(/not valid JSON$/);
+      expect(message).not.toContain('do-not-echo');
+      expect(message).not.toContain('SECRET_VALUE');
+    }
+  });
+
   it('rejects unknown fields and malformed JSON', () => {
     expect(() => parseChangeSet('{nope')).toThrow(/not valid JSON/);
     const plan = JSON.parse(serializeChangeSet(applePlan()));
