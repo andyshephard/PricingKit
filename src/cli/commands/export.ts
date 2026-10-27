@@ -11,8 +11,10 @@ import {
   type ProductRef,
 } from '@/lib/pricing';
 import { appSelection, stringFlag, type AppSelection, type Flags } from '../args';
-import { adapterForApp, appleAdapter, playAdapter, writeOutputFile, type CommandContext, type CommandResult } from '../context';
+import { adapterForApp, writeOutputFile, type CommandContext, type CommandResult } from '../context';
 import { loadWorkspace } from '../workspace';
+import { AppleAdapter } from '@/lib/adapters/apple';
+import type { PlayAdapter } from '@/lib/adapters/play';
 import { EXIT_OK, UsageError } from '../errors';
 import { priceCell, table } from '../format';
 
@@ -50,19 +52,15 @@ export function stateTable(state: ProductPriceState): string {
  * --base-plan on Google Play) or an in-app purchase / one-time product
  * (--in-app <product ID>). Reads only.
  */
-async function readProductState(ctx: CommandContext, app: AppSelection): Promise<ProductPriceState> {
+async function readProductState(ctx: CommandContext, app: AppSelection, adapter: AppleAdapter | PlayAdapter): Promise<ProductPriceState> {
   const inApp = stringFlag(ctx.flags, 'in-app');
-  if (inApp === undefined) {
-    const product = productFromFlags(app, ctx.flags);
-    const adapter = app.platform === 'apple' ? await appleAdapter(ctx, app.bundleId) : await playAdapter(ctx, app.packageName);
-    return adapter.fetchState(product);
-  }
+  if (inApp === undefined) return adapter.fetchState(productFromFlags(app, ctx.flags));
   if (ctx.flags.subscription !== undefined || ctx.flags['base-plan'] !== undefined) {
     throw new UsageError('Give either --in-app <product id> or --subscription (with --base-plan on Google Play), not both');
   }
-  if (app.platform === 'apple') return (await appleAdapter(ctx, app.bundleId)).fetchInAppPurchaseState(inApp);
+  if (adapter instanceof AppleAdapter) return adapter.fetchInAppPurchaseState(inApp);
   // Google Play one-time product: its first purchase option, the one PricingKit edits
-  return (await playAdapter(ctx, app.packageName)).fetchState({ platform: 'google', type: 'inapp', productId: inApp });
+  return adapter.fetchState({ platform: 'google', type: 'inapp', productId: inApp });
 }
 
 export async function exportCommand(ctx: CommandContext): Promise<CommandResult> {
@@ -75,9 +73,15 @@ export async function exportCommand(ctx: CommandContext): Promise<CommandResult>
 
   const app = appSelection(ctx.flags)!;
   const out = stringFlag(ctx.flags, 'out');
-  const state = await readProductState(ctx, app);
+  // Arguments first (usage errors before credentials), then one adapter for the product and its offers
+  if (stringFlag(ctx.flags, 'in-app') === undefined) productFromFlags(app, ctx.flags);
+  else if (ctx.flags.subscription !== undefined || ctx.flags['base-plan'] !== undefined) {
+    throw new UsageError('Give either --in-app <product id> or --subscription (with --base-plan on Google Play), not both');
+  }
+  const adapter = await adapterForApp(ctx, appRef(app));
+  const state = await readProductState(ctx, app, adapter);
   if (format === 'csv') {
-    const offers = ctx.flags.offers === true ? await readOffers(ctx, appRef(app), state.product) : undefined;
+    const offers = ctx.flags.offers === true ? await readOffers(adapter, state.product) : undefined;
     return csvResult(ctx, out, [{ app: appRef(app), state, offers }]);
   }
   const snapshot = createStateSnapshot(appRef(app), [state], ctx.now().toISOString());
@@ -93,9 +97,8 @@ export async function exportCommand(ctx: CommandContext): Promise<CommandResult>
 }
 
 /** A subscription's offers (App Store subscription or Play base plan); one-time products and in-app purchases have none */
-async function readOffers(ctx: CommandContext, app: AppRef, product: ProductRef) {
+async function readOffers(adapter: AppleAdapter | PlayAdapter, product: ProductRef) {
   if (product.type !== 'subscription') throw new UsageError('--offers is for subscriptions (App Store) and base plans (Google Play)');
-  const adapter = await adapterForApp(ctx, app);
   return adapter.fetchOffers(product);
 }
 

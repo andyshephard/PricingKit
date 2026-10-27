@@ -46,6 +46,31 @@ describe('compareParity', () => {
     expect(compareParity('US', undefined, usd('1'), '0.05').status).toBe('playOnly');
     expect(compareParity('US', usd('0'), usd('1'), '0.05')).toMatchObject({ status: 'gap', ratio: '1' });
   });
+
+  it('compares the threshold exactly; the ratio is rounded for display only', () => {
+    // 5.004 / 100 = 0.05004: above 0.05, although the displayed ratio rounds to 0.05
+    const row = compareParity('US', { amount: '100', currency: 'USD' }, { amount: '105.004', currency: 'USD' }, '0.05');
+    expect(row).toMatchObject({ status: 'gap', ratio: '0.05' });
+    expect(compareParity('US', { amount: '100', currency: 'USD' }, { amount: '105.00', currency: 'USD' }, '0.05').status).toBe('withinThreshold');
+  });
+});
+
+describe('parity outcome', () => {
+  it('is NOT CHECKED when something could not be compared or nothing was, never in parity; a gap wins', () => {
+    const report = (apple: Record<string, [string, string] | null>, play: Record<string, [string, string] | null>, problems: Record<string, string> = {}) =>
+      parityMappingReport(mapping, state(appleSub, apple, problems), state(playPlan, play));
+    expect(report({ US: ['1', 'USD'] }, { US: ['1', 'USD'] }).status).toBe('inParity');
+    expect(report({ US: ['1', 'USD'], GB: ['1', 'GBP'] }, { US: ['1', 'USD'], GB: ['1', 'EUR'] })).toMatchObject({ status: 'notChecked', inParity: false });
+    expect(report({ US: ['1', 'USD'], JP: ['1', 'JPY'] }, { US: ['1', 'USD'], JP: ['1', 'JPY'] }, { JP: 'two prices' }).status).toBe('notChecked');
+    // Priced on one store only, nothing to compare
+    expect(report({ US: ['1', 'USD'] }, { GB: ['1', 'GBP'] })).toMatchObject({ status: 'notChecked', inParity: false });
+    expect(report({}, {}).status).toBe('notChecked');
+    // A gap is reported as such even when something else couldn't be compared
+    expect(report({ US: ['1', 'USD'], GB: ['1', 'GBP'] }, { US: ['2', 'USD'], GB: ['1', 'EUR'] }).status).toBe('gaps');
+    const all = buildParityReport([report({ US: ['1', 'USD'] }, { US: ['1', 'USD'] }), report({ US: ['1', 'USD'] }, { GB: ['1', 'GBP'] })], 'current', 'x');
+    expect(all).toMatchObject({ status: 'notChecked', inParity: false });
+    expect(buildParityReport([], 'current', 'x').status).toBe('notChecked');
+  });
 });
 
 describe('parityMappingReport', () => {
@@ -92,6 +117,9 @@ describe('parityMappingReport', () => {
       ['US', 'same'],
     ]);
     const report = buildParityReport([planned], 'plan', '2030-01-01T00:00:00Z');
-    expect(report).toMatchObject({ kind: 'pricingkit.parity', schemaVersion: 1, basis: 'plan', inParity: true });
+    // JP is unreadable on the App Store: no gap, but not checked either
+    expect(report).toMatchObject({ kind: 'pricingkit.parity', schemaVersion: 1, basis: 'plan', status: 'notChecked', inParity: false });
+    const clean = plannedParityMappingReport({ ...mapping, territories: ['DE', 'GB', 'US'] }, apple, [op(appleSub, 'GB', '49.99', 'GBP')], play, [op(playPlan, 'DE', '49.99', 'EUR')]);
+    expect(buildParityReport([clean], 'plan', 'x')).toMatchObject({ status: 'inParity', inParity: true });
   });
 });

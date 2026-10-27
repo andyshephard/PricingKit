@@ -21,7 +21,9 @@ const PLAY = { packageName: 'com.example.app' };
 const appleSub: ProductRef = { platform: 'apple', type: 'subscription', id: '9700000001' };
 const playPlan: ProductRef = { platform: 'google', type: 'subscription', productId: 'com.example.pro', basePlanId: 'annual' };
 
-const csv = (...rows: string[]) => [PRICES_CSV_HEADER_LINE, PRICES_CSV_COLUMNS.join(','), ...rows].join('\n');
+// Without product_type: it is inferred from the platform and base_plan
+const LEGACY_HEADER = 'app,platform,product,base_plan,offer_kind,offer_key,territory,currency,price,proceeds';
+const csv = (...rows: string[]) => [PRICES_CSV_HEADER_LINE, LEGACY_HEADER, ...rows].join('\n');
 
 function issuesOf(text: string): string[] {
   try {
@@ -51,9 +53,9 @@ describe('prices CSV: writing', () => {
     const text = serializePricesCsv(rows);
     expect(text.split('\r\n')).toEqual([
       '# pricingkit.prices v1',
-      'app,platform,product,base_plan,offer_kind,offer_key,territory,currency,price,proceeds',
-      'com.example.app,apple,9700000001,,,,GB,GBP,44.99,',
-      'com.example.app,apple,9700000001,,,,US,USD,49.99,42.49',
+      'app,platform,product_type,product,base_plan,offer_kind,offer_key,territory,currency,price,proceeds',
+      'com.example.app,apple,subscription,9700000001,,,,GB,GBP,44.99,',
+      'com.example.app,apple,subscription,9700000001,,,,US,USD,49.99,42.49',
       '',
     ]);
   });
@@ -67,9 +69,33 @@ describe('prices CSV: writing', () => {
     });
   });
 
-  it('guards cells against spreadsheet formulas', () => {
-    const text = serializePricesCsv([{ app: 'com.example.app', platform: 'apple', product: '1', offerKind: 'apple.promo', offerKey: '=HYPERLINK("x")', territory: 'GB', currency: 'GBP', price: '1' }]);
+  it('guards cells against spreadsheet formulas, and reading removes the guard again', () => {
+    const text = serializePricesCsv([
+      { app: 'com.example.app', platform: 'apple', productType: 'subscription', product: '1', offerKind: 'apple.promo', offerKey: '=HYPERLINK("x")', territory: 'GB', currency: 'GBP', price: '1' },
+      { app: 'com.example.app', platform: 'apple', productType: 'subscription', product: '1', offerKind: 'apple.promo', offerKey: "'kept", territory: 'GB', currency: 'GBP', price: '1' },
+    ]);
     expect(text).toContain(`"'=HYPERLINK(""x"")"`);
+    const rows = parsePricesCsv(text);
+    expect(rows.map((r) => r.offerKey)).toEqual(["'kept", '=HYPERLINK("x")']);
+    expect(offerPricesFromCsv(rows, APP, { platform: 'apple', type: 'subscription', id: '1' }, { kind: 'apple.promo', key: '=HYPERLINK("x")' }).prices).toEqual({ GB: { amount: '1', currency: 'GBP' } });
+  });
+
+  it('names the product type; in-app purchase rows are recognisable and refused on import', () => {
+    const iap: ProductPriceState = { ...appleState, product: { platform: 'apple', type: 'inapp', id: '9800000001' } };
+    const text = serializePricesCsv(pricesCsvRowsFromState(APP, iap).rows);
+    expect(text.split('\r\n')[2]).toBe('com.example.app,apple,inAppPurchase,9800000001,,,,GB,GBP,44.99,');
+    expect(issuesOf(text)).toEqual([
+      "line 3, column \"product_type\": App Store in-app purchase prices can't be planned yet (plans cover subscriptions); leave these rows out",
+      "line 4, column \"product_type\": App Store in-app purchase prices can't be planned yet (plans cover subscriptions); leave these rows out",
+    ]);
+    const typed = (row: string) => [PRICES_CSV_HEADER_LINE, PRICES_CSV_COLUMNS.join(','), row].join('\n');
+    expect(issuesOf(typed('com.example.app,google,subscription,p,annual,,,GB,GBP,1,'))).toEqual(['line 3, column "product_type": a Google Play row is a basePlan or a oneTime product']);
+    expect(issuesOf(typed('com.example.app,google,basePlan,p,,,,GB,GBP,1,'))).toEqual(['line 3, column "base_plan": a basePlan row needs its base plan ID']);
+    expect(issuesOf(typed('com.example.app,google,oneTime,p,,play.offer,x,GB,GBP,1,'))).toEqual(expect.arrayContaining(['line 3, column "offer_kind": only subscriptions have offers']));
+    expect(issuesOf(typed('com.example.app,google,gadget,p,,,,GB,GBP,1,'))[0]).toMatch(/column "product_type": must be one of subscription, inAppPurchase, basePlan, oneTime/);
+    // A one-time product row matches a one-time product only
+    const rows = parsePricesCsv(typed('com.example.app,google,oneTime,p,,,,GB,GBP,1,'));
+    expect(fixedPricesFromCsv(rows, PLAY, { platform: 'google', type: 'inapp', productId: 'p' }).prices).toEqual({ GB: { amount: '1', currency: 'GBP' } });
   });
 
   it('exports App Store offers per territory and single-phase Play offers per region, listing what it leaves out', () => {
@@ -115,7 +141,7 @@ describe('prices CSV: writing', () => {
       product: { type: 'subscription', id: 'com.example.app.annual', storeId: '9700000001' },
       prices: [{ territory: 'GB', currency: 'GBP', amount: '44.99' }],
     });
-    expect(text.split('\r\n')[2]).toBe('com.example.app,apple,9700000001,,,,GB,GBP,44.99,');
+    expect(text.split('\r\n')[2]).toBe('com.example.app,apple,subscription,9700000001,,,,GB,GBP,44.99,');
   });
 });
 
@@ -151,7 +177,7 @@ describe('prices CSV: reading', () => {
 
   it('checks the header: required columns, no unknown or repeated ones (named by position, never by their text)', () => {
     const issues = issuesOf(`${PRICES_CSV_HEADER_LINE}\napp,platform,product,territory,currency,price,price,SECRET-COLUMN-NAME\n`);
-    expect(issues).toEqual(['line 2: column "price" appears twice', 'line 2: column 8 is not a pricingkit.prices v1 column (app, platform, product, base_plan, offer_kind, offer_key, territory, currency, price, proceeds)']);
+    expect(issues).toEqual(['line 2: column "price" appears twice', 'line 2: column 8 is not a pricingkit.prices v1 column (app, platform, product_type, product, base_plan, offer_kind, offer_key, territory, currency, price, proceeds)']);
     expect(issuesOf(`${PRICES_CSV_HEADER_LINE}\napp,platform,territory,currency\n`)).toEqual(['line 2: the column "product" is missing', 'line 2: the column "price" is missing']);
   });
 

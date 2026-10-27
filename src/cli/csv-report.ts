@@ -12,6 +12,7 @@ import {
   productKey,
   type ChangeSet,
   type ProductPriceState,
+  type ProductRef,
 } from '@/lib/pricing';
 import type { CsvImport } from './spec-file';
 import { CliError } from './errors';
@@ -30,7 +31,11 @@ export interface CsvRowOutcome {
 
 const same = (a: { amount: string; currency: string }, b: { amount: string; currency: string }) => a.currency === b.currency && compareDecimal(a.amount, b.amount) === 0;
 
-/** What became of every imported row. Throws CliError (CSV_CURRENCY_MISMATCH) for an offer row in the wrong currency. */
+/**
+ * What became of every imported row. `states` are the products' base prices
+ * (offer rows are checked against the territory's currency there too). Throws
+ * CliError (CSV_CURRENCY_MISMATCH) for an offer row in the wrong currency.
+ */
 export function csvImportOutcomes(imports: CsvImport[], changeSet: ChangeSet, states: ProductPriceState[] = []): CsvRowOutcome[] {
   const out: CsvRowOutcome[] = [];
   const mismatches: string[] = [];
@@ -71,14 +76,17 @@ export function csvImportOutcomes(imports: CsvImport[], changeSet: ChangeSet, st
           if (price) planned = { amount: price.amount, currency: price.currency };
         }
       }
-      if (planned && planned.currency !== csv.currency) {
+      // The currency the territory is priced in: the op's, else the base price's (offers are priced in it)
+      const territoryCurrency = planned?.currency ?? state?.territories[territory]?.current?.currency ?? (state?.territories[territory]?.currency || undefined);
+      if (territoryCurrency !== undefined && territoryCurrency !== csv.currency) {
         mismatches.push(`${imp.file} line ${row.line}, column "currency": not the currency the territory is priced in`);
         continue;
       }
-      if (skip) out.push({ ...base, status: 'notImported', reason: `${skip.reason}${skip.detail ? `: ${skip.detail}` : ''}` });
+      if (skip && skip.reason !== 'ALREADY_AT_TARGET') out.push({ ...base, status: 'notImported', reason: `${skip.reason}${skip.detail ? `: ${skip.detail}` : ''}` });
       else if (planned) out.push({ ...base, status: same(csv, planned) ? 'exact' : 'snapped', planned });
-      // No op and no skip: the offer already has this price
-      else out.push({ ...base, status: 'exact' });
+      // No op and no skip: the offer already has this price, in the territory's currency (checked above)
+      else if (territoryCurrency !== undefined) out.push({ ...base, status: 'exact' });
+      else out.push({ ...base, status: 'notImported', reason: "the territory's currency couldn't be checked (no base price read)" });
     }
   }
   if (mismatches.length > 0) {
@@ -120,4 +128,15 @@ export function formatCsvOutcomes(outcomes: CsvRowOutcome[]): string[] {
     ...snapped.map((o) => `  line ${o.line} (${o.territory}${o.offer ? `, ${o.offer}` : ''}): ${o.csv.amount} ${o.csv.currency} -> ${o.planned ? `${o.planned.amount} ${o.planned.currency}` : 'current price'}`),
     ...missing.map((o) => `  line ${o.line} (${o.territory}${o.offer ? `, ${o.offer}` : ''}): not imported, ${o.reason}`),
   ];
+}
+
+/** Base prices of the products offer rows name, read once each (read-only), for the currency check */
+export async function offerImportStates(imports: CsvImport[], reader: { fetchState(product: ProductRef): Promise<ProductPriceState> }): Promise<ProductPriceState[]> {
+  const states = new Map<string, ProductPriceState>();
+  for (const imp of imports) {
+    if (!imp.offer) continue;
+    const key = productKey(imp.product);
+    if (!states.has(key)) states.set(key, await reader.fetchState(imp.product));
+  }
+  return [...states.values()];
 }

@@ -221,6 +221,58 @@ describe('diff, apply and undo --workspace-plan', () => {
     expect(JSON.parse(JSON.stringify(play.subscription)).basePlans[0].regionalConfigs[0].price).toMatchObject({ currencyCode: 'USD', units: '59' });
   });
 
+  it('never reports a changed plan as already completed: re-planning moves old logs aside, and a log of another plan is refused', async () => {
+    const first = await planned();
+    const applied = await run(['apply', '--workspace-plan', 'pricingkit-plans/workspace-plan.json', '--confirm', first.hash, '--allow-base-prices'], { env, cwd: tmp.dir });
+    expect(applied.code).toBe(0);
+    expect(store.subs.get(C)!.base).toEqual({ USA: '10.99' });
+
+    // The reviewer's sequence: change a target, plan again
+    const changed = workspace();
+    changed.apps[2] = { id: 'other', app: { bundleId: OTHER }, products: [{ product: { platform: 'apple', type: 'subscription', id: C }, targets: { type: 'fixed', prices: { US: '9.99' } } }] };
+    const refused = await planWorkspace(changed);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toMatch(/ios\.run\.json, android\.run\.json, other\.run\.json/);
+    const replanned = await planWorkspace(changed, ['--force']);
+    expect(replanned.code).toBe(2);
+    expect(replanned.stdout).toMatch(/Moved aside the run logs and undo plans of the earlier plans .*other\.run\.json -> other\.run\.json\.stale-20300101000000/);
+    expect(existsSync(join(tmp.dir, 'pricingkit-plans', 'other.run.json'))).toBe(false);
+    expect(existsSync(join(tmp.dir, 'pricingkit-plans', 'other.run.json.stale-20300101000000'))).toBe(true);
+    const second = parseWorkspacePlan(read('pricingkit-plans/workspace-plan.json'));
+
+    const resumed = await run(['apply', '--workspace-plan', 'pricingkit-plans/workspace-plan.json', '--confirm', second.hash, '--allow-base-prices', '--resume-runs'], { env, cwd: tmp.dir });
+    expect(resumed.stdout).not.toMatch(/Already completed/);
+    expect(resumed.code).toBe(0);
+    expect(store.subs.get(C)!.base).toEqual({ USA: '9.99' });
+
+    // A stale log put back next to a new plan is refused before anything is read or sent
+    const third = await planWorkspace(workspace(), ['--force']);
+    expect(third.code).toBe(2);
+    // The second run's log (a different plan for the same file) was moved aside under a free name
+    expect(third.stdout).toContain('other.run.json -> other.run.json.stale-20300101000000-2');
+    write('pricingkit-plans/other.run.json', read('pricingkit-plans/other.run.json.stale-20300101000000-2'));
+    const index = parseWorkspacePlan(read('pricingkit-plans/workspace-plan.json'));
+    const before = requests.length;
+    const mixed = await run(['apply', '--workspace-plan', 'pricingkit-plans/workspace-plan.json', '--confirm', index.hash, '--allow-base-prices', '--resume-runs', '--json'], { env, cwd: tmp.dir });
+    expect(mixed.code).toBe(1);
+    expect(JSON.parse(mixed.stdout).error).toMatchObject({ code: 'INVALID_RUN', message: expect.stringMatching(/other\.run\.json is the run log of a different plan than other\.json/) });
+    expect(requests.length).toBe(before);
+    expect(store.subs.get(C)!.base).toEqual({ USA: '9.99' });
+  });
+
+  it('undo writes its index next to the input, never over it', async () => {
+    const index = await planned();
+    expect((await run(['apply', '--workspace-plan', 'pricingkit-plans/workspace-plan.json', '--confirm', index.hash, '--allow-base-prices'], { env, cwd: tmp.dir })).code).toBe(0);
+    expect((await run(['undo', '--workspace-plan', 'pricingkit-plans/workspace-plan.json'], { env: {}, cwd: tmp.dir })).code).toBe(2);
+    const undoIndex = parseWorkspacePlan(read('pricingkit-plans/workspace-plan.undo.json'));
+    expect((await run(['apply', '--workspace-plan', 'pricingkit-plans/workspace-plan.undo.json', '--confirm', undoIndex.hash, '--allow-base-prices'], { env, cwd: tmp.dir })).code).toBe(0);
+    const inputBefore = read('pricingkit-plans/workspace-plan.undo.json');
+    const redo = await run(['undo', '--workspace-plan', 'pricingkit-plans/workspace-plan.undo.json'], { env: {}, cwd: tmp.dir });
+    expect(redo.code).toBe(2);
+    expect(read('pricingkit-plans/workspace-plan.undo.json')).toBe(inputBefore);
+    expect(parseWorkspacePlan(read('pricingkit-plans/workspace-plan.undo.undo.json')).plans.map((p) => p.file)).toEqual(['ios.undo.undo.json', 'android.undo.undo.json', 'other.undo.undo.json']);
+  });
+
   it("stops at a plan file swapped for another app's plan, before any request", async () => {
     await planned();
     write('pricingkit-plans/other.json', read('pricingkit-plans/ios.json'));
@@ -253,6 +305,14 @@ describe('diff, apply and undo --workspace-plan', () => {
 });
 
 describe('parity and drift --workspace', () => {
+  it('parity is NOT CHECKED (exit 1) when nothing could be compared, and lists one-store territories', async () => {
+    write('workspace.json', workspace({ parity: [{ ...parity, territories: ['JP'] }] }));
+    const r = await run(['parity', '--workspace', 'workspace.json'], { env, cwd: tmp.dir });
+    expect(r.code).toBe(1);
+    expect(r.stdout).toMatch(/^Parity \(current prices\): NOT CHECKED across 1 mapping; priced on one store only: 1 Google Play only/);
+    expect(r.stdout).not.toMatch(/in parity/i);
+  });
+
   it('parity reports the current gaps per territory, read-only', async () => {
     write('workspace.json', workspace());
     const r = await run(['parity', '--workspace', 'workspace.json', '--json'], { env, cwd: tmp.dir });
@@ -302,10 +362,10 @@ describe('prices CSV in the CLI', () => {
     expect(apple.code).toBe(0);
     expect(read('apple.csv').split('\r\n').slice(0, 3)).toEqual([
       '# pricingkit.prices v1',
-      'app,platform,product,base_plan,offer_kind,offer_key,territory,currency,price,proceeds',
-      `${MAIN},apple,${A},,,,GB,GBP,44.99,38.24`,
+      'app,platform,product_type,product,base_plan,offer_kind,offer_key,territory,currency,price,proceeds',
+      `${MAIN},apple,subscription,${A},,,,GB,GBP,44.99,38.24`,
     ]);
-    expect(read('apple.csv')).toContain(`${MAIN},apple,${A},,apple.promo,retention,US,USD,24.99,`);
+    expect(read('apple.csv')).toContain(`${MAIN},apple,subscription,${A},,apple.promo,retention,US,USD,24.99,`);
     const google = await run(['export', '--package-name', PKG, '--subscription', PRODUCT, '--base-plan', 'annual', '--format', 'csv'], { env, cwd: tmp.dir });
     expect(google.code).toBe(0);
     write('play.csv', `${google.stdout.trimEnd()}\n`);
@@ -328,6 +388,7 @@ describe('prices CSV in the CLI', () => {
     });
     const offers = await run(['plan', '--spec', 'offers-spec.json', '--out', 'o.json'], { env, cwd: tmp.dir });
     expect(offers.stdout).toMatch(/already matches its spec/);
+    expect(offers.stdout).toMatch(/CSV import: 2 rows, 2 exact/);
     expect(offers.code).toBe(0);
     expect(storeWrites()).toEqual([]);
   });
@@ -399,18 +460,36 @@ describe('prices CSV in the CLI', () => {
     expect(existsSync(join(tmp.dir, 'o.json'))).toBe(false);
   });
 
+  it('checks the currency of an offer row the plan leaves unchanged', async () => {
+    store.seedPromo(A, 'retention', {}, { USA: '24.99', GBR: '22.99' });
+    write('offers-spec.json', {
+      kind: 'pricingkit.offerPlanSpec',
+      schemaVersion: 1,
+      app: { bundleId: MAIN },
+      offers: [{ id: 'retention', productRef: { platform: 'apple', type: 'subscription', id: A }, kind: 'apple.promo', mode: 'PAY_UP_FRONT', duration: 'P1Y', pricing: { type: 'fixed', pricesFile: 'offers.csv' }, territories: 'all', syncWithBase: false }],
+    });
+    const rows = (gbCurrency: string) => ['# pricingkit.prices v1', 'app,platform,product,offer_kind,offer_key,territory,currency,price', `${MAIN},apple,${A},apple.promo,retention,GB,${gbCurrency},22.99`, `${MAIN},apple,${A},apple.promo,retention,US,USD,24.99`].join('\n');
+    write('offers.csv', rows('EUR'));
+    const r = await run(['plan', '--spec', 'offers-spec.json', '--out', 'o.json', '--json'], { env, cwd: tmp.dir });
+    expect(JSON.parse(r.stdout).error).toMatchObject({ code: 'CSV_CURRENCY_MISMATCH', message: expect.stringContaining('line 3, column "currency"') });
+    write('offers.csv', rows('GBP'));
+    const ok = await run(['plan', '--spec', 'offers-spec.json', '--out', 'o.json'], { env, cwd: tmp.dir });
+    expect(ok.code).toBe(0);
+    expect(ok.stdout).toMatch(/CSV import: 2 rows, 2 exact/);
+  });
+
   it('exports every product of a workspace to one CSV, each through its own app', async () => {
     write('workspace.json', workspace());
     const r = await run(['export', '--workspace', 'workspace.json', '--format', 'csv', '--out', 'all.csv'], { env, cwd: tmp.dir });
     expect(r.code).toBe(0);
-    const rows = read('all.csv').trim().split('\r\n').slice(2).map((l) => l.split(',').slice(0, 9).join(','));
+    const rows = read('all.csv').trim().split('\r\n').slice(2).map((l) => l.split(',').slice(0, 10).join(','));
     expect(rows).toEqual([
-      `${MAIN},apple,${A},,,,GB,GBP,44.99`,
-      `${MAIN},apple,${A},,,,US,USD,49.99`,
-      `${OTHER},apple,${C},,,,US,USD,9.99`,
-      `${PKG},google,${PRODUCT},annual,,,GB,GBP,49.99`,
-      `${PKG},google,${PRODUCT},annual,,,JP,JPY,9800`,
-      `${PKG},google,${PRODUCT},annual,,,US,USD,59.99`,
+      `${MAIN},apple,subscription,${A},,,,GB,GBP,44.99`,
+      `${MAIN},apple,subscription,${A},,,,US,USD,49.99`,
+      `${OTHER},apple,subscription,${C},,,,US,USD,9.99`,
+      `${PKG},google,basePlan,${PRODUCT},annual,,,GB,GBP,49.99`,
+      `${PKG},google,basePlan,${PRODUCT},annual,,,JP,JPY,9800`,
+      `${PKG},google,basePlan,${PRODUCT},annual,,,US,USD,59.99`,
     ]);
     expect(new Set(requests.filter((q) => q.endpoint.includes(C)).map((q) => q.app))).toEqual(new Set([`apple:${OTHER}`]));
   });

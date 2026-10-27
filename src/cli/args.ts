@@ -336,7 +336,8 @@ workspace: one plan file per app (<app id>.json: its spec and rules, like
 --spec with --rules) and one per offer plan spec (<app id>.offers.json), each
 an ordinary plan for one app with its own hash, plus a workspace plan index
 (workspace-plan.json) in --out-dir (default pricingkit-plans; existing files
-are replaced only with --force). Parity mappings with a target add that target
+are replaced only with --force, and run logs and undo plans of the earlier
+plans are then moved aside to <file>.stale-<timestamp>, never deleted). Parity mappings with a target add that target
 to both apps' specs (each store snaps it separately); the output ends with the
 parity report on the planned prices. Review with
 "pricingkit diff --workspace-plan <dir>/workspace-plan.json"; apply with
@@ -457,7 +458,14 @@ mapping's threshold (default 0.05, as a fraction of the lower price), gap
 one store only. Read-only. Prints a pricingkit.parity report with --json.
 "plan --workspace" reports the same on the planned prices.
 
-Exit code 2 when any territory has a gap above its threshold, otherwise 0.
+The gap test is exact (|difference| > threshold x the lower price); the
+percentage shown is rounded. A mapping is NOT CHECKED when a territory is
+unreadable or billed in different currencies, or when no territory is priced
+on both stores; it is never "in parity" then. Territories priced on one store
+only are listed in the headline.
+
+Exit code 2 when any territory has a gap above its threshold, otherwise 1 when
+something couldn't be compared, otherwise 0.
 
 ${SHARED_HELP}`,
   apply: `Usage:
@@ -491,8 +499,12 @@ with its own run log next to it (<plan>.run.json). --confirm is the workspace
 plan hash; every plan file must still have the hash the index records, and
 every app must pass the PRICINGKIT_EXPECT_* pins, before anything is read. It
 stops at the first plan that doesn't complete; later plans are not started.
---resume-runs continues from the run logs (completed plans are skipped);
---force replaces existing run logs.
+--resume-runs continues from the run logs (completed plans are skipped); a
+log that belongs to a different plan (the workspace was planned again) is
+refused (INVALID_RUN) before anything is read or sent. --force replaces
+existing run logs, and with them the record "undo" needs to reverse those
+runs: move them aside first if you may want to undo. The request budget
+(--budget) is shared by all the plans of one run.
 
 Exit code 0 when every op is done, 1 otherwise (the log says which).
 
@@ -510,8 +522,8 @@ the plan and the run log from its offer dialog). Apply the undo plan like any
 other: pricingkit apply <undo.json> --confirm <hash>, with --force-delete when
 it deletes offers.
 With --workspace-plan, builds an undo plan for every plan that has a run log
-(<plan>.undo.json, newest first) and a workspace undo index
-(workspace-plan.undo.json) to apply with "apply --workspace-plan".
+(<plan>.undo.json, newest first) and a workspace undo index next to the input
+(<index>.undo.json) to apply with "apply --workspace-plan".
 
 Exit code 2 when there is something to undo, 0 otherwise.
 

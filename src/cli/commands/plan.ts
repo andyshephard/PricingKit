@@ -39,7 +39,7 @@ import {
 import { appSelection, stringFlag } from '../args';
 import { appleAdapter, playAdapter, readOnly, writeOutputFile, type CommandContext, type CommandResult, type PriceReader } from '../context';
 import { inlineMultiplierFiles, inlinePricesFiles, readSpecText, type CsvImport } from '../spec-file';
-import { csvImportOutcomes, formatCsvOutcomes, withCsvWarnings } from '../csv-report';
+import { csvImportOutcomes, formatCsvOutcomes, offerImportStates, withCsvWarnings } from '../csv-report';
 import { CliError, EXIT_CHANGES, EXIT_ERROR, EXIT_OK, UsageError } from '../errors';
 import { BASE_PRICE_NOTE } from './apply';
 import { formatPlanSummary, summarizeChangeSet } from './diff';
@@ -373,7 +373,7 @@ async function planOffersCommand(ctx: CommandContext, rawSpecText: string, out: 
   const planner: OfferPlanner = { planOffers: (input) => adapter.planOffers(input) };
   const offerPlan = await planner.planOffers({ app: spec.app, offers: spec.offers, createdAt: ctx.now().toISOString(), ...(spec.description ? { description: spec.description } : {}) });
   if (offerPlan.hash !== changeSetHash(offerPlan.changeSet)) throw new CliError('Internal error: plan hash mismatch');
-  const csvOutcomes = csvImportOutcomes(imports, offerPlan.changeSet);
+  const csvOutcomes = csvImportOutcomes(imports, offerPlan.changeSet, await offerImportStates(imports, readOnly(adapter)));
   const plan = { ...offerPlan, changeSet: withCsvWarnings(offerPlan.changeSet, csvOutcomes) };
   const written = await writeOutputFile(ctx, out, serializeChangeSet(plan.changeSet));
   const refused = plan.entries.filter((e) => e.action === 'refused').length;

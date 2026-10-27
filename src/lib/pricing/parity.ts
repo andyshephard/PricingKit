@@ -15,7 +15,7 @@
 // never converted.
 // Framework-free.
 
-import { absDecimal, compareDecimal, divideDecimal, isZeroDecimal, subtractDecimal, type Decimal } from './decimal';
+import { absDecimal, compareDecimal, divideDecimal, isZeroDecimal, multiplyDecimal, subtractDecimal, type Decimal } from './decimal';
 import type { BasePriceOp } from './changeset';
 import type { ProductPriceState, ProductRef } from './model';
 import { projectBasePrices } from './offer-sync';
@@ -35,6 +35,8 @@ export interface ParityMapping {
   /** Territories to compare (default: every territory either store prices) */
   territories?: string[];
 }
+
+export type ParityOutcome = 'inParity' | 'gaps' | 'notChecked';
 
 export type ParityStatus =
   /** Same amount in the same currency */
@@ -58,7 +60,7 @@ export interface ParityRow {
   play?: { amount: Decimal; currency: string };
   /** play - apple (same currency only) */
   difference?: Decimal;
-  /** |difference| / the lower price, 4 decimal places */
+  /** |difference| / the lower price, 4 decimal places (for display: the status compares exactly) */
   ratio?: Decimal;
   reason?: string;
 }
@@ -73,7 +75,14 @@ export interface ParityMappingReport {
   appleApp: { bundleId: string };
   playApp: { packageName: string };
   threshold: Decimal;
-  /** true when no compared territory differs by more than the threshold */
+  /**
+   * gaps: a territory differs by more than the threshold.
+   * notChecked: no gap, but a territory couldn't be compared (unreadable, or billed in
+   * different currencies), or no territory could be compared at all.
+   * inParity: every territory priced on both stores was compared and none has a gap.
+   */
+  status: ParityOutcome;
+  /** status === 'inParity' */
   inParity: boolean;
   summary: Record<ParityStatus, number>;
   rows: ParityRow[];
@@ -87,6 +96,8 @@ export interface ParityReport {
   checkedAt: string;
   /** current: the stores' prices now; plan: the prices once the plans are applied */
   basis: 'current' | 'plan';
+  /** gaps if any mapping has one, else notChecked if any mapping does, else inParity */
+  status: ParityOutcome;
   inParity: boolean;
   mappings: ParityMappingReport[];
 }
@@ -119,8 +130,10 @@ export function compareParity(
   const difference = subtractDecimal(play.amount, apple.amount);
   if (isZeroDecimal(difference)) return { territory, status: 'same', apple, play, difference: '0', ratio: '0' };
   const lower = compareDecimal(apple.amount, play.amount) <= 0 ? apple.amount : play.amount;
+  // Exact: |difference| > threshold x lower. The ratio is rounded for display only.
+  const gap = compareDecimal(absDecimal(difference), multiplyDecimal(threshold, lower)) > 0;
   const ratio = isZeroDecimal(lower) ? '1' : divideDecimal(absDecimal(difference), lower, 4);
-  return { territory, status: compareDecimal(ratio, threshold) > 0 ? 'gap' : 'withinThreshold', apple, play, difference, ratio };
+  return { territory, status: gap ? 'gap' : 'withinThreshold', apple, play, difference, ratio };
 }
 
 /**
@@ -157,7 +170,8 @@ export function parityMappingReport(mapping: ParityMapping, appleState: ProductP
     appleApp: { bundleId: mapping.apple.bundleId },
     playApp: { packageName: mapping.play.packageName },
     threshold,
-    inParity: summary.gap === 0,
+    status: mappingOutcome(summary),
+    inParity: mappingOutcome(summary) === 'inParity',
     summary,
     rows,
     ...(notPriced.length > 0 ? { notPriced } : {}),
@@ -175,13 +189,23 @@ export function plannedParityMappingReport(
   return parityMappingReport(mapping, projectBasePrices(appleState, appleOps), projectBasePrices(playState, playOps));
 }
 
+export function mappingOutcome(summary: Record<ParityStatus, number>): ParityOutcome {
+  if (summary.gap > 0) return 'gaps';
+  if (summary.unreadable > 0 || summary.notComparable > 0) return 'notChecked';
+  // Nothing compared at all (e.g. only one store prices the product) is never "in parity"
+  if (summary.same + summary.withinThreshold === 0) return 'notChecked';
+  return 'inParity';
+}
+
 export function buildParityReport(mappings: ParityMappingReport[], basis: ParityReport['basis'], checkedAt: string): ParityReport {
+  const status: ParityOutcome = mappings.some((m) => m.status === 'gaps') ? 'gaps' : mappings.some((m) => m.status === 'notChecked') || mappings.length === 0 ? 'notChecked' : 'inParity';
   return {
     kind: PARITY_REPORT_KIND,
     schemaVersion: PARITY_REPORT_SCHEMA_VERSION,
     checkedAt,
     basis,
-    inParity: mappings.every((m) => m.inParity),
+    status,
+    inParity: status === 'inParity',
     mappings,
   };
 }

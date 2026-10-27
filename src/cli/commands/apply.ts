@@ -9,6 +9,7 @@ import { existsSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import {
   applyChangeSet,
+  assertRunMatches,
   changeSetHash,
   describeRun,
   isOfferOp,
@@ -159,12 +160,23 @@ async function applyWorkspaceCommand(ctx: CommandContext, indexPath: string): Pr
     const runPath = defaultRunFile(plan.path);
     if (!existsSync(resolve(ctx.cwd, runPath))) continue;
     if (resumeRuns) {
+      let earlier: ApplyRun;
       try {
-        previous.set(plan.entry.file, parseRun(await readInputFile(ctx, runPath, 'run log')));
+        earlier = parseRun(await readInputFile(ctx, runPath, 'run log'));
       } catch (error) {
         if (error instanceof CliError) throw error;
         throw new CliError(`${runPath}: ${(error as Error).message}`, 'INVALID_RUN');
       }
+      // A log left by an earlier plan of the same file must never count as this plan's run
+      try {
+        assertRunMatches(plan.changeSet, earlier);
+      } catch {
+        throw new CliError(
+          `${runPath} is the run log of a different plan than ${plan.entry.file} (the plan was made again since). Nothing was read or sent. Move the old log aside (it is what undoes that earlier run), then apply without --resume-runs.`,
+          'INVALID_RUN'
+        );
+      }
+      previous.set(plan.entry.file, earlier);
     } else if (ctx.flags.force !== true) {
       blocked.push(runPath);
     }

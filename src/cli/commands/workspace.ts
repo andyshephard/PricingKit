@@ -10,7 +10,7 @@
 // anything is read, and each plan has its own run log for resume and undo.
 
 import { existsSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, rename } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import {
   appLabel,
@@ -47,7 +47,7 @@ import type { AppleAdapter } from '@/lib/adapters/apple';
 import type { PlayAdapter } from '@/lib/adapters/play';
 import { stringFlag } from '../args';
 import { adapterForApp, readInputFile, readOnly, writeOutputFile, writeOutputFileAtomic, type CommandContext, type CommandResult } from '../context';
-import { csvImportOutcomes, formatCsvOutcomes, withCsvWarnings, type CsvRowOutcome } from '../csv-report';
+import { csvImportOutcomes, formatCsvOutcomes, offerImportStates, withCsvWarnings, type CsvRowOutcome } from '../csv-report';
 import { CliError, EXIT_CHANGES, EXIT_ERROR, EXIT_OK, UsageError, type ExitCode } from '../errors';
 import { loadWorkspace, type LoadedWorkspace, type LoadedWorkspaceApp } from '../workspace';
 import { defaultRunFile } from './apply';
@@ -59,7 +59,6 @@ import { defaultUndoFile } from './undo';
 
 export const DEFAULT_WORKSPACE_PLAN_DIR = 'pricingkit-plans';
 export const WORKSPACE_PLAN_INDEX = 'workspace-plan.json';
-export const WORKSPACE_UNDO_INDEX = 'workspace-plan.undo.json';
 
 type AnyAdapter = AppleAdapter | PlayAdapter;
 
@@ -129,7 +128,7 @@ async function planApp(loaded: LoadedWorkspaceApp, adapter: AnyAdapter, createdA
   if (loaded.offers) {
     const plan = await adapter.planOffers({ app: loaded.offers.app, offers: loaded.offers.offers, createdAt, ...(loaded.offers.description ? { description: loaded.offers.description } : {}) });
     if (plan.hash !== changeSetHash(plan.changeSet)) throw new CliError('Internal error: plan hash mismatch');
-    const csv = csvImportOutcomes(offerImports, plan.changeSet);
+    const csv = csvImportOutcomes(offerImports, plan.changeSet, await offerImportStates(offerImports, readOnly(adapter)));
     out.csv.push(...csv);
     const changeSet = withCsvWarnings(plan.changeSet, csv);
     const deviating = deviationSkips(changeSet);
@@ -140,6 +139,24 @@ async function planApp(loaded: LoadedWorkspaceApp, adapter: AnyAdapter, createdA
     };
   }
   return out;
+}
+
+/** Rename files to <name>.stale-<timestamp> (a free name), so a new plan can't be resumed or undone with them */
+async function moveAside(ctx: CommandContext, dir: string, names: string[], at: string): Promise<Array<{ from: string; to: string }>> {
+  const stamp = at.replace(/[^0-9]/g, '').slice(0, 14);
+  const moved: Array<{ from: string; to: string }> = [];
+  for (const name of names) {
+    let to = `${name}.stale-${stamp}`;
+    for (let n = 2; existsSync(resolve(ctx.cwd, dir, to)); n++) to = `${name}.stale-${stamp}-${n}`;
+    await rename(resolve(ctx.cwd, dir, name), resolve(ctx.cwd, dir, to));
+    moved.push({ from: name, to });
+  }
+  return moved;
+}
+
+/** The undo index next to a workspace plan index: x.json -> x.undo.json (never the input itself) */
+export function workspaceUndoIndexPath(indexPath: string): string {
+  return join(dirname(indexPath), `${basename(indexPath).replace(/\.json$/i, '')}.undo.json`);
 }
 
 function planEntry(appId: string, app: AppRef, part: WorkspacePlanEntry['part'], file: string, changeSet: ChangeSet): WorkspacePlanEntry {
@@ -197,9 +214,21 @@ export async function planWorkspaceCommand(ctx: CommandContext, workspacePath: s
     if (app.offers) files.push({ appId: app.entry.id, part: 'offers', file: `${app.entry.id}.offers.json` });
   }
   if (files.length === 0 && !(loaded.workspace.parity ?? []).length) throw new UsageError('The workspace has no specs, rules or offer specs to plan');
+  // Run logs and undo plans of earlier plans with these names: a new plan must never be resumed from
+  // (or undone with) them. Kept, not deleted: they are what undoes an earlier run.
+  const leftovers = [WORKSPACE_PLAN_INDEX, ...files.map((f) => f.file)]
+    .flatMap((f) => {
+      const base = f.replace(/\.json$/, '');
+      return [`${base}.run.json`, `${base}.undo.json`, `${base}.undo.run.json`];
+    })
+    .filter((f) => existsSync(resolve(ctx.cwd, outDir, f)));
   if (ctx.flags.force !== true) {
     const existing = [WORKSPACE_PLAN_INDEX, ...files.map((f) => f.file)].filter((f) => existsSync(resolve(ctx.cwd, outDir, f)));
-    if (existing.length > 0) throw new UsageError(`${outDir} already has ${existing.join(', ')}. Pass --force to replace them, or choose another --out-dir`);
+    if (existing.length > 0 || leftovers.length > 0) {
+      throw new UsageError(
+        `${outDir} already has ${[...existing, ...leftovers].join(', ')}. Pass --force to replace the plans (run logs and undo plans are then moved aside, not deleted), or choose another --out-dir`
+      );
+    }
   }
 
   const pool = new AdapterPool(ctx);
@@ -212,8 +241,12 @@ export async function planWorkspaceCommand(ctx: CommandContext, workspacePath: s
   const parity = await plannedParity(loaded, results, pool, createdAt);
 
   await mkdir(resolve(ctx.cwd, outDir), { recursive: true });
+  const movedAside = await moveAside(ctx, outDir, leftovers, createdAt);
   const entries: WorkspacePlanEntry[] = [];
   const text: string[] = [`Workspace ${workspacePath}: ${loaded.apps.length} apps (${loaded.apps.map((a) => `${a.entry.id} ${appLabel(a.entry.app)}`).join(', ')})`];
+  if (movedAside.length > 0) {
+    text.push(`Moved aside the run logs and undo plans of the earlier plans (keep them to undo those runs): ${movedAside.map((m) => `${m.from} -> ${m.to}`).join(', ')}`);
+  }
   const plans: Record<string, ChangeSet> = {};
   let failed = false;
   let changes = false;
@@ -355,7 +388,7 @@ export async function diffManyCommand(ctx: CommandContext, paths: string[]): Pro
 export async function undoWorkspaceCommand(ctx: CommandContext, indexPath: string): Promise<CommandResult> {
   if (ctx.positionals.length > 0 || ctx.flags.out !== undefined) throw new UsageError('--workspace-plan undoes every plan it lists from the run logs next to them; give no other files');
   const { plans } = await readWorkspacePlan(ctx, indexPath);
-  const undoIndexPath = join(dirname(indexPath), WORKSPACE_UNDO_INDEX);
+  const undoIndexPath = workspaceUndoIndexPath(indexPath);
   // Newest first: the last plan applied is undone first
   const reversed = [...plans].reverse();
   const targets = reversed

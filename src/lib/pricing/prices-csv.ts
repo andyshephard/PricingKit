@@ -9,7 +9,12 @@
 // Columns:
 //   app         bundle ID (App Store) or package name (Google Play)
 //   platform    apple | google
-//   product     App Store: the numeric subscription ID. Google Play: the product ID
+//   product_type subscription (App Store subscription), inAppPurchase (App Store in-app
+//               purchase), basePlan (Google Play subscription base plan) or oneTime
+//               (Google Play one-time product). Optional on import (inferred from platform
+//               and base_plan); in-app purchase rows are refused on import (plans don't
+//               cover App Store in-app purchases yet)
+//   product     App Store: the numeric subscription (or in-app purchase) ID. Google Play: the product ID
 //   base_plan   Google Play base plan ID (empty for a one-time product and on the App Store)
 //   offer_kind  empty for a base price; otherwise apple.promo, apple.offerCode,
 //               apple.winBack, apple.intro or play.offer
@@ -21,7 +26,8 @@
 //   proceeds    informational (Apple's proceeds for the price); ignored on import
 //
 // A spreadsheet may add trailing empty cells to the first line; they are
-// allowed. Every cell is written with the export's formula-injection guard.
+// allowed. Every cell is written with the export's formula-injection guard
+// (a leading "'" before =, +, -, @, tab or CR), which import removes again.
 //
 // Import (parsePricesCsv) never quotes a cell in an error: problems name the
 // line and the column only. The rows of one product (or offer) become the
@@ -40,18 +46,32 @@ export const PRICES_CSV_FORMAT = 'pricingkit.prices' as const;
 export const PRICES_CSV_VERSION = 1 as const;
 export const PRICES_CSV_HEADER_LINE = `# ${PRICES_CSV_FORMAT} v${PRICES_CSV_VERSION}`;
 
-export const PRICES_CSV_COLUMNS = ['app', 'platform', 'product', 'base_plan', 'offer_kind', 'offer_key', 'territory', 'currency', 'price', 'proceeds'] as const;
+export const PRICES_CSV_COLUMNS = ['app', 'platform', 'product_type', 'product', 'base_plan', 'offer_kind', 'offer_key', 'territory', 'currency', 'price', 'proceeds'] as const;
 export type PricesCsvColumn = (typeof PRICES_CSV_COLUMNS)[number];
 const REQUIRED_COLUMNS: PricesCsvColumn[] = ['app', 'platform', 'product', 'territory', 'currency', 'price'];
 
 /** Most problems listed in one error (the rest are counted) */
 const MAX_LISTED_ISSUES = 50;
 
+export const PRICES_CSV_PRODUCT_TYPES = ['subscription', 'inAppPurchase', 'basePlan', 'oneTime'] as const;
+export type PricesCsvProductType = (typeof PRICES_CSV_PRODUCT_TYPES)[number];
+
+export function csvProductType(product: ProductRef): PricesCsvProductType {
+  if (product.platform === 'apple') return product.type === 'subscription' ? 'subscription' : 'inAppPurchase';
+  return product.type === 'subscription' ? 'basePlan' : 'oneTime';
+}
+
+/** Undo the export's formula guard: "'=x" -> "=x" (a "'" before anything else is kept) */
+function unguard(cell: string): string {
+  return /^'[=+\-@\t\r]/.test(cell) ? cell.slice(1) : cell;
+}
+
 export interface PricesCsvRow {
   /** 1-based line of the row in the file */
   line: number;
   app: string;
   platform: 'apple' | 'google';
+  productType: PricesCsvProductType;
   product: string;
   basePlan?: string;
   offerKind?: OfferKind;
@@ -184,7 +204,7 @@ export function parsePricesCsv(text: string): PricesCsvRow[] {
     }
     const cell = (name: PricesCsvColumn) => {
       const index = columns.get(name);
-      return index === undefined ? '' : (record.cells[index] ?? '').trim();
+      return index === undefined ? '' : unguard((record.cells[index] ?? '').trim());
     };
     const bad = (column: PricesCsvColumn, message: string) => issues.push(`line ${line}, column "${column}": ${message}`);
     const before = issues.length;
@@ -202,8 +222,25 @@ export function parsePricesCsv(text: string): PricesCsvRow[] {
       if (!PLAY_ID_PATTERN.test(product)) bad('product', 'must be a Google Play product ID');
       if (basePlan !== '' && !PLAY_ID_PATTERN.test(basePlan)) bad('base_plan', 'must be a Google Play base plan ID');
     }
+    // product_type: given, or inferred from the platform and base_plan
+    const givenType = cell('product_type');
+    const productType = (givenType !== '' ? givenType : platform === 'apple' ? 'subscription' : basePlan !== '' ? 'basePlan' : 'oneTime') as PricesCsvProductType;
+    if (!(PRICES_CSV_PRODUCT_TYPES as readonly string[]).includes(productType)) {
+      bad('product_type', `must be one of ${PRICES_CSV_PRODUCT_TYPES.join(', ')}`);
+    } else if (platform === 'apple' && productType !== 'subscription' && productType !== 'inAppPurchase') {
+      bad('product_type', 'an App Store row is a subscription or an inAppPurchase');
+    } else if (platform === 'google' && productType !== 'basePlan' && productType !== 'oneTime') {
+      bad('product_type', 'a Google Play row is a basePlan or a oneTime product');
+    } else if (productType === 'inAppPurchase') {
+      bad('product_type', "App Store in-app purchase prices can't be planned yet (plans cover subscriptions); leave these rows out");
+    } else if (productType === 'basePlan' && basePlan === '') {
+      bad('base_plan', 'a basePlan row needs its base plan ID');
+    } else if (productType === 'oneTime' && basePlan !== '') {
+      bad('base_plan', 'must be empty for a one-time product');
+    }
     const offerKind = cell('offer_kind');
     const offerKey = cell('offer_key');
+    if (offerKind !== '' && givenType !== '' && (productType === 'oneTime' || productType === 'inAppPurchase')) bad('offer_kind', 'only subscriptions have offers');
     if (offerKind !== '') {
       if (!(OFFER_KINDS as readonly string[]).includes(offerKind)) bad('offer_kind', `must be empty (a base price) or one of ${OFFER_KINDS.join(', ')}`);
       else if (platform === 'apple' && !offerKind.startsWith('apple.')) bad('offer_kind', 'an App Store row takes an apple.* offer kind');
@@ -235,6 +272,7 @@ export function parsePricesCsv(text: string): PricesCsvRow[] {
       line,
       app,
       platform: platform as 'apple' | 'google',
+      productType,
       product,
       ...(basePlan ? { basePlan } : {}),
       ...(offerKind ? { offerKind: offerKind as OfferKind, offerKey } : {}),
@@ -262,7 +300,7 @@ function appPlatform(app: AppRef): 'apple' | 'google' {
 
 /** Does the row belong to this product (base price rows, or offer rows when `offer` is given)? */
 export function csvRowMatches(row: PricesCsvRow, app: AppRef, product: ProductRef, offer?: { kind: OfferKind; key: string }): boolean {
-  if (row.app !== appId(app) || row.platform !== appPlatform(app) || row.platform !== product.platform) return false;
+  if (row.app !== appId(app) || row.platform !== appPlatform(app) || row.platform !== product.platform || row.productType !== csvProductType(product)) return false;
   if (product.platform === 'apple') {
     if (row.product !== product.id || row.basePlan) return false;
   } else if (product.type === 'subscription') {
@@ -327,6 +365,7 @@ export function pricesCsvRowsFromState(app: AppRef, state: ProductPriceState): {
     rows.push({
       app: appId(app),
       platform: state.product.platform,
+      productType: csvProductType(state.product),
       ...productCells(state.product),
       territory,
       currency: t.current.currency,
@@ -355,7 +394,7 @@ export function pricesCsvRowsFromOffers(app: AppRef, product: ProductRef, offers
       continue;
     }
     for (const territory of Object.keys(offer.territoryProblems ?? {}).sort()) skipped.push({ offer: label, territory, reason: 'its price could not be read exactly' });
-    const base = { app: appId(app), platform: product.platform, ...cells, offerKind: offer.kind, offerKey: offer.key };
+    const base = { app: appId(app), platform: product.platform, productType: csvProductType(product), ...cells, offerKind: offer.kind, offerKey: offer.key };
     if (offer.kind === 'play.offer') {
       const phases = offer.play?.offer.phases ?? [];
       if (phases.length !== 1) {
@@ -382,13 +421,13 @@ export function pricesCsvRowsFromOffers(app: AppRef, product: ProductRef, offers
 
 /** Serialise rows: the format line, the header, then rows sorted by app, product, offer and territory */
 export function serializePricesCsv(rows: PricesCsvEntry[]): string {
-  const sortKey = (r: PricesCsvEntry) => [r.platform, r.app, r.product, r.basePlan ?? '', r.offerKind ?? '', r.offerKey ?? '', r.territory].join('\u0000');
+  const sortKey = (r: PricesCsvEntry) => [r.platform, r.app, r.productType, r.product, r.basePlan ?? '', r.offerKind ?? '', r.offerKey ?? '', r.territory].join('\u0000');
   const sorted = [...rows].sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0));
   const lines = [
     PRICES_CSV_HEADER_LINE,
     PRICES_CSV_COLUMNS.join(','),
     ...sorted.map((r) =>
-      [r.app, r.platform, r.product, r.basePlan ?? '', r.offerKind ?? '', r.offerKey ?? '', r.territory, r.currency, r.price, r.proceeds ?? ''].map(escapeCsvCell).join(',')
+      [r.app, r.platform, r.productType, r.product, r.basePlan ?? '', r.offerKind ?? '', r.offerKey ?? '', r.territory, r.currency, r.price, r.proceeds ?? ''].map(escapeCsvCell).join(',')
     ),
   ];
   return `${lines.join('\r\n')}\r\n`;

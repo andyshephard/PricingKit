@@ -5,7 +5,7 @@
 import type { ParityReport, ParityRow } from '@/lib/pricing';
 import { stringFlag } from '../args';
 import type { CommandContext, CommandResult } from '../context';
-import { EXIT_CHANGES, EXIT_OK, UsageError } from '../errors';
+import { EXIT_CHANGES, EXIT_ERROR, EXIT_OK, UsageError } from '../errors';
 import { describeCounts, table } from '../format';
 import { parityWorkspace } from './workspace';
 
@@ -19,16 +19,26 @@ function percent(ratio: string | undefined): string {
   return `${whole}.${fraction}%`;
 }
 
+const OUTCOME = { inParity: 'in parity', gaps: 'GAPS', notChecked: 'NOT CHECKED' } as const;
+
+function oneStoreOnly(summary: ParityReport['mappings'][number]['summary']): string {
+  const parts = [...(summary.appleOnly ? [`${summary.appleOnly} App Store only`] : []), ...(summary.playOnly ? [`${summary.playOnly} Google Play only`] : [])];
+  return parts.length > 0 ? `; priced on one store only: ${parts.join(', ')}` : '';
+}
+
 export function formatParityReport(report: ParityReport): string {
+  const appleOnly = report.mappings.reduce((n, m) => n + m.summary.appleOnly, 0);
+  const playOnly = report.mappings.reduce((n, m) => n + m.summary.playOnly, 0);
   const lines = [
-    `Parity (${report.basis === 'plan' ? "prices once the plans are applied" : 'current prices'}): ${report.inParity ? 'in parity' : 'GAPS'} across ${report.mappings.length} ${report.mappings.length === 1 ? 'mapping' : 'mappings'}`,
+    `Parity (${report.basis === 'plan' ? 'prices once the plans are applied' : 'current prices'}): ${OUTCOME[report.status]} across ${report.mappings.length} ${report.mappings.length === 1 ? 'mapping' : 'mappings'}${oneStoreOnly({ same: 0, withinThreshold: 0, gap: 0, notComparable: 0, unreadable: 0, appleOnly, playOnly })}`,
   ];
   for (const m of report.mappings) {
     const counts = Object.fromEntries(Object.entries(m.summary).filter(([, n]) => n > 0));
     lines.push(
       '',
       `${m.id}: App Store ${m.appleApp.bundleId} subscription ${m.apple.id} vs Google Play ${m.playApp.packageName} ${m.play.productId}/${m.play.basePlanId}`,
-      `  ${m.inParity ? 'In parity' : 'GAPS'} (threshold ${percent(m.threshold)} of the lower price): ${describeCounts(counts) || 'no territories'}`
+      `  ${OUTCOME[m.status]} (threshold ${percent(m.threshold)} of the lower price): ${describeCounts(counts) || 'no territories'}${oneStoreOnly(m.summary)}`,
+      ...(m.status === 'notChecked' ? ['  Not every territory could be compared (unreadable, different currencies, or nothing priced on both stores); see below.'] : [])
     );
     const notable = m.rows.filter((r) => r.status !== 'same');
     if (notable.length > 0) {
@@ -49,5 +59,7 @@ export async function parityCommand(ctx: CommandContext): Promise<CommandResult>
   const workspace = stringFlag(ctx.flags, 'workspace');
   if (!workspace) throw new UsageError('Give the workspace: pricingkit parity --workspace <workspace file> [--mapping <id>]');
   const report = await parityWorkspace(ctx, workspace, stringFlag(ctx.flags, 'mapping'));
-  return { exitCode: report.inParity ? EXIT_OK : EXIT_CHANGES, json: report, text: formatParityReport(report) };
+  // 2: a gap; 1: no gap, but something couldn't be compared; 0: in parity
+  const exitCode = report.status === 'gaps' ? EXIT_CHANGES : report.status === 'notChecked' ? EXIT_ERROR : EXIT_OK;
+  return { exitCode, json: report, text: formatParityReport(report) };
 }
