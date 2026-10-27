@@ -75,6 +75,8 @@ CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm test`, `npm run typecheck` a
   session-envelope.ts   # Session envelope {v, typ, iat, exp, creds}: sealSession / openSession, SESSION_VERSION
   session.ts            # Cookie names (__Host- in production), read/write/clear helpers, readSessionCookie, hasAuthenticatedSession()
   token-cache.ts        # LRU cache for Apple JWTs / Google access tokens
+  token-source.ts       # TokenSource: what the store clients and adapters take instead of keys; HeaderTokenSource wraps a caller-supplied token; assertTokenPlatform
+  key-token-source.ts   # AppleKeyTokenSource / GoogleKeyTokenSource: sign in-process from a key (CLI, MCP)
   security-headers.ts   # Response headers and CSP for every route (next.config.ts): no 'unsafe-eval' outside next dev, base-uri 'none', form-action 'self'
 /src/instrumentation-client.ts  # Browser start-up: zod jitless, so zod 4's `new Function` probe never trips the CSP (keep it)
   request-guard.ts      # rejectCrossSite + readJsonBody for every non-GET route

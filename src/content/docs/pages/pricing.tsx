@@ -272,10 +272,12 @@ export const plans: DocPage = {
             lang="ts"
             code={`import { buildChangeSet, applyChangeSet, buildUndoChangeSet, serializeChangeSet } from '@/lib/pricing';
 import { AppleAdapter } from '@/lib/adapters';
+import { AppleKeyTokenSource } from '@/lib/key-token-source';
 import { RequestBudget } from '@/lib/utils/request-budget';
 
 const budget = new RequestBudget();                       // 3600 requests/hour by default
-const apple = new AppleAdapter({ credentials, budget });
+const tokens = new AppleKeyTokenSource({ privateKey, keyId, issuerId }); // signs 20-minute JWTs
+const apple = new AppleAdapter({ tokens, bundleId: 'com.example.app', budget });
 const product = { platform: 'apple', type: 'subscription', id: '1234567890' } as const;
 
 const state = await apple.fetchState(product);

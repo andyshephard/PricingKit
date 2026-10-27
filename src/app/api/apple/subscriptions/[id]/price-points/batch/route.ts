@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getAppleAuthFromCookies } from '@/middleware/auth';
+import { appleKeyConnection } from '@/lib/key-token-source';
 import {
   getSubscriptionPricePoints,
 } from '@/lib/apple-connect';
@@ -40,6 +41,7 @@ export async function POST(
         { status: 401 }
       );
     }
+    const connection = appleKeyConnection(auth.credentials);
 
     const { id } = await params;
     // Only a numeric subscription ID reaches the App Store Connect path
@@ -71,12 +73,11 @@ export async function POST(
 
     const { stream, writer } = createNdjsonStream();
 
-    const credentials = auth.credentials;
     const subscriptionId = id;
     // One budget for the whole run (Apple allows ~3600 requests/hour per key)
     const ctx = { budget: new RequestBudget() };
     // API keys reach every app of a team: refuse another app's subscription
-    await assertSubscriptionInApp(credentials, subscriptionId, ctx);
+    await assertSubscriptionInApp(connection, subscriptionId, ctx);
 
     (async () => {
       try {
@@ -99,7 +100,7 @@ export async function POST(
 
               try {
                 const pricePoints = await getSubscriptionPricePoints(
-                  credentials,
+                  connection,
                   subscriptionId,
                   alpha3,
                   ctx

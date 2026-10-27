@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getAppleAuthFromCookies } from '@/middleware/auth';
+import { appleKeyConnection } from '@/lib/key-token-source';
 import { AppleAdapter } from '@/lib/adapters/apple';
 import { RequestBudget } from '@/lib/utils/request-budget';
 import {
@@ -46,6 +47,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   try {
     const auth = await getAppleAuthFromCookies();
     if (!auth) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+    const connection = appleKeyConnection(auth.credentials);
 
     const { id } = await params;
     if (!/^\d+$/.test(id)) {
@@ -59,7 +61,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
     const body = parsed.data;
     const product: ProductRef = { platform: 'apple', type: 'subscription', id };
-    const adapter = new AppleAdapter({ credentials: auth.credentials, budget: new RequestBudget() });
+    const adapter = new AppleAdapter({ ...connection, budget: new RequestBudget() });
     // API keys reach every app of a team: the subscription must be in the session's app (APP_MISMATCH otherwise)
     await adapter.verifyProduct(product);
     const pricing = { type: 'percentOfCurrent' as const, percent: body.percent, basis: body.basis, snap: body.snap };

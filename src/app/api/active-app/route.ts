@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { googlePlayFetch } from '@/lib/google-play/client';
+import { GoogleKeyTokenSource } from '@/lib/key-token-source';
 import { COOKIE_NAMES, readSessionCookie, SESSION_COOKIE_MAX_AGE, writeCookie } from '@/lib/session';
 import { readJsonBody, rejectCrossSite, SMALL_BODY_LIMIT } from '@/lib/request-guard';
 import { packageNameSchema } from '@/lib/validation';
@@ -32,7 +33,7 @@ export async function POST(request: NextRequest) {
 
   try {
     await googlePlayFetch(
-      credentials,
+      new GoogleKeyTokenSource(credentials),
       `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/subscriptions`,
       { query: { pageSize: 1 } }
     );

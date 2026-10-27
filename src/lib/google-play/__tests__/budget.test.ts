@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { ServiceAccountCredentials } from '../types';
+import { HeaderTokenSource } from '../../token-source';
 
 vi.mock('../client', () => ({ googlePlayFetch: vi.fn() }));
 
@@ -9,7 +9,7 @@ import { updateInAppProductPrices } from '../products';
 import { RequestBudget } from '@/lib/utils/request-budget';
 
 const fetchMock = vi.mocked(googlePlayFetch);
-const credentials = {} as ServiceAccountCredentials;
+const tokens = new HeaderTokenSource('google', 'test-access-token', 'test@example.iam.gserviceaccount.com');
 
 beforeEach(() => {
   fetchMock.mockReset();
@@ -26,7 +26,7 @@ describe('Google helpers charge every request to the caller budget', () => {
       } as never;
     });
     const budget = new RequestBudget();
-    await updateBasePlanPrices(credentials, 'com.example.app', 'premium', 'monthly', [
+    await updateBasePlanPrices(tokens, 'com.example.app', 'premium', 'monthly', [
       { regionCode: 'GB', price: { currencyCode: 'GBP', units: '5' }, newSubscriberAvailability: true },
     ], { budget });
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -42,7 +42,7 @@ describe('Google helpers charge every request to the caller budget', () => {
       } as never;
     });
     const budget = new RequestBudget();
-    await updateInAppProductPrices(credentials, 'com.example.app', 'coins', { GB: { currencyCode: 'GBP', units: '2' } }, undefined, { budget });
+    await updateInAppProductPrices(tokens, 'com.example.app', 'coins', { GB: { currencyCode: 'GBP', units: '2' } }, undefined, { budget });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     for (const call of fetchMock.mock.calls) expect(call[2]?.budget).toBe(budget);
   });

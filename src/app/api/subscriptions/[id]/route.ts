@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getGoogleAuthFromCookies } from '@/middleware/auth';
+import { GoogleKeyTokenSource } from '@/lib/key-token-source';
 import {
   getSubscription,
   updateBasePlanPrices,
@@ -47,6 +48,7 @@ export async function GET(
         { status: 401 }
       );
     }
+    const tokens = new GoogleKeyTokenSource(auth.credentials);
 
     const params = await context.params;
 
@@ -64,7 +66,7 @@ export async function GET(
       throw error;
     }
 
-    const subscription = await getSubscription(auth.credentials, auth.packageName, productId);
+    const subscription = await getSubscription(tokens, auth.packageName, productId);
 
     if (!subscription) {
       return NextResponse.json(
@@ -107,6 +109,7 @@ export async function PATCH(
         { status: 401 }
       );
     }
+    const tokens = new GoogleKeyTokenSource(auth.credentials);
 
     const params = await context.params;
 
@@ -137,7 +140,7 @@ export async function PATCH(
     }
 
     const updatedBasePlan = await updateBasePlanPrices(
-      auth.credentials,
+      tokens,
       auth.packageName,
       productId,
       result.data.basePlanId,
@@ -191,6 +194,7 @@ export async function DELETE(
         { status: 401 }
       );
     }
+    const tokens = new GoogleKeyTokenSource(auth.credentials);
 
     const params = await context.params;
 
@@ -221,7 +225,7 @@ export async function DELETE(
     }
 
     const updatedBasePlan = await deleteBasePlanRegionPrice(
-      auth.credentials,
+      tokens,
       auth.packageName,
       productId,
       result.data.basePlanId,

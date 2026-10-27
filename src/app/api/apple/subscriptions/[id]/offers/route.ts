@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAppleAuthFromCookies } from '@/middleware/auth';
+import { appleKeyConnection } from '@/lib/key-token-source';
 import { AppleAdapter } from '@/lib/adapters/apple';
 import { RequestBudget } from '@/lib/utils/request-budget';
 import { appleErrorResponse } from '../../../_lib/error-response';
@@ -13,6 +14,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   try {
     const auth = await getAppleAuthFromCookies();
     if (!auth) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+    const connection = appleKeyConnection(auth.credentials);
 
     const { id } = await params;
     if (!/^\d+$/.test(id)) {
@@ -21,8 +23,8 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 
     const budget = new RequestBudget();
     // API keys reach every app of a team: refuse another app's subscription
-    await assertSubscriptionInApp(auth.credentials, id, { budget });
-    const adapter = new AppleAdapter({ credentials: auth.credentials, budget });
+    await assertSubscriptionInApp(connection, id, { budget });
+    const adapter = new AppleAdapter({ ...connection, budget });
     const offers = await adapter.fetchOffers({ platform: 'apple', type: 'subscription', id });
     return NextResponse.json({ offers });
   } catch (error) {

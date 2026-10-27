@@ -51,7 +51,7 @@ describe('cross-check with the server signers', () => {
 
   it('Apple: the browser JWT matches the server JWT and passes the same checks', async () => {
     const ids = { keyId: 'ABC123DEFG', issuerId: '57246542-96fe-1a63-e053-0824d011072a' };
-    const serverToken = await generateJWT({ ...ids, privateKey: apple.pem, bundleId: '' });
+    const serverToken = await generateJWT({ ...ids, privateKey: apple.pem });
 
     const keys = new BrowserKeys({ store: new MemoryKeyStore() });
     await keys.importApple({ privateKeyPem: apple.pem, ...ids });

@@ -1,4 +1,6 @@
 import type { ServiceAccountCredentials } from './types';
+import type { GoogleKeyCredentials } from '../key-token-source';
+import { assertTokenPlatform, type TokenSource } from '../token-source';
 import { TokenCache, hashCredentialFields } from '../token-cache';
 import { ApiError, getErrorStatus, isRetryableStatus, toApiError } from '../utils/api-error';
 import type { RequestBudget } from '../utils/request-budget';
@@ -21,7 +23,7 @@ const TOKEN_REFRESH_MARGIN = 60; // refresh 60s before expiry
 // reuse each other's token.
 const accessTokenCache = new TokenCache();
 
-function hashCredentials(credentials: ServiceAccountCredentials): Promise<string> {
+function hashCredentials(credentials: GoogleKeyCredentials): Promise<string> {
   return hashCredentialFields([
     credentials.client_email,
     credentials.private_key_id,
@@ -130,7 +132,7 @@ async function importPrivateKey(pemKey: string): Promise<CryptoKey> {
   );
 }
 
-async function mintAccessToken(credentials: ServiceAccountCredentials): Promise<{
+async function mintAccessToken(credentials: GoogleKeyCredentials): Promise<{
   token: string;
   expiresAt: number;
 }> {
@@ -199,8 +201,9 @@ async function mintAccessToken(credentials: ServiceAccountCredentials): Promise<
   return { token: data.access_token, expiresAt: now + ttl };
 }
 
+// GoogleKeyTokenSource calls this; requests take a TokenSource
 export async function getGoogleAccessToken(
-  credentials: ServiceAccountCredentials
+  credentials: GoogleKeyCredentials
 ): Promise<string> {
   const credHash = await hashCredentials(credentials);
 
@@ -298,10 +301,11 @@ function buildUrl(path: string, query?: GooglePlayFetchOptions['query']): string
 }
 
 export async function googlePlayFetch<T>(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   path: string,
   options: GooglePlayFetchOptions = {}
 ): Promise<T> {
+  assertTokenPlatform(tokens, 'google');
   const { method = 'GET', body, query, budget, retryOnlyRateLimited = false } = options;
   const retry = resolveRetryOptions(options.retry);
   const url = buildUrl(path, query);
@@ -315,7 +319,7 @@ export async function googlePlayFetch<T>(
     let response: Response;
     try {
       // Inside the try so a network failure while minting the token is retried too
-      const token = await getGoogleAccessToken(credentials);
+      const token = await tokens.getToken();
       const headers: Record<string, string> = {
         Authorization: `Bearer ${token}`,
         Accept: 'application/json',

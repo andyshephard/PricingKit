@@ -2,6 +2,7 @@
 // and bulk reads must stay within a bounded concurrency.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AppleConnectCredentials } from '../types';
+import { appleKeyConnection } from '../../key-token-source';
 
 const appleApiRequest = vi.fn();
 const getAppIdForBundleId = vi.fn();
@@ -24,6 +25,7 @@ const credentials: AppleConnectCredentials = {
   issuerId: '00000000-0000-0000-0000-000000000000',
   bundleId: 'com.example.test',
 };
+const connection = appleKeyConnection(credentials);
 
 // Simulates the real client: each call consumes one unit of the passed budget
 function budgetedApi(handler: (endpoint: string, options: Record<string, unknown>) => unknown) {
@@ -49,8 +51,8 @@ describe('RequestBudget threading', () => {
       return { data: { id: 's1', attributes: { productId: 'com.example.monthly', name: 'M', state: 'APPROVED', subscriptionPeriod: 'ONE_MONTH' } } };
     });
     const budget = new RequestBudget({ limit: 100 });
-    await getSubscription(credentials, 'com.example.monthly', { budget });
-    expect(getAppIdForBundleId).toHaveBeenCalledWith(credentials, { budget });
+    await getSubscription(connection, 'com.example.monthly', { budget });
+    expect(getAppIdForBundleId).toHaveBeenCalledWith(connection, { budget });
     expect(appleApiRequest).toHaveBeenCalledTimes(3);
     for (const call of appleApiRequest.mock.calls) expect(call[2].budget).toBe(budget);
     expect(budget.used).toBe(3);
@@ -59,8 +61,8 @@ describe('RequestBudget threading', () => {
   it('stops sending once the budget is spent', async () => {
     budgetedApi(() => ({ data: [] }));
     const budget = new RequestBudget({ limit: 1 });
-    await getSubscriptionPricePoints(credentials, 'sub-1', 'USA', { budget });
-    await expect(getSubscriptionPricePoints(credentials, 'sub-1', 'GBR', { budget })).rejects.toMatchObject({
+    await getSubscriptionPricePoints(connection, 'sub-1', 'USA', { budget });
+    await expect(getSubscriptionPricePoints(connection, 'sub-1', 'GBR', { budget })).rejects.toMatchObject({
       status: 429,
       code: 'BUDGET_EXCEEDED',
     });
@@ -68,7 +70,7 @@ describe('RequestBudget threading', () => {
 
   it('reads a territory ladder in one request of up to 8000 points', async () => {
     budgetedApi(() => ({ data: [] }));
-    await getSubscriptionPricePoints(credentials, 'sub-1', 'USA');
+    await getSubscriptionPricePoints(connection, 'sub-1', 'USA');
     expect(appleApiRequest.mock.calls[0][2].queryParams.limit).toBe('8000');
   });
 
@@ -76,7 +78,7 @@ describe('RequestBudget threading', () => {
     budgetedApi(() => ({}));
     const budget = new RequestBudget({ limit: 3 });
     const outcomes = await applySubscriptionPriceChanges(
-      credentials,
+      connection,
       'sub-1',
       {
         US: { pricePointId: 'pp-us', startDate: '2099-01-01' },
@@ -122,7 +124,7 @@ describe('listInAppPurchases', () => {
       };
     });
 
-    const result = await listInAppPurchases(credentials);
+    const result = await listInAppPurchases(connection);
     expect(result).toHaveLength(12);
     expect(result.every((p) => p.prices.GBR?.customerPrice === '1.99')).toBe(true);
     expect(peak).toBeLessThanOrEqual(APPLE_READ_CONCURRENCY);

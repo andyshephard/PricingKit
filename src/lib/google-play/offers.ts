@@ -32,7 +32,8 @@ import {
 import { compareDecimal } from '@/lib/pricing/decimal';
 import { googlePlayFetch } from './client';
 import type { RequestContext } from '../utils/request-budget';
-import type { Money, ServiceAccountCredentials } from './types';
+import type { Money } from './types';
+import type { TokenSource } from '../token-source';
 
 export interface PlayOfferIdentity {
   packageName: string;
@@ -81,7 +82,7 @@ function offerPath(id: PlayOfferIdentity, offerId: string): string {
  * basePlanId "-", following nextPageToken. Every page is charged to the budget.
  */
 export async function listSubscriptionOffers(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   packageName: string,
   productId: string,
   basePlanId = '-',
@@ -91,7 +92,7 @@ export async function listSubscriptionOffers(
   let pageToken: string | undefined;
   const seen = new Set<string>();
   do {
-    const response = await googlePlayFetch<ListSubscriptionOffersResponse>(credentials, offersPath(packageName, productId, basePlanId), {
+    const response = await googlePlayFetch<ListSubscriptionOffersResponse>(tokens, offersPath(packageName, productId, basePlanId), {
       budget: ctx.budget,
       query: { pageSize: 100, pageToken },
     });
@@ -105,13 +106,13 @@ export async function listSubscriptionOffers(
 }
 
 export async function getSubscriptionOffer(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   id: PlayOfferIdentity,
   offerId: string,
   ctx: RequestContext = {}
 ): Promise<SubscriptionOfferResource | null> {
   try {
-    return await googlePlayFetch<SubscriptionOfferResource>(credentials, offerPath(id, offerId), { budget: ctx.budget });
+    return await googlePlayFetch<SubscriptionOfferResource>(tokens, offerPath(id, offerId), { budget: ctx.budget });
   } catch (error) {
     if ((error as { code?: unknown })?.code === 404) return null;
     throw error;
@@ -128,13 +129,13 @@ export async function getSubscriptionOffer(
  * read, or a resume, decides).
  */
 export async function createSubscriptionOffer(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   id: PlayOfferIdentity,
   body: SubscriptionOfferResource,
   regionsVersion: string,
   ctx: RequestContext = {}
 ): Promise<SubscriptionOfferResource> {
-  return googlePlayFetch<SubscriptionOfferResource>(credentials, offersPath(id.packageName, id.productId, id.basePlanId), {
+  return googlePlayFetch<SubscriptionOfferResource>(tokens, offersPath(id.packageName, id.productId, id.basePlanId), {
     method: 'POST',
     budget: ctx.budget,
     retryOnlyRateLimited: true,
@@ -145,7 +146,7 @@ export async function createSubscriptionOffer(
 
 /** PATCH .../offers/{offerId}?updateMask=&regionsVersion.version= */
 export async function patchSubscriptionOffer(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   id: PlayOfferIdentity,
   body: SubscriptionOfferResource,
   updateMask: string[],
@@ -153,7 +154,7 @@ export async function patchSubscriptionOffer(
   ctx: RequestContext = {}
 ): Promise<SubscriptionOfferResource> {
   if (updateMask.length === 0) throw new Error('patchSubscriptionOffer needs at least one field in updateMask');
-  return googlePlayFetch<SubscriptionOfferResource>(credentials, offerPath(id, body.offerId!), {
+  return googlePlayFetch<SubscriptionOfferResource>(tokens, offerPath(id, body.offerId!), {
     method: 'PATCH',
     budget: ctx.budget,
     query: { updateMask: updateMask.join(','), 'regionsVersion.version': regionsVersion },
@@ -163,13 +164,13 @@ export async function patchSubscriptionOffer(
 
 /** POST .../offers/{offerId}:activate or :deactivate (body: ActivateSubscriptionOfferRequest / Deactivate...). Retried on 429 only. */
 export async function setSubscriptionOfferActive(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   id: PlayOfferIdentity,
   offerId: string,
   active: boolean,
   ctx: RequestContext = {}
 ): Promise<SubscriptionOfferResource> {
-  return googlePlayFetch<SubscriptionOfferResource>(credentials, `${offerPath(id, offerId)}:${active ? 'activate' : 'deactivate'}`, {
+  return googlePlayFetch<SubscriptionOfferResource>(tokens, `${offerPath(id, offerId)}:${active ? 'activate' : 'deactivate'}`, {
     method: 'POST',
     budget: ctx.budget,
     retryOnlyRateLimited: true,
@@ -179,12 +180,12 @@ export async function setSubscriptionOfferActive(
 
 /** DELETE .../offers/{offerId}: Play deletes draft offers only, irreversibly */
 export async function deleteSubscriptionOffer(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   id: PlayOfferIdentity,
   offerId: string,
   ctx: RequestContext = {}
 ): Promise<void> {
-  await googlePlayFetch<void>(credentials, offerPath(id, offerId), { method: 'DELETE', budget: ctx.budget });
+  await googlePlayFetch<void>(tokens, offerPath(id, offerId), { method: 'DELETE', budget: ctx.budget });
 }
 
 // ---------------------------------------------------------------------------

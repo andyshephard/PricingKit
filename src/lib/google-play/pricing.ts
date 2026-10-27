@@ -2,7 +2,8 @@
 // Read-only: it changes nothing on the store, though it is a POST.
 
 import { googlePlayFetch } from './client';
-import type { Money, ServiceAccountCredentials } from './types';
+import type { Money } from './types';
+import type { TokenSource } from '../token-source';
 import type { RequestContext } from '../utils/request-budget';
 
 export interface ConvertedRegionPrice {
@@ -25,13 +26,13 @@ export interface ConvertRegionPricesResponse {
  * POST /androidpublisher/v3/applications/{packageName}/pricing:convertRegionPrices
  */
 export async function convertRegionPrices(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   packageName: string,
   price: Money,
   ctx: RequestContext = {}
 ): Promise<ConvertRegionPricesResponse> {
   return googlePlayFetch<ConvertRegionPricesResponse>(
-    credentials,
+    tokens,
     `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/pricing:convertRegionPrices`,
     {
       method: 'POST',

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getAppleAuthFromCookies } from '@/middleware/auth';
+import { appleKeyConnection } from '@/lib/key-token-source';
 import {
   getInAppPurchase,
   getBaseTerritoryForProduct,
@@ -33,6 +34,7 @@ export async function GET(
         { status: 401 }
       );
     }
+    const connection = appleKeyConnection(auth.credentials);
 
     const { id } = await params;
 
@@ -50,7 +52,7 @@ export async function GET(
       throw error;
     }
 
-    const product = await getInAppPurchase(auth.credentials, productId);
+    const product = await getInAppPurchase(connection, productId);
     if (!product) {
       return NextResponse.json(
         { error: 'Product not found' },
@@ -60,8 +62,8 @@ export async function GET(
 
     // Fetch prices and base territory in parallel
     const [prices, baseTerritory] = await Promise.all([
-      getInAppPurchasePrices(auth.credentials, product.id),
-      getBaseTerritoryForProduct(auth.credentials, product.id),
+      getInAppPurchasePrices(connection, product.id),
+      getBaseTerritoryForProduct(connection, product.id),
     ]);
     product.prices = prices;
     product.baseTerritory = baseTerritory ?? undefined;
@@ -114,6 +116,7 @@ export async function PATCH(
         { status: 401 }
       );
     }
+    const connection = appleKeyConnection(auth.credentials);
 
     const { id } = await params;
     // One budget for the whole run (Apple allows ~3600 requests/hour per key)
@@ -147,7 +150,7 @@ export async function PATCH(
 
     // Get the product to find its internal ID. Looked up by SKU in the session app's own
     // in-app purchase list, so another app's product (API keys are team-wide) is never found
-    const product = await getInAppPurchase(auth.credentials, productId, ctx);
+    const product = await getInAppPurchase(connection, productId, ctx);
     if (!product) {
       return NextResponse.json(
         { error: 'Product not found' },
@@ -157,7 +160,7 @@ export async function PATCH(
 
     // Fetch base territory from Apple's dedicated endpoint
     product.baseTerritory =
-      (await getBaseTerritoryForProduct(auth.credentials, product.id, ctx)) ?? undefined;
+      (await getBaseTerritoryForProduct(connection, product.id, ctx)) ?? undefined;
 
     // Update prices
     const { prices } = result.data;
@@ -201,7 +204,7 @@ export async function PATCH(
 
       // Resolve all PPP prices to price points (batched parallel requests)
       const result: PPPResolutionResult = await resolvePPPPricesToPricePoints(
-        auth.credentials,
+        connection,
         product.id,
         moneyPrices,
         ctx
@@ -236,7 +239,7 @@ export async function PATCH(
       // territory keeps its manual prices (and scheduled prices stay)
       const changes: Record<string, { pricePointId: string }> = {};
       for (const { territoryId, pricePointId } of result.resolved) changes[territoryId] = { pricePointId };
-      const merged = await replaceInAppPurchaseManualPrices(auth.credentials, product.id, changes, baseTerritory, ctx);
+      const merged = await replaceInAppPurchaseManualPrices(connection, product.id, changes, baseTerritory, ctx);
       keptScheduled = merged.keptScheduled;
 
       updatedCount = result.resolved.length;
@@ -260,7 +263,7 @@ export async function PATCH(
         }
         baseTerritory = toAppleTerritoryId(entries[0][0]);
       }
-      const result = await replaceInAppPurchaseManualPrices(auth.credentials, product.id, changes, baseTerritory, ctx);
+      const result = await replaceInAppPurchaseManualPrices(connection, product.id, changes, baseTerritory, ctx);
       updatedCount = result.sent;
       keptScheduled = result.keptScheduled;
     }
@@ -270,11 +273,11 @@ export async function PATCH(
     let updatedProduct: Awaited<ReturnType<typeof getInAppPurchase>> = null;
     let refreshError: string | undefined;
     try {
-      updatedProduct = await getInAppPurchase(auth.credentials, productId, ctx);
+      updatedProduct = await getInAppPurchase(connection, productId, ctx);
       if (updatedProduct) {
         const [updatedPrices, updatedBaseTerritory] = await Promise.all([
-          getInAppPurchasePrices(auth.credentials, updatedProduct.id, ctx),
-          getBaseTerritoryForProduct(auth.credentials, updatedProduct.id, ctx),
+          getInAppPurchasePrices(connection, updatedProduct.id, ctx),
+          getBaseTerritoryForProduct(connection, updatedProduct.id, ctx),
         ]);
         updatedProduct.prices = updatedPrices;
         updatedProduct.baseTerritory = updatedBaseTerritory ?? undefined;

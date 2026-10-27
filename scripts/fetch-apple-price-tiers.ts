@@ -37,6 +37,7 @@ import { RequestBudget } from '../src/lib/utils/request-budget';
 import { appleCredentialsFromEnv } from '../src/cli/credentials';
 import { Redactor } from '../src/cli/redact';
 import { toApiError } from '../src/lib/utils/api-error';
+import { appleKeyConnection } from '../src/lib/key-token-source';
 
 const ROOT = resolve(__dirname, '..');
 const DEFAULT_JSON = join(ROOT, 'src/lib/apple-connect/price-tier-data.json');
@@ -82,15 +83,15 @@ async function writeAtomic(path: string, content: string): Promise<void> {
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   const redactor = new Redactor();
-  const credentials = await appleCredentialsFromEnv(process.env, '', redactor);
+  const connection = appleKeyConnection(await appleCredentialsFromEnv(process.env, '', redactor));
   const budget = new RequestBudget({ limit: args.budget });
   const source: TierBuildSource = {
     async listTerritories() {
-      const { data } = await appleListAll<{ id: string; attributes?: { currency?: string } }>(credentials, '/territories', { queryParams: { limit: '200' }, budget });
+      const { data } = await appleListAll<{ id: string; attributes?: { currency?: string } }>(connection, '/territories', { queryParams: { limit: '200' }, budget });
       return data.map((t) => ({ id: t.id, currency: t.attributes?.currency ?? '' }));
     },
     async listPricePoints(territory) {
-      const { data } = await appleListAll<{ id: string; attributes?: { customerPrice?: string } }>(credentials, `/inAppPurchases/${args.iap}/pricePoints`, {
+      const { data } = await appleListAll<{ id: string; attributes?: { customerPrice?: string } }>(connection, `/inAppPurchases/${args.iap}/pricePoints`, {
         queryParams: { 'filter[territory]': territory, 'fields[inAppPurchasePricePoints]': 'customerPrice', limit: '200' },
         apiVersion: 'v2',
         budget,

@@ -64,7 +64,8 @@ import {
   type PlayRuleSnaps,
   type StoreOffer,
 } from '@/lib/pricing';
-import type { BasePlan, Money, RegionalBasePlanConfig, ServiceAccountCredentials, Subscription } from '@/lib/google-play/types';
+import type { BasePlan, Money, RegionalBasePlanConfig, Subscription } from '@/lib/google-play/types';
+import { assertTokenPlatform, type TokenSource } from '@/lib/token-source';
 import {
   createSubscriptionOffer,
   deleteSubscriptionOffer,
@@ -83,7 +84,8 @@ import { ApiError, getErrorStatus } from '@/lib/utils/api-error';
 import { isBudgetExceeded, type RequestBudget } from '@/lib/utils/request-budget';
 
 export interface PlayAdapterOptions {
-  credentials: ServiceAccountCredentials;
+  /** Bearer tokens for the Google Play Developer API */
+  tokens: TokenSource;
   packageName: string;
   budget?: RequestBudget;
 }
@@ -120,7 +122,7 @@ function appMismatch(message: string): ApiError {
 
 export class PlayAdapter implements PlatformAdapter {
   readonly platform = 'google' as const;
-  private readonly credentials: ServiceAccountCredentials;
+  private readonly tokens: TokenSource;
   private readonly packageName: string;
   private readonly budget?: RequestBudget;
 
@@ -129,7 +131,8 @@ export class PlayAdapter implements PlatformAdapter {
   private regionsVersionRead?: Promise<string | undefined>;
 
   constructor(options: PlayAdapterOptions) {
-    this.credentials = options.credentials;
+    assertTokenPlatform(options.tokens, 'google');
+    this.tokens = options.tokens;
     this.packageName = options.packageName;
     this.budget = options.budget;
   }
@@ -159,7 +162,7 @@ export class PlayAdapter implements PlatformAdapter {
     if (product.type !== 'subscription') return; // one-time products are read and written by package and ID only
     let plans = this.verified.get(product.productId);
     if (!plans) {
-      const subscription = await getSubscription(this.credentials, this.packageName, product.productId, this.ctx);
+      const subscription = await getSubscription(this.tokens, this.packageName, product.productId, this.ctx);
       if (!subscription) throw notFound(`Subscription ${product.productId} not found in ${this.packageName}`);
       if (subscription.packageName && subscription.packageName !== this.packageName) {
         throw appMismatch(`Subscription ${product.productId} belongs to ${subscription.packageName}, not ${this.packageName}`);
@@ -189,14 +192,14 @@ export class PlayAdapter implements PlatformAdapter {
     };
 
     if (product.type === 'subscription') {
-      const subscription = await getSubscription(this.credentials, this.packageName, product.productId, this.ctx);
+      const subscription = await getSubscription(this.tokens, this.packageName, product.productId, this.ctx);
       const basePlan = subscription?.basePlans?.find((bp) => bp.basePlanId === product.basePlanId);
       if (!basePlan) throw notFound(`Base plan ${product.productId}/${product.basePlanId} not found`);
       for (const config of basePlan.regionalConfigs ?? []) {
         add(config.regionCode, config.price, config.newSubscriberAvailability === false ? 'NO_NEW_SUBSCRIBERS' : 'AVAILABLE');
       }
     } else {
-      const raw = await getInAppProductRaw(this.credentials, this.packageName, product.productId, this.ctx);
+      const raw = await getInAppProductRaw(this.tokens, this.packageName, product.productId, this.ctx);
       const options = raw.purchaseOptions ?? [];
       const option = product.purchaseOptionId ? options.find((o) => o.purchaseOptionId === product.purchaseOptionId) : options[0];
       if (!option) throw notFound(`Purchase option of ${product.productId} not found`);
@@ -241,7 +244,7 @@ export class PlayAdapter implements PlatformAdapter {
     if (entries.length === 0) return result;
 
     const convert = (currency: string, amount: string) =>
-      convertRegionPrices(this.credentials, this.packageName, toMoney(currency, amount), this.ctx);
+      convertRegionPrices(this.tokens, this.packageName, toMoney(currency, amount), this.ctx);
 
     // 1. Customer price targets: tax share per region, from any one conversion
     let probe: ConvertRegionPricesResponse | undefined;
@@ -347,11 +350,11 @@ export class PlayAdapter implements PlatformAdapter {
             regionCode: op.target.territory,
             price: toMoney(op.after!.currency, op.after!.amount),
           } as RegionalBasePlanConfig));
-          await updateBasePlanPrices(this.credentials, this.packageName, product.productId, product.basePlanId, configs, this.ctx, version);
+          await updateBasePlanPrices(this.tokens, this.packageName, product.productId, product.basePlanId, configs, this.ctx, version);
         } else {
           const prices: Record<string, Money> = {};
           for (const { op } of sets) prices[op.target.territory] = toMoney(op.after!.currency, op.after!.amount);
-          await updateInAppProductPrices(this.credentials, this.packageName, product.productId, prices, undefined, this.ctx);
+          await updateInAppProductPrices(this.tokens, this.packageName, product.productId, prices, undefined, this.ctx);
         }
         for (const { i } of sets) outcomes[i] = { response: { patchedRegions: sets.length } };
       } catch (error) {
@@ -362,9 +365,9 @@ export class PlayAdapter implements PlatformAdapter {
     for (const { op, i } of ops.map((op, i) => ({ op, i })).filter(({ op }) => op.kind === 'removePrice')) {
       try {
         if (product.type === 'subscription') {
-          await deleteBasePlanRegionPrice(this.credentials, this.packageName, product.productId, product.basePlanId, op.target.territory, this.ctx, await this.baseRegionsVersion([op]));
+          await deleteBasePlanRegionPrice(this.tokens, this.packageName, product.productId, product.basePlanId, op.target.territory, this.ctx, await this.baseRegionsVersion([op]));
         } else {
-          await deleteRegionPrice(this.credentials, this.packageName, product.productId, op.target.territory, this.ctx);
+          await deleteRegionPrice(this.tokens, this.packageName, product.productId, op.target.territory, this.ctx);
         }
         outcomes[i] = { response: { removedRegion: op.target.territory } };
       } catch (error) {
@@ -394,19 +397,19 @@ export class PlayAdapter implements PlatformAdapter {
   /** Every offer of a base plan, each read strictly (problems instead of guesses) */
   async fetchOffers(product: ProductRef): Promise<StoreOffer[]> {
     const { productId, basePlanId } = basePlanRef(product);
-    const raw = await listSubscriptionOffers(this.credentials, this.packageName, productId, basePlanId, this.ctx);
+    const raw = await listSubscriptionOffers(this.tokens, this.packageName, productId, basePlanId, this.ctx);
     return raw.map((r) => parsePlayOffer(r, { productId, basePlanId }));
   }
 
   /** Every offer of a subscription, across its base plans (offers list with basePlanId "-") */
   async fetchSubscriptionOffers(productId: string): Promise<StoreOffer[]> {
-    const raw = await listSubscriptionOffers(this.credentials, this.packageName, productId, '-', this.ctx);
+    const raw = await listSubscriptionOffers(this.tokens, this.packageName, productId, '-', this.ctx);
     return raw.map((r) => parsePlayOffer(r, { productId }));
   }
 
   private async readBasePlan(product: ProductRef): Promise<{ subscription: Subscription; basePlan: BasePlan }> {
     const { productId, basePlanId } = basePlanRef(product);
-    const subscription = await getSubscription(this.credentials, this.packageName, productId, this.ctx);
+    const subscription = await getSubscription(this.tokens, this.packageName, productId, this.ctx);
     const basePlan = subscription?.basePlans?.find((bp) => bp.basePlanId === basePlanId);
     if (!subscription || !basePlan) throw notFound(`Base plan ${productId}/${basePlanId} not found`);
     return { subscription, basePlan };
@@ -425,7 +428,7 @@ export class PlayAdapter implements PlatformAdapter {
    * request, once per adapter). Undefined when Play doesn't report one.
    */
   async fetchRegionsVersion(): Promise<string | undefined> {
-    this.regionsVersionRead ??= convertRegionPrices(this.credentials, this.packageName, { currencyCode: 'USD', units: '1' }, this.ctx).then(
+    this.regionsVersionRead ??= convertRegionPrices(this.tokens, this.packageName, { currencyCode: 'USD', units: '1' }, this.ctx).then(
       (r) => (typeof r?.regionVersion?.version === 'string' && r.regionVersion.version ? r.regionVersion.version : undefined)
     );
     try {
@@ -597,13 +600,13 @@ export class PlayAdapter implements PlatformAdapter {
         let record: Record<string, unknown> = context.pending?.includes('activate') ? { created: true } : {};
         if (!context.pending?.includes('activate')) {
           try {
-            await createSubscriptionOffer(this.credentials, id, playOfferResource(id, after), op.regionsVersion!, this.ctx);
+            await createSubscriptionOffer(this.tokens, id, playOfferResource(id, after), op.regionsVersion!, this.ctx);
             record = { createSent: true, created: true };
           } catch (error) {
             // Creates retry 429 only, so a 409 means the offer existed before this request (an earlier
             // attempt took effect). Use it only if it is exactly this one.
             if (getErrorStatus(error) === 409) {
-              const existing = await getSubscriptionOffer(this.credentials, id, offerId, this.ctx).catch(() => null);
+              const existing = await getSubscriptionOffer(this.tokens, id, offerId, this.ctx).catch(() => null);
               const read = existing ? parsePlayOffer(existing, id) : undefined;
               if (read?.play && (read.problems?.length ?? 0) === 0 && samePlayOfferContent(read.play.offer, after)) {
                 record = { createSent: true, created: true, foundAfterConflict: true };
@@ -618,7 +621,7 @@ export class PlayAdapter implements PlatformAdapter {
         }
         if (after.state === 'ACTIVE') {
           try {
-            await setSubscriptionOfferActive(this.credentials, id, offerId, true, this.ctx);
+            await setSubscriptionOfferActive(this.tokens, id, offerId, true, this.ctx);
           } catch (error) {
             // The draft exists. A refusal (4xx) means it is still a draft; no answer means it may be either.
             const status = getErrorStatus(error);
@@ -633,16 +636,16 @@ export class PlayAdapter implements PlatformAdapter {
       case 'updateOffer':
       case 'updateOfferPrices': {
         const fields = changedPlayOfferFields(op.before!, op.after!);
-        await patchSubscriptionOffer(this.credentials, id, playOfferResource(id, op.after!), fields, op.regionsVersion!, this.ctx);
+        await patchSubscriptionOffer(this.tokens, id, playOfferResource(id, op.after!), fields, op.regionsVersion!, this.ctx);
         return { updateMask: fields.join(','), regions: changedPlayRegions(op.before!, op.after!).length };
       }
       case 'activateOffer':
       case 'deactivateOffer':
-        await setSubscriptionOfferActive(this.credentials, id, offerId, op.kind === 'activateOffer', this.ctx);
+        await setSubscriptionOfferActive(this.tokens, id, offerId, op.kind === 'activateOffer', this.ctx);
         return { state: op.after!.state };
       case 'deleteOffer':
         try {
-          await deleteSubscriptionOffer(this.credentials, id, offerId, this.ctx);
+          await deleteSubscriptionOffer(this.tokens, id, offerId, this.ctx);
         } catch (error) {
           // Already gone (e.g. a retried delete whose first attempt took effect)
           if (getErrorStatus(error) === 404) return { deleted: offerId, alreadyGone: true };

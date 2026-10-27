@@ -8,6 +8,7 @@ import {
 import { packageNameSchema } from '@/lib/validation';
 import { signInAttempts, trustedClientIp } from '@/lib/utils/attempt-limiter';
 import type { ServiceAccountCredentials } from '@/lib/google-play/types';
+import { GoogleKeyTokenSource } from '@/lib/key-token-source';
 import {
   MissingEncryptionKeyError,
   canStoreSessions,
@@ -90,7 +91,7 @@ export async function POST(request: NextRequest) {
     try {
       // Use the monetization API which is the current supported API
       await googlePlayFetch<ProbeListResp<ProbeProduct>>(
-        creds,
+        new GoogleKeyTokenSource(creds),
         `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/subscriptions`,
         { query: { pageSize: 1 } }
       );

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getGoogleAuthFromCookies } from '@/middleware/auth';
+import { GoogleKeyTokenSource } from '@/lib/key-token-source';
 import { PlayAdapter } from '@/lib/adapters/play';
 import { getErrorStatus, toApiError } from '@/lib/utils/api-error';
 import { RequestBudget } from '@/lib/utils/request-budget';
@@ -15,6 +16,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   try {
     const auth = await getGoogleAuthFromCookies();
     if (!auth) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+    const tokens = new GoogleKeyTokenSource(auth.credentials);
 
     const { id } = await params;
     let productId: string;
@@ -29,7 +31,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: 'Invalid basePlanId' }, { status: 400 });
     }
 
-    const adapter = new PlayAdapter({ credentials: auth.credentials, packageName: auth.packageName, budget: new RequestBudget() });
+    const adapter = new PlayAdapter({ tokens, packageName: auth.packageName, budget: new RequestBudget() });
     const offers = basePlanParam
       ? await adapter.fetchOffers({ platform: 'google', type: 'subscription', productId, basePlanId: basePlanParam })
       : await adapter.fetchSubscriptionOffers(productId);

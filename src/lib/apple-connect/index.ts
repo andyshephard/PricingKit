@@ -10,7 +10,6 @@ export {
   validateAppleCredentials,
   appleApiRequest,
   AppleApiError,
-  getAppleRateLimitInfo,
   parseAppleRateLimitHeader,
   type AppleApiRequestOptions,
   type AppleRateLimitInfo,

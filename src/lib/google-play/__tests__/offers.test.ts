@@ -4,12 +4,12 @@ vi.mock('@/lib/google-play/client', () => ({ googlePlayFetch: vi.fn() }));
 
 import { googlePlayFetch } from '@/lib/google-play/client';
 import { listSubscriptionOffers, parsePlayOffer, playOfferResource } from '../offers';
-import type { ServiceAccountCredentials } from '../types';
+import { HeaderTokenSource } from '../../token-source';
 import { RequestBudget } from '@/lib/utils/request-budget';
 import { FakePlayOffers, PKG, PRODUCT, retentionOfferResource, trialOfferResource, twoPhaseOfferResource } from '@/lib/adapters/__tests__/fake-play-offers';
 
 const fetchMock = vi.mocked(googlePlayFetch);
-const credentials = {} as ServiceAccountCredentials;
+const tokens = new HeaderTokenSource('google', 'test-access-token', 'test@example.iam.gserviceaccount.com');
 const id = { packageName: PKG, productId: PRODUCT, basePlanId: 'annual' };
 
 describe('parsePlayOffer', () => {
@@ -130,12 +130,12 @@ describe('listSubscriptionOffers', () => {
     store.seed('annual', trialOfferResource());
     store.seed('monthly', { ...trialOfferResource(), offerId: 'monthly-trial', basePlanId: 'monthly' });
     const budget = new RequestBudget({ limit: 10 });
-    const all = await listSubscriptionOffers(credentials, PKG, PRODUCT, '-', { budget });
+    const all = await listSubscriptionOffers(tokens, PKG, PRODUCT, '-', { budget });
     expect(all.map((o) => o.offerId)).toEqual(['annual-half-off', 'new-customer-trial', 'monthly-trial']);
     expect(store.calls.map((c) => c.path.endsWith(`/subscriptions/${PRODUCT}/basePlans/-/offers`))).toEqual([true, true]);
     expect(store.calls[1].query).toMatchObject({ pageToken: 'page-2' });
     expect(budget.used).toBe(2);
-    const annual = await listSubscriptionOffers(credentials, PKG, PRODUCT, 'annual');
+    const annual = await listSubscriptionOffers(tokens, PKG, PRODUCT, 'annual');
     expect(annual).toHaveLength(2);
   });
 
@@ -144,7 +144,7 @@ describe('listSubscriptionOffers', () => {
     store.seed('annual', retentionOfferResource());
     store.seed('annual', trialOfferResource());
     const budget = new RequestBudget({ limit: 1 });
-    await expect(listSubscriptionOffers(credentials, PKG, PRODUCT, '-', { budget })).rejects.toMatchObject({ code: 'BUDGET_EXCEEDED' });
+    await expect(listSubscriptionOffers(tokens, PKG, PRODUCT, '-', { budget })).rejects.toMatchObject({ code: 'BUDGET_EXCEEDED' });
     expect(store.calls).toHaveLength(1);
   });
 });

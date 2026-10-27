@@ -1,9 +1,12 @@
 import type {
   AppleConnectCredentials,
+  AppleConnection,
   AppleApiListResponse,
   AppleApiErrorResponse,
 } from './types';
 import { TokenCache, hashCredentialFields } from '../token-cache';
+import type { AppleKeyCredentials } from '../key-token-source';
+import { assertTokenPlatform } from '../token-source';
 import { ApiError, isRetryableStatus, toApiError } from '../utils/api-error';
 import type { RequestBudget, RequestContext } from '../utils/request-budget';
 import {
@@ -22,7 +25,7 @@ const TOKEN_REFRESH_MARGIN = 60; // Refresh 1 minute before expiry
 const tokenCache = new TokenCache();
 
 // Hash credentials for cache lookup
-function hashCredentials(credentials: AppleConnectCredentials): Promise<string> {
+function hashCredentials(credentials: AppleKeyCredentials): Promise<string> {
   return hashCredentialFields([
     credentials.keyId,
     credentials.issuerId,
@@ -30,8 +33,8 @@ function hashCredentials(credentials: AppleConnectCredentials): Promise<string> 
   ]);
 }
 
-// Generate JWT for App Store Connect API
-export async function generateJWT(credentials: AppleConnectCredentials): Promise<string> {
+// Generate JWT for App Store Connect API (AppleKeyTokenSource calls this; requests take a TokenSource)
+export async function generateJWT(credentials: AppleKeyCredentials): Promise<string> {
   const credHash = await hashCredentials(credentials);
 
   // Check if we have a valid cached token
@@ -179,20 +182,6 @@ export function parseAppleRateLimitHeader(header: string | null): AppleRateLimit
   return info.limit === undefined && info.remaining === undefined ? undefined : info;
 }
 
-// Last X-Rate-Limit seen per API key (keyed by issuer + key ID, no secrets)
-const lastRateLimitByKey = new Map<string, AppleRateLimitInfo & { updatedAt: number }>();
-
-function rateLimitKey(credentials: AppleConnectCredentials): string {
-  return `${credentials.issuerId}:${credentials.keyId}`;
-}
-
-/** Most recent X-Rate-Limit info observed for these credentials, if any */
-export function getAppleRateLimitInfo(
-  credentials: AppleConnectCredentials
-): (AppleRateLimitInfo & { updatedAt: number }) | undefined {
-  return lastRateLimitByKey.get(rateLimitKey(credentials));
-}
-
 export interface AppleApiRequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
   body?: unknown;
@@ -211,11 +200,12 @@ export interface AppleApiRequestOptions {
 
 // API request helper
 export async function appleApiRequest<T>(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   endpoint: string,
   options: AppleApiRequestOptions = {}
 ): Promise<T> {
   const { method = 'GET', body, queryParams, apiVersion = 'v1', budget, onRateLimit } = options;
+  assertTokenPlatform(connection.tokens, 'apple');
   const retry = resolveRetryOptions(options.retry);
   // A POST creates something. After a 5xx, timeout or dropped connection the
   // create may still have succeeded on Apple's side, so retrying could
@@ -238,7 +228,7 @@ export async function appleApiRequest<T>(
     // Throws BUDGET_EXCEEDED before anything is sent
     budget?.consume('apple');
 
-    const token = await generateJWT(credentials);
+    const token = await connection.tokens.getToken();
     const fetchOptions: RequestInit = {
       method,
       headers: {
@@ -284,7 +274,6 @@ export async function appleApiRequest<T>(
 
     const rateLimit = parseAppleRateLimitHeader(response.headers.get('X-Rate-Limit'));
     if (rateLimit) {
-      lastRateLimitByKey.set(rateLimitKey(credentials), { ...rateLimit, updatedAt: Date.now() });
       if (rateLimit.remaining !== undefined) {
         budget?.recordUpstreamRemaining(rateLimit.remaining);
       }
@@ -363,11 +352,11 @@ export class AppleApiError extends ApiError {
 
 // Test connection to App Store Connect
 export async function testAppleConnection(
-  credentials: AppleConnectCredentials
+  connection: AppleConnection
 ): Promise<{ success: boolean; error?: string }> {
   try {
     const response = await appleApiRequest<AppleApiListResponse<unknown>>(
-      credentials,
+      connection,
       '/apps',
       { queryParams: { limit: '1' } }
     );
@@ -403,23 +392,21 @@ export async function testAppleConnection(
 
 // Get app ID for a bundle ID
 export async function getAppIdForBundleId(
-  credentials: AppleConnectCredentials,
+  connection: AppleConnection,
   ctx: RequestContext = {}
 ): Promise<string | null> {
   try {
-    // console.log('[Apple] getAppIdForBundleId - Looking up bundleId:', credentials.bundleId);
-
     // Fetch apps matching the bundle ID filter (may return partial matches)
     // We need to find the exact match
     const response = await appleApiRequest<AppleApiListResponse<{
       id: string;
       attributes: { bundleId: string; name: string }
     }>>(
-      credentials,
+      connection,
       '/apps',
       {
         queryParams: {
-          'filter[bundleId]': credentials.bundleId,
+          'filter[bundleId]': connection.bundleId,
           'fields[apps]': 'bundleId,name',
           limit: '200',
         },
@@ -427,30 +414,17 @@ export async function getAppIdForBundleId(
       }
     );
 
-    // console.log('[Apple] getAppIdForBundleId - Found', response.data?.length ?? 0, 'apps matching filter');
-
     if (response.data && response.data.length > 0) {
       // Find the app with the EXACT bundle ID match
       const exactMatch = response.data.find(
-        app => app.attributes.bundleId === credentials.bundleId
+        app => app.attributes.bundleId === connection.bundleId
       );
 
       if (exactMatch) {
-        // console.log('[Apple] getAppIdForBundleId - Found exact match:', exactMatch.id, exactMatch.attributes.name);
         return exactMatch.id;
       }
-
-      // Log available apps for debugging
-      /* console.log('[Apple] getAppIdForBundleId - Available apps:', response.data.map(app => ({
-        id: app.id,
-        bundleId: app.attributes.bundleId,
-        name: app.attributes.name,
-      }))); */
-
-      // console.log('[Apple] getAppIdForBundleId - No exact match found for bundleId:', credentials.bundleId);
       return null;
     }
-    // console.log('[Apple] getAppIdForBundleId - No apps found for bundleId:', credentials.bundleId);
     return null;
   } catch (error) {
     // null means "no app with this bundle ID"; API failures are thrown

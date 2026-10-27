@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getAppleAuthFromCookies } from '@/middleware/auth';
+import { appleKeyConnection } from '@/lib/key-token-source';
 import { listInAppPurchases } from '@/lib/apple-connect';
 import { appleErrorResponse } from '../_lib/error-response';
 
@@ -12,8 +13,9 @@ export async function GET() {
         { status: 401 }
       );
     }
+    const connection = appleKeyConnection(auth.credentials);
 
-    const products = await listInAppPurchases(auth.credentials);
+    const products = await listInAppPurchases(connection);
 
     // Optionally fetch prices for each product (can be expensive)
     // For list view, we return products without prices

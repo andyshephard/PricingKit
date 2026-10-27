@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getGoogleAuthFromCookies } from '@/middleware/auth';
+import { GoogleKeyTokenSource } from '@/lib/key-token-source';
 import { listInAppProducts } from '@/lib/google-play/products';
 
 export async function GET() {
@@ -12,8 +13,9 @@ export async function GET() {
         { status: 401 }
       );
     }
+    const tokens = new GoogleKeyTokenSource(auth.credentials);
 
-    const products = await listInAppProducts(auth.credentials, auth.packageName);
+    const products = await listInAppProducts(tokens, auth.packageName);
 
     return NextResponse.json({ products });
   } catch (error: unknown) {

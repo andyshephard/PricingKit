@@ -12,7 +12,7 @@
 
 import { appleApiRequest } from './client';
 import { appleListAll } from './pagination';
-import type { AppleConnectCredentials } from './types';
+import type { AppleConnection } from './types';
 import type { RequestContext } from '../utils/request-budget';
 import { ApiError, toApiError } from '../utils/api-error';
 
@@ -23,8 +23,8 @@ function mismatch(message: string): ApiError {
 }
 
 /** The App Store Connect app ID for an exact bundle ID, or null */
-export async function findAppIdByBundleId(credentials: AppleConnectCredentials, bundleId: string, ctx: RequestContext = {}): Promise<string | null> {
-  const response = await appleApiRequest<{ data?: Array<{ id: string; attributes?: { bundleId?: string } }> }>(credentials, '/apps', {
+export async function findAppIdByBundleId(connection: AppleConnection, bundleId: string, ctx: RequestContext = {}): Promise<string | null> {
+  const response = await appleApiRequest<{ data?: Array<{ id: string; attributes?: { bundleId?: string } }> }>(connection, '/apps', {
     queryParams: { 'filter[bundleId]': bundleId, 'fields[apps]': 'bundleId', limit: '200' },
     budget: ctx.budget,
   });
@@ -33,8 +33,8 @@ export async function findAppIdByBundleId(credentials: AppleConnectCredentials, 
 }
 
 /** IDs of every subscription group of an app */
-export async function listAppSubscriptionGroupIds(credentials: AppleConnectCredentials, appId: string, ctx: RequestContext = {}): Promise<Set<string>> {
-  const groups = await appleListAll<{ id: string }>(credentials, `/apps/${encodeURIComponent(appId)}/subscriptionGroups`, {
+export async function listAppSubscriptionGroupIds(connection: AppleConnection, appId: string, ctx: RequestContext = {}): Promise<Set<string>> {
+  const groups = await appleListAll<{ id: string }>(connection, `/apps/${encodeURIComponent(appId)}/subscriptionGroups`, {
     queryParams: { 'fields[subscriptionGroups]': 'referenceName', limit: '200' },
     budget: ctx.budget,
   });
@@ -42,11 +42,11 @@ export async function listAppSubscriptionGroupIds(credentials: AppleConnectCrede
 }
 
 /** The subscription group a subscription belongs to */
-export async function getSubscriptionGroupId(credentials: AppleConnectCredentials, subscriptionId: string, ctx: RequestContext = {}): Promise<string> {
+export async function getSubscriptionGroupId(connection: AppleConnection, subscriptionId: string, ctx: RequestContext = {}): Promise<string> {
   const response = await appleApiRequest<{
     data?: { relationships?: { group?: { data?: { id?: string } | null } } };
     included?: Array<{ type?: string; id?: string }>;
-  }>(credentials, `/subscriptions/${encodeURIComponent(subscriptionId)}`, {
+  }>(connection, `/subscriptions/${encodeURIComponent(subscriptionId)}`, {
     queryParams: { include: 'group', 'fields[subscriptions]': 'group', 'fields[subscriptionGroups]': 'referenceName' },
     budget: ctx.budget,
   });
@@ -72,7 +72,7 @@ export class SubscriptionOwnership {
   private readonly verified = new Set<string>();
 
   constructor(
-    private readonly credentials: AppleConnectCredentials,
+    private readonly connection: AppleConnection,
     private readonly bundleId: string,
     private readonly ctx: RequestContext = {}
   ) {}
@@ -80,9 +80,9 @@ export class SubscriptionOwnership {
   private appGroups(): Promise<Set<string>> {
     this.groups ??= (async () => {
       if (!this.bundleId) throw mismatch('No app is selected, so the subscription can\'t be checked against it');
-      const appId = await findAppIdByBundleId(this.credentials, this.bundleId, this.ctx);
+      const appId = await findAppIdByBundleId(this.connection, this.bundleId, this.ctx);
       if (!appId) throw new ApiError(`No app with bundle ID ${this.bundleId} for this API key`, { status: 404, code: 'APP_NOT_FOUND', platform: 'apple', retryable: false });
-      return listAppSubscriptionGroupIds(this.credentials, appId, this.ctx);
+      return listAppSubscriptionGroupIds(this.connection, appId, this.ctx);
     })();
     // A failed lookup isn't cached: the next check tries again
     this.groups.catch(() => (this.groups = undefined));
@@ -93,7 +93,7 @@ export class SubscriptionOwnership {
   async assert(subscriptionId: string): Promise<void> {
     if (this.verified.has(subscriptionId)) return;
     try {
-      const [groups, groupId] = await Promise.all([this.appGroups(), getSubscriptionGroupId(this.credentials, subscriptionId, this.ctx)]);
+      const [groups, groupId] = await Promise.all([this.appGroups(), getSubscriptionGroupId(this.connection, subscriptionId, this.ctx)]);
       if (!groups.has(groupId)) {
         throw mismatch(`Subscription ${subscriptionId} doesn't belong to ${this.bundleId}. API keys work across a team's apps, so PricingKit refuses to touch another app's subscription.`);
       }
@@ -105,6 +105,6 @@ export class SubscriptionOwnership {
 }
 
 /** One-off check for routes: the subscription must be in the session's app */
-export async function assertSubscriptionInApp(credentials: AppleConnectCredentials, subscriptionId: string, ctx: RequestContext = {}): Promise<void> {
-  await new SubscriptionOwnership(credentials, credentials.bundleId, ctx).assert(subscriptionId);
+export async function assertSubscriptionInApp(connection: AppleConnection, subscriptionId: string, ctx: RequestContext = {}): Promise<void> {
+  await new SubscriptionOwnership(connection, connection.bundleId, ctx).assert(subscriptionId);
 }

@@ -2,6 +2,7 @@
 // change must send one schedule holding every manual price.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AppleConnectCredentials } from '../types';
+import { appleKeyConnection } from '../../key-token-source';
 import { ApiError } from '@/lib/utils/api-error';
 
 const appleApiRequest = vi.fn();
@@ -18,6 +19,7 @@ const credentials: AppleConnectCredentials = {
   issuerId: '00000000-0000-0000-0000-000000000000',
   bundleId: 'com.example.app',
 };
+const connection = appleKeyConnection(credentials);
 
 function manual(id: string, territory: string, pricePoint: string, startDate: string | null, endDate: string | null = null) {
   return {
@@ -65,7 +67,7 @@ const withCurrentAndScheduled = () => [
 describe('replaceInAppPurchaseManualPrices: a territory with a current and a scheduled price', () => {
   it('an immediate change replaces the current price and keeps the scheduled one', async () => {
     serve(withCurrentAndScheduled());
-    const result = await replaceInAppPurchaseManualPrices(credentials, 'iap-1', { GB: { pricePointId: 'pp-gbr-new' } }, 'USA', {}, '2030-01-01');
+    const result = await replaceInAppPurchaseManualPrices(connection, 'iap-1', { GB: { pricePointId: 'pp-gbr-new' } }, 'USA', {}, '2030-01-01');
     expect(sentSchedule()).toEqual([
       ['pp-usa', null],
       ['pp-gbr-new', null],
@@ -76,7 +78,7 @@ describe('replaceInAppPurchaseManualPrices: a territory with a current and a sch
 
   it('a future-dated change keeps the current price and adds the new one', async () => {
     serve(withCurrentAndScheduled());
-    await replaceInAppPurchaseManualPrices(credentials, 'iap-1', { GB: { pricePointId: 'pp-gbr-summer', startDate: '2098-06-01' } }, 'USA', {}, '2030-01-01');
+    await replaceInAppPurchaseManualPrices(connection, 'iap-1', { GB: { pricePointId: 'pp-gbr-summer', startDate: '2098-06-01' } }, 'USA', {}, '2030-01-01');
     expect(sentSchedule()).toEqual([
       ['pp-usa', null],
       ['pp-gbr-now', null],
@@ -87,7 +89,7 @@ describe('replaceInAppPurchaseManualPrices: a territory with a current and a sch
 
   it('a future-dated change on the same date replaces that scheduled price only', async () => {
     serve(withCurrentAndScheduled());
-    await replaceInAppPurchaseManualPrices(credentials, 'iap-1', { GB: { pricePointId: 'pp-gbr-other', startDate: '2099-01-01' } }, 'USA', {}, '2030-01-01');
+    await replaceInAppPurchaseManualPrices(connection, 'iap-1', { GB: { pricePointId: 'pp-gbr-other', startDate: '2099-01-01' } }, 'USA', {}, '2030-01-01');
     expect(sentSchedule()).toEqual([
       ['pp-usa', null],
       ['pp-gbr-now', null],
@@ -99,7 +101,7 @@ describe('replaceInAppPurchaseManualPrices: a territory with a current and a sch
     serve(withCurrentAndScheduled(), () => {
       throw new ApiError('Invalid schedule', { status: 409, platform: 'apple' });
     });
-    const promise = replaceInAppPurchaseManualPrices(credentials, 'iap-1', { GB: { pricePointId: 'pp-gbr-new' } }, 'USA', {}, '2030-01-01');
+    const promise = replaceInAppPurchaseManualPrices(connection, 'iap-1', { GB: { pricePointId: 'pp-gbr-new' } }, 'USA', {}, '2030-01-01');
     await expect(promise).rejects.toMatchObject({ status: 409 });
     await expect(promise).rejects.toThrow(/kept the existing scheduled prices.*GBR from 2099-01-01.*not removed/);
   });
@@ -109,7 +111,7 @@ describe('replaceInAppPurchaseManualPrices: a territory with a current and a sch
       manual('m1', 'USA', 'pp-usa-2019', null),
       manual('m2', 'USA', 'pp-usa-2021', '2021-01-01'),
     ]);
-    await replaceInAppPurchaseManualPrices(credentials, 'iap-1', { GB: { pricePointId: 'pp-gbr' } }, 'USA', {}, '2030-01-01');
+    await replaceInAppPurchaseManualPrices(connection, 'iap-1', { GB: { pricePointId: 'pp-gbr' } }, 'USA', {}, '2030-01-01');
     expect(sentSchedule()).toEqual([
       ['pp-usa-2021', null],
       ['pp-gbr', null],
@@ -118,7 +120,7 @@ describe('replaceInAppPurchaseManualPrices: a territory with a current and a sch
 
   it('refuses a start date that is not in the future', async () => {
     await expect(
-      replaceInAppPurchaseManualPrices(credentials, 'iap-1', { GB: { pricePointId: 'pp', startDate: '2020-01-01' } }, 'USA', {}, '2030-01-01')
+      replaceInAppPurchaseManualPrices(connection, 'iap-1', { GB: { pricePointId: 'pp', startDate: '2020-01-01' } }, 'USA', {}, '2030-01-01')
     ).rejects.toMatchObject({ status: 400, code: 'INVALID_START_DATE' });
     expect(appleApiRequest).not.toHaveBeenCalled();
   });
@@ -143,7 +145,7 @@ describe('replaceInAppPurchaseManualPrices', () => {
     });
 
     const result = await replaceInAppPurchaseManualPrices(
-      credentials,
+      connection,
       'iap-1',
       { GB: { pricePointId: 'pp-gbr-new' }, JP: { pricePointId: 'pp-jpn' } },
       'USA',
@@ -171,7 +173,7 @@ describe('replaceInAppPurchaseManualPrices', () => {
       links: { self: 'x' },
     });
     await expect(
-      replaceInAppPurchaseManualPrices(credentials, 'iap-1', { GB: { pricePointId: 'pp' } }, 'USA')
+      replaceInAppPurchaseManualPrices(connection, 'iap-1', { GB: { pricePointId: 'pp' } }, 'USA')
     ).rejects.toMatchObject({ status: 502, code: 'INCOMPLETE_PRICE_SCHEDULE' });
     expect(appleApiRequest.mock.calls.some((c) => c[2]?.method === 'POST')).toBe(false);
   });
@@ -179,13 +181,13 @@ describe('replaceInAppPurchaseManualPrices', () => {
   it('treats a missing schedule as empty and still requires the base territory price', async () => {
     appleApiRequest.mockRejectedValue(new ApiError('Not found', { status: 404, platform: 'apple' }));
     await expect(
-      replaceInAppPurchaseManualPrices(credentials, 'iap-1', { GB: { pricePointId: 'pp' } }, 'USA')
+      replaceInAppPurchaseManualPrices(connection, 'iap-1', { GB: { pricePointId: 'pp' } }, 'USA')
     ).rejects.toMatchObject({ status: 422, code: 'MISSING_BASE_TERRITORY_PRICE' });
   });
 
   it('rejects unknown territories', async () => {
     await expect(
-      replaceInAppPurchaseManualPrices(credentials, 'iap-1', { ZZ: { pricePointId: 'pp' } }, 'USA')
+      replaceInAppPurchaseManualPrices(connection, 'iap-1', { ZZ: { pricePointId: 'pp' } }, 'USA')
     ).rejects.toMatchObject({ status: 400 });
     expect(appleApiRequest).not.toHaveBeenCalled();
   });

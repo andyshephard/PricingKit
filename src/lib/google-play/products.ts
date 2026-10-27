@@ -1,6 +1,7 @@
 import { googlePlayFetch } from './client';
 import type { RequestContext } from '../utils/request-budget';
-import type { ServiceAccountCredentials, InAppProduct, Money } from './types';
+import type { InAppProduct, Money } from './types';
+import type { TokenSource } from '../token-source';
 import { isZeroDecimalCurrency, roundDownToPriceEnding } from '../pricing/rounding';
 import { assertExpectedPrices } from './expected-prices';
 
@@ -138,7 +139,7 @@ function convertOneTimeProduct(product: OneTimeProduct): InAppProduct {
 }
 
 export async function listInAppProducts(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   packageName: string,
   ctx: RequestContext = {}
 ): Promise<InAppProduct[]> {
@@ -147,7 +148,7 @@ export async function listInAppProducts(
 
   do {
     const response = await googlePlayFetch<OneTimeProductListResponse>(
-      credentials,
+      tokens,
       `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/oneTimeProducts`,
       {
         budget: ctx.budget,
@@ -173,14 +174,14 @@ export async function listInAppProducts(
 }
 
 export async function getInAppProduct(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   packageName: string,
   productId: string,
   ctx: RequestContext = {}
 ): Promise<InAppProduct | null> {
   try {
     const response = await googlePlayFetch<OneTimeProduct>(
-      credentials,
+      tokens,
       `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/oneTimeProducts/${encodeURIComponent(productId)}`,
       { budget: ctx.budget }
     );
@@ -197,20 +198,20 @@ export async function getInAppProduct(
 }
 
 export async function getInAppProductRaw(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   packageName: string,
   productId: string,
   ctx: RequestContext = {}
 ): Promise<OneTimeProduct> {
   return googlePlayFetch<OneTimeProduct>(
-    credentials,
+    tokens,
     `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/oneTimeProducts/${encodeURIComponent(productId)}`,
     { budget: ctx.budget }
   );
 }
 
 export async function updateInAppProductPrices(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   packageName: string,
   productId: string,
   prices: Record<string, Money>,
@@ -219,7 +220,7 @@ export async function updateInAppProductPrices(
   options: { expected?: Record<string, Money> } = {}
 ): Promise<InAppProduct> {
   // Fetch current product to preserve untouched fields and existing availability.
-  const currentProduct = await getInAppProductRaw(credentials, packageName, productId, ctx);
+  const currentProduct = await getInAppProductRaw(tokens, packageName, productId, ctx);
 
   const purchaseOptions = currentProduct.purchaseOptions || [];
   if (purchaseOptions.length === 0) {
@@ -267,7 +268,7 @@ export async function updateInAppProductPrices(
 
   purchaseOptions[0].regionalPricingAndAvailabilityConfigs = updatedConfigs;
 
-  return patchPurchaseOptions(credentials, packageName, productId, currentProduct, ctx);
+  return patchPurchaseOptions(tokens, packageName, productId, currentProduct, ctx);
 }
 
 /**
@@ -280,13 +281,13 @@ export async function updateInAppProductPrices(
  * can show Google's reason.
  */
 export async function deleteRegionPrice(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   packageName: string,
   productId: string,
   regionCode: string,
   ctx: RequestContext = {}
 ): Promise<InAppProduct> {
-  const currentProduct = await getInAppProductRaw(credentials, packageName, productId, ctx);
+  const currentProduct = await getInAppProductRaw(tokens, packageName, productId, ctx);
 
   const purchaseOptions = currentProduct.purchaseOptions || [];
   if (purchaseOptions.length === 0) {
@@ -305,11 +306,11 @@ export async function deleteRegionPrice(
     config => config.regionCode !== regionCode
   );
 
-  return patchPurchaseOptions(credentials, packageName, productId, currentProduct, ctx);
+  return patchPurchaseOptions(tokens, packageName, productId, currentProduct, ctx);
 }
 
 async function patchPurchaseOptions(
-  credentials: ServiceAccountCredentials,
+  tokens: TokenSource,
   packageName: string,
   productId: string,
   product: OneTimeProduct,
@@ -318,7 +319,7 @@ async function patchPurchaseOptions(
   // Google's discovery doc lists the PATCH path as lowercase `onetimeproducts`,
   // even though every other one-time-product method is camelCase. Don't "fix" this.
   const response = await googlePlayFetch<OneTimeProduct>(
-    credentials,
+    tokens,
     `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/onetimeproducts/${encodeURIComponent(productId)}`,
     {
       budget: ctx.budget,

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAppleAuthFromCookies } from '@/middleware/auth';
+import { appleKeyConnection } from '@/lib/key-token-source';
 import {
   getSubscription,
   getSubscriptionById,
@@ -38,6 +39,7 @@ export async function POST(
         { status: 401 }
       );
     }
+    const connection = appleKeyConnection(auth.credentials);
 
     const { id } = await params;
     // One budget for the whole run (Apple allows ~3600 requests/hour per key)
@@ -46,7 +48,7 @@ export async function POST(
     // Get the subscription (by ID or productId)
     let subscription;
     if (isNumericSubscriptionId(id)) {
-      subscription = await getSubscriptionById(auth.credentials, id, ctx);
+      subscription = await getSubscriptionById(connection, id, ctx);
     } else {
       let productId: string;
       try {
@@ -60,7 +62,7 @@ export async function POST(
         }
         throw error;
       }
-      subscription = await getSubscription(auth.credentials, productId, ctx);
+      subscription = await getSubscription(connection, productId, ctx);
     }
 
     if (!subscription) {
@@ -71,10 +73,10 @@ export async function POST(
     }
 
     // API keys reach every app of a team: refuse another app's subscription
-    await assertSubscriptionInApp(auth.credentials, subscription.id, ctx);
+    await assertSubscriptionInApp(connection, subscription.id, ctx);
 
     // Fetch current prices to get scheduled prices
-    const currentPricesResult = await getSubscriptionPrices(auth.credentials, subscription.id, ctx);
+    const currentPricesResult = await getSubscriptionPrices(connection, subscription.id, ctx);
     const scheduledPrices = currentPricesResult.scheduled;
 
     // Check if there are any scheduled prices to delete
@@ -98,7 +100,7 @@ export async function POST(
       ([territory, price]) =>
         async () => {
           try {
-            await deleteSubscriptionPrice(auth.credentials, price.subscriptionPriceId!, ctx);
+            await deleteSubscriptionPrice(connection, price.subscriptionPriceId!, ctx);
             return { territory, deleted: true as const };
           } catch (error) {
             if (getErrorStatus(error) === 409) {
@@ -114,7 +116,6 @@ export async function POST(
     );
 
     // Kick off async work — the stream is returned immediately
-    const credentials = auth.credentials;
     const subscriptionId = subscription.id;
 
     (async () => {
@@ -133,7 +134,7 @@ export async function POST(
         // Fetch updated prices to confirm (deletes are done; a failed refresh isn't a failed clear)
         let remainingScheduled: number | undefined;
         try {
-          const updatedPricesResult = await getSubscriptionPrices(credentials, subscriptionId, ctx);
+          const updatedPricesResult = await getSubscriptionPrices(connection, subscriptionId, ctx);
           remainingScheduled = Object.keys(updatedPricesResult.scheduled).length;
         } catch (error) {
           console.error('Error refreshing prices after clearing scheduled prices:', error);

@@ -7,6 +7,7 @@ vi.mock('@/lib/google-play/client', () => ({ googlePlayFetch: vi.fn() }));
 
 import { googlePlayFetch } from '@/lib/google-play/client';
 import { PlayAdapter } from '../play';
+import { HeaderTokenSource } from '@/lib/token-source';
 import {
   applyChangeSet,
   buildChangeSet,
@@ -19,12 +20,11 @@ import {
   type PlayOfferOp,
   type ProductRef,
 } from '@/lib/pricing';
-import type { ServiceAccountCredentials } from '@/lib/google-play/types';
 import { RequestBudget } from '@/lib/utils/request-budget';
 import { FakePlayOffers, money, PKG, PRODUCT, retentionOfferResource, trialOfferResource } from './fake-play-offers';
 
 const fetchMock = vi.mocked(googlePlayFetch);
-const credentials = {} as ServiceAccountCredentials;
+const tokens = new HeaderTokenSource('google', 'test-access-token', 'test@example.iam.gserviceaccount.com');
 const app = { packageName: PKG };
 const annual: ProductRef = { platform: 'google', type: 'subscription', productId: PRODUCT, basePlanId: 'annual' };
 const NOW = '2030-01-01T00:00:00.000Z';
@@ -36,7 +36,7 @@ beforeEach(() => {
   fetchMock.mockImplementation(store.handle as never);
 });
 
-const adapter = (budget?: RequestBudget) => new PlayAdapter({ credentials, packageName: PKG, budget });
+const adapter = (budget?: RequestBudget) => new PlayAdapter({ tokens, packageName: PKG, budget });
 
 /** Phase 3 criterion 1: developer-determined, 50% off for a year as one payment, tagged for RevenueCat */
 const retentionSpec: OfferSpec = {
@@ -316,7 +316,7 @@ describe('app ownership', () => {
   it('refuses a plan for another package before reading anything', async () => {
     const plan = await planCriterion();
     const calls = store.calls.length;
-    const other = new PlayAdapter({ credentials, packageName: 'com.example.other' });
+    const other = new PlayAdapter({ tokens, packageName: 'com.example.other' });
     await expect(applyChangeSet(plan.changeSet, { adapter: other, confirm: plan.hash })).rejects.toMatchObject({ code: 'APP_MISMATCH', status: 409 });
     expect(store.calls.length).toBe(calls);
     await expect(other.planOffers({ app, offers: [retentionSpec] })).rejects.toMatchObject({ code: 'APP_MISMATCH' });

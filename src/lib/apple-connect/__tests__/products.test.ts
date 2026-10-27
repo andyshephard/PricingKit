@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AppleConnectCredentials } from '../types';
+import { appleKeyConnection } from '../../key-token-source';
 import { ApiError } from '@/lib/utils/api-error';
 
 // No network: every Apple call goes through this mock
@@ -30,6 +31,7 @@ const credentials: AppleConnectCredentials = {
   issuerId: '00000000-0000-0000-0000-000000000000',
   bundleId: 'com.example.test',
 };
+const connection = appleKeyConnection(credentials);
 
 function appleFailure(status: number) {
   return new ApiError(`Apple returned ${status}`, { status, platform: 'apple' });
@@ -46,7 +48,7 @@ beforeEach(() => {
 describe('updateInAppPurchasePrices', () => {
   it('throws a 4xx ApiError when the base territory price is missing', async () => {
     const promise = updateInAppPurchasePrices(
-      credentials,
+      connection,
       'iap-1',
       [{ territoryId: 'FRA', pricePointId: 'pp-fra' }],
       'USA'
@@ -63,7 +65,7 @@ describe('updateInAppPurchasePrices', () => {
   it('throws when the base territory is not supported for IAP pricing', async () => {
     await expect(
       updateInAppPurchasePrices(
-        credentials,
+        connection,
         'iap-1',
         [{ territoryId: 'MCO', pricePointId: 'pp-mco' }],
         'MCO'
@@ -74,7 +76,7 @@ describe('updateInAppPurchasePrices', () => {
 
   it('sends the schedule when the base territory price is present', async () => {
     await updateInAppPurchasePrices(
-      credentials,
+      connection,
       'iap-1',
       [
         { territoryId: 'USA', pricePointId: 'pp-usa' },
@@ -96,23 +98,23 @@ describe('getInAppPurchase', () => {
   it('rethrows API failures as ApiError instead of returning null', async () => {
     appleApiRequest.mockRejectedValue(appleFailure(500));
 
-    const promise = getInAppPurchase(credentials, 'coins_100');
+    const promise = getInAppPurchase(connection, 'coins_100');
     await expect(promise).rejects.toBeInstanceOf(ApiError);
     await expect(promise).rejects.toMatchObject({ status: 500 });
   });
 
   it('returns null for a genuine 404 or an empty result', async () => {
     appleApiRequest.mockRejectedValueOnce(appleFailure(404));
-    await expect(getInAppPurchase(credentials, 'coins_100')).resolves.toBeNull();
+    await expect(getInAppPurchase(connection, 'coins_100')).resolves.toBeNull();
 
     appleApiRequest.mockResolvedValueOnce({ data: [] });
-    await expect(getInAppPurchase(credentials, 'coins_100')).resolves.toBeNull();
+    await expect(getInAppPurchase(connection, 'coins_100')).resolves.toBeNull();
   });
 
   it('throws APP_NOT_FOUND when the bundle ID has no app', async () => {
     getAppIdForBundleId.mockResolvedValue(null);
 
-    await expect(getInAppPurchase(credentials, 'coins_100')).rejects.toMatchObject({
+    await expect(getInAppPurchase(connection, 'coins_100')).rejects.toMatchObject({
       status: 404,
       code: 'APP_NOT_FOUND',
     });
@@ -122,7 +124,7 @@ describe('getInAppPurchase', () => {
   it('propagates an app lookup failure', async () => {
     getAppIdForBundleId.mockRejectedValue(appleFailure(401));
 
-    await expect(getInAppPurchase(credentials, 'coins_100')).rejects.toMatchObject({
+    await expect(getInAppPurchase(connection, 'coins_100')).rejects.toMatchObject({
       status: 401,
     });
   });
@@ -132,23 +134,23 @@ describe('getBaseTerritoryForProduct', () => {
   it('returns the base territory', async () => {
     appleApiRequest.mockResolvedValue({ data: { id: 'GBR', type: 'territories' } });
 
-    await expect(getBaseTerritoryForProduct(credentials, 'iap-1')).resolves.toBe('GBR');
+    await expect(getBaseTerritoryForProduct(connection, 'iap-1')).resolves.toBe('GBR');
   });
 
   it('throws on an API error instead of guessing USA', async () => {
     appleApiRequest.mockRejectedValue(appleFailure(503));
 
-    await expect(getBaseTerritoryForProduct(credentials, 'iap-1')).rejects.toMatchObject({
+    await expect(getBaseTerritoryForProduct(connection, 'iap-1')).rejects.toMatchObject({
       status: 503,
     });
   });
 
   it('returns null when the product has no price schedule', async () => {
     appleApiRequest.mockRejectedValueOnce(appleFailure(404));
-    await expect(getBaseTerritoryForProduct(credentials, 'iap-1')).resolves.toBeNull();
+    await expect(getBaseTerritoryForProduct(connection, 'iap-1')).resolves.toBeNull();
 
     appleApiRequest.mockResolvedValueOnce({ data: null });
-    await expect(getBaseTerritoryForProduct(credentials, 'iap-1')).resolves.toBeNull();
+    await expect(getBaseTerritoryForProduct(connection, 'iap-1')).resolves.toBeNull();
   });
 });
 
@@ -156,7 +158,7 @@ describe('getInAppPurchasePrices', () => {
   it('rethrows API failures instead of returning no prices', async () => {
     appleApiRequest.mockRejectedValue(appleFailure(429));
 
-    await expect(getInAppPurchasePrices(credentials, 'iap-1')).rejects.toMatchObject({
+    await expect(getInAppPurchasePrices(connection, 'iap-1')).rejects.toMatchObject({
       status: 429,
       retryable: true,
     });
@@ -165,7 +167,7 @@ describe('getInAppPurchasePrices', () => {
   it('returns no prices when the product has no price schedule (404)', async () => {
     appleApiRequest.mockRejectedValue(appleFailure(404));
 
-    await expect(getInAppPurchasePrices(credentials, 'iap-1')).resolves.toEqual({});
+    await expect(getInAppPurchasePrices(connection, 'iap-1')).resolves.toEqual({});
   });
 });
 
@@ -173,7 +175,7 @@ describe('getAvailablePricePoints', () => {
   it('rethrows API failures instead of returning no price points', async () => {
     appleApiRequest.mockRejectedValue(appleFailure(500));
 
-    await expect(getAvailablePricePoints(credentials, 'USA')).rejects.toMatchObject({
+    await expect(getAvailablePricePoints(connection, 'USA')).rejects.toMatchObject({
       status: 500,
     });
   });
@@ -181,7 +183,7 @@ describe('getAvailablePricePoints', () => {
   it('throws APP_NOT_FOUND when the bundle ID has no app', async () => {
     getAppIdForBundleId.mockResolvedValue(null);
 
-    await expect(getAvailablePricePoints(credentials, 'USA')).rejects.toMatchObject({
+    await expect(getAvailablePricePoints(connection, 'USA')).rejects.toMatchObject({
       status: 404,
       code: 'APP_NOT_FOUND',
     });
@@ -192,7 +194,7 @@ describe('getAvailablePricePoints', () => {
       data: [{ id: 'pp-1', attributes: { customerPrice: '0.99', proceeds: '0.70' } }],
     });
 
-    await expect(getAvailablePricePoints(credentials, 'USA')).resolves.toEqual([
+    await expect(getAvailablePricePoints(connection, 'USA')).resolves.toEqual([
       { id: 'pp-1', customerPrice: '0.99', proceeds: '0.70' },
     ]);
   });
@@ -230,7 +232,7 @@ describe('listInAppPurchases base prices', () => {
       throw appleFailure(500);
     });
 
-    const promise = listInAppPurchases(credentials);
+    const promise = listInAppPurchases(connection);
     await expect(promise).rejects.toBeInstanceOf(ApiError);
     await expect(promise).rejects.toMatchObject({ status: 500 });
   });
@@ -240,7 +242,7 @@ describe('listInAppPurchases base prices', () => {
       throw appleFailure(404);
     });
 
-    const products = await listInAppPurchases(credentials);
+    const products = await listInAppPurchases(connection);
     expect(products).toHaveLength(1);
     expect(products[0].baseTerritory).toBeUndefined();
   });
@@ -254,7 +256,7 @@ describe('listInAppPurchases base prices', () => {
       ],
     }));
 
-    const products = await listInAppPurchases(credentials);
+    const products = await listInAppPurchases(connection);
     expect(products[0].baseTerritory).toBe('GBR');
     expect(products[0].prices).toEqual({
       GBR: { territoryCode: 'GBR', currency: 'GBP', customerPrice: '0.99', proceeds: '0.70', pricePointId: 'pp-1' },
@@ -268,16 +270,16 @@ describe('listInAppPurchases base prices', () => {
 describe('writes are scoped to the session app', () => {
   it("finds an in-app purchase only in the session app's own list", async () => {
     appleApiRequest.mockResolvedValue({ data: [] });
-    await expect(getInAppPurchase(credentials, 'coins_100')).resolves.toBeNull();
-    expect(getAppIdForBundleId).toHaveBeenCalledWith(credentials, expect.anything());
+    await expect(getInAppPurchase(connection, 'coins_100')).resolves.toBeNull();
+    expect(getAppIdForBundleId).toHaveBeenCalledWith(connection, expect.anything());
     const [, endpoint, options] = appleApiRequest.mock.calls[0];
     expect(endpoint).toBe('/apps/app-1/inAppPurchasesV2');
     expect(options.queryParams['filter[productId]']).toBe('coins_100');
   });
 
   it("writes the app price schedule for the session app only", async () => {
-    await updateAppPriceSchedule(credentials, [{ territoryId: 'USA', pricePointId: 'pp-usa' }], 'USA');
-    expect(getAppIdForBundleId).toHaveBeenCalledWith(credentials);
+    await updateAppPriceSchedule(connection, [{ territoryId: 'USA', pricePointId: 'pp-usa' }], 'USA');
+    expect(getAppIdForBundleId).toHaveBeenCalledWith(connection);
     const post = appleApiRequest.mock.calls.find(([, , o]) => o?.method === 'POST')!;
     expect(post[2].body.data.relationships.app.data).toEqual({ id: 'app-1', type: 'apps' });
   });

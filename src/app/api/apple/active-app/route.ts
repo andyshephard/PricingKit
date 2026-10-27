@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { appleApiRequest, AppleApiError } from '@/lib/apple-connect/client';
+import { appleKeyConnection } from '@/lib/key-token-source';
 import type {
   AppleApiListResponse,
   AppleConnectCredentials,
@@ -42,7 +43,7 @@ export async function POST(request: NextRequest) {
   try {
     const response = await appleApiRequest<
       AppleApiListResponse<{ id: string; attributes: { bundleId: string } }>
-    >(credentials, '/apps', {
+    >(appleKeyConnection(credentials), '/apps', {
       queryParams: {
         'filter[bundleId]': bundleId,
         'fields[apps]': 'bundleId',

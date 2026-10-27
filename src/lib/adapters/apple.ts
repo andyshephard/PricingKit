@@ -81,7 +81,8 @@ import {
 import { AppleApiError } from '@/lib/apple-connect/client';
 import { SubscriptionOwnership } from '@/lib/apple-connect/ownership';
 import { getSubscriptionById } from '@/lib/apple-connect/subscriptions';
-import type { AppleConnectCredentials } from '@/lib/apple-connect/types';
+import type { AppleConnection } from '@/lib/apple-connect/types';
+import { assertTokenPlatform, type TokenSource } from '@/lib/token-source';
 import { deleteSubscriptionPrice, updateSubscriptionPrice } from '@/lib/apple-connect/subscriptions';
 import {
   getSubscriptionPricePointEqualizations,
@@ -96,7 +97,10 @@ import { ApiError, getErrorStatus, toApiError } from '@/lib/utils/api-error';
 import { isBudgetExceeded, type RequestBudget } from '@/lib/utils/request-budget';
 
 export interface AppleAdapterOptions {
-  credentials: AppleConnectCredentials;
+  /** Bearer tokens for App Store Connect */
+  tokens: TokenSource;
+  /** The app this adapter is for ('' matches no plan or subscription) */
+  bundleId: string;
   /** Every request the adapter sends is charged here */
   budget?: RequestBudget;
   /** Clock for telling current from scheduled prices (tests) */
@@ -120,21 +124,22 @@ function toAlpha2(territory: string): string | undefined {
 
 export class AppleAdapter implements PlatformAdapter {
   readonly platform = 'apple' as const;
-  private readonly credentials: AppleConnectCredentials;
+  private readonly connection: AppleConnection;
   private readonly budget?: RequestBudget;
   private readonly now?: () => Date;
   private readonly ownership: SubscriptionOwnership;
 
   constructor(options: AppleAdapterOptions) {
-    this.credentials = options.credentials;
+    assertTokenPlatform(options.tokens, 'apple');
+    this.connection = { tokens: options.tokens, bundleId: options.bundleId };
     this.budget = options.budget;
     this.now = options.now;
-    this.ownership = new SubscriptionOwnership(this.credentials, this.credentials.bundleId, { budget: this.budget });
+    this.ownership = new SubscriptionOwnership(this.connection, this.connection.bundleId, { budget: this.budget });
   }
 
   /**
    * Throws APP_MISMATCH unless the subscription belongs to the adapter's app
-   * (credentials.bundleId). API keys reach every app of a team, so a
+   * (connection.bundleId). API keys reach every app of a team, so a
    * subscription ID from another app would otherwise be written to.
    * Checked once per subscription per adapter.
    */
@@ -148,7 +153,7 @@ export class AppleAdapter implements PlatformAdapter {
 
   async fetchState(product: ProductRef): Promise<ProductPriceState> {
     const id = subscriptionId(product);
-    const entries = await listSubscriptionPriceEntries(this.credentials, id, this.ctx);
+    const entries = await listSubscriptionPriceEntries(this.connection, id, this.ctx);
     const today = (this.now?.() ?? new Date()).toISOString().slice(0, 10);
     const territories: Record<string, TerritoryPriceState> = {};
     const warnings: string[] = [];
@@ -235,10 +240,10 @@ export class AppleAdapter implements PlatformAdapter {
    * a pick.
    */
   async fetchInAppPurchaseState(productId: string): Promise<ProductPriceState> {
-    const iap = await getInAppPurchase(this.credentials, productId, this.ctx);
-    if (!iap) throw new ApiError(`In-app purchase ${productId} not found in ${this.credentials.bundleId}`, { status: 404, code: 'NOT_FOUND', platform: 'apple', retryable: false });
-    const { entries, warnings: readWarnings } = await listInAppPurchasePriceEntries(this.credentials, iap.id, this.ctx);
-    const base = await getBaseTerritoryForProduct(this.credentials, iap.id, this.ctx);
+    const iap = await getInAppPurchase(this.connection, productId, this.ctx);
+    if (!iap) throw new ApiError(`In-app purchase ${productId} not found in ${this.connection.bundleId}`, { status: 404, code: 'NOT_FOUND', platform: 'apple', retryable: false });
+    const { entries, warnings: readWarnings } = await listInAppPurchasePriceEntries(this.connection, iap.id, this.ctx);
+    const base = await getBaseTerritoryForProduct(this.connection, iap.id, this.ctx);
     const today = (this.now?.() ?? new Date()).toISOString().slice(0, 10);
     const territories: Record<string, TerritoryPriceState> = {};
     const warnings: string[] = [...readWarnings];
@@ -315,7 +320,7 @@ export class AppleAdapter implements PlatformAdapter {
     }
     if (alpha3ByAlpha2.size === 0) return result;
 
-    const ladders = await listSubscriptionPricePointsByTerritory(this.credentials, id, [...alpha3ByAlpha2.values()], this.ctx);
+    const ladders = await listSubscriptionPricePointsByTerritory(this.connection, id, [...alpha3ByAlpha2.values()], this.ctx);
     for (const [territory, alpha3] of alpha3ByAlpha2) {
       const target = targets[territory];
       const ladder: TerritoryPricePoint[] = (ladders.get(alpha3) ?? []).filter((p) => isDecimalString(p.customerPrice));
@@ -363,7 +368,7 @@ export class AppleAdapter implements PlatformAdapter {
    */
   async equalize(pricePointId: string, territories?: string[]): Promise<Record<string, TerritoryPricePoint>> {
     const alpha3 = territories?.map((t) => alpha2ToAlpha3(t)).filter((t): t is string => Boolean(t));
-    const points = await getSubscriptionPricePointEqualizations(this.credentials, pricePointId, { territories: alpha3 }, this.ctx);
+    const points = await getSubscriptionPricePointEqualizations(this.connection, pricePointId, { territories: alpha3 }, this.ctx);
     const out: Record<string, TerritoryPricePoint> = {};
     for (const point of points) {
       const alpha2 = toAlpha2(point.territory);
@@ -388,7 +393,7 @@ export class AppleAdapter implements PlatformAdapter {
     switch (op.kind) {
       case 'setPrice': {
         try {
-          const created = await updateSubscriptionPrice(this.credentials, id, op.after!.pricePointId!, territory, undefined, preserve, this.ctx);
+          const created = await updateSubscriptionPrice(this.connection, id, op.after!.pricePointId!, territory, undefined, preserve, this.ctx);
           return { createdPriceId: created.id ?? null };
         } catch (error) {
           const scheduled = context.territoryState?.scheduled;
@@ -409,7 +414,7 @@ export class AppleAdapter implements PlatformAdapter {
         // Create the new scheduled price first. Only once it exists is the one
         // it replaces deleted; a failed create deletes nothing.
         const created = await updateSubscriptionPrice(
-          this.credentials,
+          this.connection,
           id,
           op.after!.pricePointId!,
           territory,
@@ -420,7 +425,7 @@ export class AppleAdapter implements PlatformAdapter {
         const replacedId = op.before ? context.territoryState?.refs?.scheduledPriceId : undefined;
         if (!replacedId) return { createdPriceId: created.id ?? null };
         try {
-          await deleteSubscriptionPrice(this.credentials, replacedId, this.ctx);
+          await deleteSubscriptionPrice(this.connection, replacedId, this.ctx);
           return { createdPriceId: created.id ?? null, deletedPriceId: replacedId };
         } catch (error) {
           if (getErrorStatus(error) === 404) return { createdPriceId: created.id ?? null, deletedPriceId: replacedId };
@@ -450,7 +455,7 @@ export class AppleAdapter implements PlatformAdapter {
             retryable: false,
           });
         }
-        await deleteSubscriptionPrice(this.credentials, priceId, this.ctx);
+        await deleteSubscriptionPrice(this.connection, priceId, this.ctx);
         return { deletedPriceId: priceId };
       }
       case 'removePrice':
@@ -467,18 +472,18 @@ export class AppleAdapter implements PlatformAdapter {
 
   /** Every offer of the subscription (intro, promotional, offer codes, win-back), with prices per territory */
   async fetchOffers(product: ProductRef): Promise<StoreOffer[]> {
-    return listSubscriptionOffers(this.credentials, subscriptionId(product), this.ctx);
+    return listSubscriptionOffers(this.connection, subscriptionId(product), this.ctx);
   }
 
   /** One offer by store ID or key; null if the subscription has none */
   async fetchOffer(product: ProductRef, kind: AppleOfferKind, idOrKey: string): Promise<StoreOffer | null> {
-    return getSubscriptionOffer(this.credentials, subscriptionId(product), kind, idOrKey, this.ctx);
+    return getSubscriptionOffer(this.connection, subscriptionId(product), kind, idOrKey, this.ctx);
   }
 
   /** The subscription's billing period, as an ISO duration */
   async fetchBillingPeriod(product: ProductRef): Promise<BillingPeriod> {
     const id = subscriptionId(product);
-    const subscription = await getSubscriptionById(this.credentials, id, this.ctx);
+    const subscription = await getSubscriptionById(this.connection, id, this.ctx);
     if (!subscription) throw new ApiError(`Subscription ${id} not found`, { status: 404, code: 'NOT_FOUND', platform: 'apple', retryable: false });
     const period = appleSubscriptionPeriodToIso(subscription.period);
     if (!period) {
@@ -497,7 +502,7 @@ export class AppleAdapter implements PlatformAdapter {
     const id = subscriptionId(product);
     const alpha3 = [...new Set(territories)].map((t) => alpha2ToAlpha3(t)).filter((t): t is string => Boolean(t));
     if (alpha3.length === 0) return {};
-    const ladders = await listSubscriptionPricePointsByTerritory(this.credentials, id, alpha3, this.ctx);
+    const ladders = await listSubscriptionPricePointsByTerritory(this.connection, id, alpha3, this.ctx);
     const out: Record<string, PriceLadder> = {};
     for (const [territory, points] of ladders) {
       const alpha2 = toAlpha2(territory);
@@ -575,7 +580,7 @@ export class AppleAdapter implements PlatformAdapter {
       const needsLadders = spec.pricing.type === 'percentOfCurrent' || spec.pricing.type === 'fixed';
       if (needsLadders && !cache.ladders) cache.ladders = await this.fetchPriceLadders(product, Object.keys(cache.base.territories));
       if (!cache.offers.has(spec.kind)) {
-        cache.offers.set(spec.kind, await listSubscriptionOffersOfKind(this.credentials, id, spec.kind as AppleOfferKind, this.ctx));
+        cache.offers.set(spec.kind, await listSubscriptionOffersOfKind(this.connection, id, spec.kind as AppleOfferKind, this.ctx));
       }
       inputs.push({
         spec,
@@ -600,7 +605,7 @@ export class AppleAdapter implements PlatformAdapter {
   async planOfferLifecycle(input: Omit<OfferLifecycleInput, 'existing'>): Promise<OfferPlan> {
     this.assertApp(input.app);
     await this.verifyProduct(input.product);
-    const existing = await listSubscriptionOffersOfKind(this.credentials, subscriptionId(input.product), input.kind, this.ctx);
+    const existing = await listSubscriptionOffersOfKind(this.connection, subscriptionId(input.product), input.kind, this.ctx);
     return planOfferLifecycle({ ...input, existing });
   }
 
@@ -630,7 +635,7 @@ export class AppleAdapter implements PlatformAdapter {
       const base = options.states?.find((s) => productKey(s.product) === key) ?? (await this.fetchState(product));
       const offers: StoreOffer[] = [];
       for (const kind of [...new Set(productRules.map((r) => r.kind as AppleOfferKind))]) {
-        offers.push(...(await listSubscriptionOffersOfKind(this.credentials, id, kind, this.ctx)));
+        offers.push(...(await listSubscriptionOffersOfKind(this.connection, id, kind, this.ctx)));
       }
       const wanted = new Set<string>();
       for (const rule of productRules) {
@@ -679,15 +684,15 @@ export class AppleAdapter implements PlatformAdapter {
     });
   }
 
-  /** The executor's app check: the plan must be for the credentials' app (bundle ID) */
+  /** The executor's app check: the plan must be for the adapter's app (bundle ID) */
   verifyApp(app: AppRef): void {
     this.assertApp(app);
   }
 
-  /** The plan's app must be the credentials' app; credentials without a bundle ID match nothing */
+  /** The plan's app must be the adapter's app; an adapter without a bundle ID matches nothing */
   private assertApp(app: AppRef): void {
-    if (!('bundleId' in app) || !this.credentials.bundleId || app.bundleId !== this.credentials.bundleId) {
-      throw new ApiError(`The plan is for ${'bundleId' in app ? app.bundleId : app.packageName}, but the session is for ${this.credentials.bundleId || 'no app'}`, {
+    if (!('bundleId' in app) || !this.connection.bundleId || app.bundleId !== this.connection.bundleId) {
+      throw new ApiError(`The plan is for ${'bundleId' in app ? app.bundleId : app.packageName}, but the session is for ${this.connection.bundleId || 'no app'}`, {
         status: 409,
         code: 'APP_MISMATCH',
         platform: 'apple',
@@ -738,7 +743,7 @@ export class AppleAdapter implements PlatformAdapter {
       case 'createOffer': {
         const after = op.after!;
         const created = await createPromotionalOffer(
-          this.credentials,
+          this.connection,
           {
             subscriptionId: subscription,
             name: after.name ?? after.key,
@@ -762,12 +767,12 @@ export class AppleAdapter implements PlatformAdapter {
           if (refs[territory] && sameOfferPrice(observed[territory], price)) keep.push(refs[territory]);
           else add[territory] = price;
         }
-        await replacePromotionalOfferPrices(this.credentials, offerId, keep, offerPrices(add), this.ctx);
+        await replacePromotionalOfferPrices(this.connection, offerId, keep, offerPrices(add), this.ctx);
         return { offerId, kept: keep.length, replaced: Object.keys(add).length };
       }
       case 'deleteOffer': {
         const offerId = this.storeId(op, context);
-        await deletePromotionalOffer(this.credentials, offerId, this.ctx);
+        await deletePromotionalOffer(this.connection, offerId, this.ctx);
         return { deletedOfferId: offerId };
       }
       default:
@@ -811,7 +816,7 @@ export class AppleAdapter implements PlatformAdapter {
           await step(territory, async () =>
             (
               await createIntroductoryOffer(
-                this.credentials,
+                this.connection,
                 {
                   subscriptionId: subscription,
                   territory,
@@ -831,13 +836,13 @@ export class AppleAdapter implements PlatformAdapter {
         case 'deactivateOffer':
         case 'activateOffer':
           if (!ref) throw unsupported(`${territory}: no introductory offer resource to update`);
-          await step(territory, () => setIntroductoryOfferEndDate(this.credentials, ref, op.after!.schedule?.end ?? null, this.ctx));
+          await step(territory, () => setIntroductoryOfferEndDate(this.connection, ref, op.after!.schedule?.end ?? null, this.ctx));
           break;
         case 'deleteOffer':
           if (!ref) throw unsupported(`${territory}: no introductory offer resource to delete`);
           await step(territory, async () => {
             try {
-              await deleteIntroductoryOffer(this.credentials, ref, this.ctx);
+              await deleteIntroductoryOffer(this.connection, ref, this.ctx);
             } catch (error) {
               if (getErrorStatus(error) !== 404) throw error; // already gone: done
             }
@@ -856,7 +861,7 @@ export class AppleAdapter implements PlatformAdapter {
         const after = op.after!;
         if (after.eligibility?.type !== 'apple.offerCode') throw unsupported('An offer code needs its eligibility');
         const created = await createOfferCode(
-          this.credentials,
+          this.connection,
           {
             subscriptionId: subscription,
             name: after.key,
@@ -875,7 +880,7 @@ export class AppleAdapter implements PlatformAdapter {
       case 'deactivateOffer':
       case 'activateOffer': {
         const offerId = this.storeId(op, context);
-        await setOfferCodeActive(this.credentials, offerId, op.kind === 'activateOffer', this.ctx);
+        await setOfferCodeActive(this.connection, offerId, op.kind === 'activateOffer', this.ctx);
         return { offerId, active: op.kind === 'activateOffer' };
       }
       default:
@@ -893,7 +898,7 @@ export class AppleAdapter implements PlatformAdapter {
         const after = op.after!;
         if (after.eligibility?.type !== 'apple.winBack' || !after.schedule?.start) throw unsupported('A win-back offer needs its eligibility and a start date');
         const created = await createWinBackOffer(
-          this.credentials,
+          this.connection,
           {
             subscriptionId: subscription,
             referenceName: after.name ?? after.key,
@@ -917,12 +922,12 @@ export class AppleAdapter implements PlatformAdapter {
       case 'deactivateOffer':
       case 'activateOffer': {
         const offerId = this.storeId(op, context);
-        await updateWinBackOffer(this.credentials, offerId, { endDate: op.after!.schedule?.end ?? null }, this.ctx);
+        await updateWinBackOffer(this.connection, offerId, { endDate: op.after!.schedule?.end ?? null }, this.ctx);
         return { offerId, endDate: op.after!.schedule?.end ?? null };
       }
       case 'deleteOffer': {
         const offerId = this.storeId(op, context);
-        await deleteWinBackOffer(this.credentials, offerId, this.ctx);
+        await deleteWinBackOffer(this.connection, offerId, this.ctx);
         return { deletedOfferId: offerId };
       }
       default:
