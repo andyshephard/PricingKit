@@ -5,8 +5,9 @@ import {
   getInAppPurchase,
   getBaseTerritoryForProduct,
   getInAppPurchasePrices,
-  updateInAppPurchasePrice,
   updateInAppPurchasePrices,
+  replaceInAppPurchaseManualPrices,
+  toAppleTerritoryId,
   resolvePPPPricesToPricePoints,
   type PPPResolutionResult,
 } from '@/lib/apple-connect';
@@ -18,7 +19,6 @@ import {
   currencyCodeSchema,
 } from '@/lib/validation';
 import { RequestBudget } from '@/lib/utils/request-budget';
-import { mapWithConcurrency } from '@/lib/pricing/concurrency';
 
 // GET /api/apple/products/[id] - Get a single product with prices
 export async function GET(
@@ -232,22 +232,27 @@ export async function PATCH(
 
       updatedCount = result.resolved.length;
     } else {
-      // Direct pricePointId format - update each territory, one at a time
-      const updates = Object.entries(prices).flatMap(([territoryCode, priceData]) =>
-        'pricePointId' in priceData ? [{ territoryCode, ...priceData }] : []
-      );
-
-      await mapWithConcurrency(updates, 1, (update) =>
-        updateInAppPurchasePrice(
-          auth.credentials,
-          product.id,
-          update.pricePointId,
-          update.territoryCode,
-          update.startDate,
-          ctx
-        )
-      );
-      updatedCount = updates.length;
+      // Direct pricePointId format. Apple's schedule POST replaces the whole
+      // schedule, so every territory goes into ONE schedule together with the
+      // manual prices of territories not being changed.
+      const changes: Record<string, { pricePointId: string; startDate?: string }> = {};
+      for (const [territoryCode, priceData] of Object.entries(prices)) {
+        if ('pricePointId' in priceData) changes[territoryCode] = priceData;
+      }
+      let baseTerritory = product.baseTerritory;
+      if (!baseTerritory) {
+        // No schedule yet: a single immediate price defines the base territory
+        const entries = Object.entries(changes);
+        if (entries.length !== 1 || entries[0][1].startDate) {
+          return NextResponse.json(
+            { error: 'This product has no price schedule yet. Set one immediate price first; its territory becomes the base territory.' },
+            { status: 422 }
+          );
+        }
+        baseTerritory = toAppleTerritoryId(entries[0][0]);
+      }
+      const result = await replaceInAppPurchaseManualPrices(auth.credentials, product.id, changes, baseTerritory, ctx);
+      updatedCount = result.sent;
     }
 
     // Fetch updated product. The write is already done, so a failed refresh

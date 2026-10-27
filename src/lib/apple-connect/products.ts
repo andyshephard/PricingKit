@@ -10,10 +10,10 @@ import type {
   AppleTerritory,
 } from './types';
 import { appleApiRequest, getAppIdForBundleId } from './client';
-import { appleListPages } from './pagination';
+import { appleListAll, appleListPages } from './pagination';
 import type { RequestContext } from '../utils/request-budget';
 import { mapWithConcurrency } from '../pricing/concurrency';
-import { alpha3ToAlpha2, UNSUPPORTED_IAP_TERRITORIES } from './territories';
+import { alpha2ToAlpha3, alpha3ToAlpha2, UNSUPPORTED_IAP_TERRITORIES } from './territories';
 import { findClosestTierForCurrency, hasTierData } from './price-tier-data';
 import { ApiError, getErrorStatus, toApiError } from '../utils/api-error';
 
@@ -543,7 +543,11 @@ export async function getAvailablePricePoints(
   }
 }
 
-// Update in-app purchase price schedule (single territory - kept for backwards compatibility)
+/**
+ * @deprecated Creates a schedule with ONE manual price whose territory becomes
+ * the base territory; Apple replaces the whole schedule, so every other
+ * manual price is dropped. Use replaceInAppPurchaseManualPrices.
+ */
 export async function updateInAppPurchasePrice(
   credentials: AppleConnectCredentials,
   inAppPurchaseId: string,
@@ -611,7 +615,7 @@ export async function updateInAppPurchasePrice(
 export async function updateInAppPurchasePrices(
   credentials: AppleConnectCredentials,
   inAppPurchaseId: string,
-  manualPrices: Array<{ territoryId: string; pricePointId: string }>,
+  manualPrices: Array<{ territoryId: string; pricePointId: string; startDate?: string | null }>,
   baseTerritoryId: string = 'USA',
   ctx: RequestContext = {}
 ): Promise<void> {
@@ -628,7 +632,7 @@ export async function updateInAppPurchasePrices(
   const supportedPrices = manualPrices.filter(p => !UNSUPPORTED_IAP_TERRITORIES.includes(p.territoryId));
 
   // Find base territory price (required by Apple)
-  const basePrice = supportedPrices.find(p => p.territoryId === baseTerritoryId);
+  const basePrice = supportedPrices.find(p => p.territoryId === baseTerritoryId && !p.startDate);
 
   if (!basePrice) {
     throw new ApiError(
@@ -645,7 +649,7 @@ export async function updateInAppPurchasePrices(
     id: `\${price-${index}}`,
     type: 'inAppPurchasePrices',
     attributes: {
-      startDate: null,
+      startDate: price.startDate ?? null,
     },
     relationships: {
       inAppPurchasePricePoint: {
@@ -960,4 +964,110 @@ export async function getInAppPurchasePricePointsForTerritory(
     console.error(`[Apple] Failed to get IAP price points for territory ${territoryCode}:`, error);
     throw new Error(`Failed to fetch price points for ${territoryCode}: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+/** One manual price of an in-app purchase's price schedule */
+export interface InAppPurchaseManualPrice {
+  /** alpha-3 */
+  territoryId: string;
+  pricePointId: string;
+  startDate: string | null;
+  endDate: string | null;
+}
+
+/**
+ * The manual prices of an in-app purchase's price schedule, read from the
+ * relationships Apple returns. Returns [] when the product has no schedule
+ * (404). An entry without its territory or price point is an error: the
+ * schedule could not be rebuilt from it safely.
+ */
+export async function getInAppPurchaseManualPrices(
+  credentials: AppleConnectCredentials,
+  inAppPurchaseId: string,
+  ctx: RequestContext = {}
+): Promise<InAppPurchaseManualPrice[]> {
+  type Entry = {
+    id: string;
+    attributes?: { startDate?: string | null; endDate?: string | null };
+    relationships?: {
+      territory?: { data?: { id: string } | null };
+      inAppPurchasePricePoint?: { data?: { id: string } | null };
+    };
+  };
+  let data: Entry[];
+  try {
+    ({ data } = await appleListAll<Entry>(credentials, `/inAppPurchasePriceSchedules/${inAppPurchaseId}/manualPrices`, {
+      queryParams: {
+        include: 'inAppPurchasePricePoint,territory',
+        limit: '200',
+        'fields[inAppPurchasePrices]': 'startDate,endDate,inAppPurchasePricePoint,territory',
+      },
+      budget: ctx.budget,
+    }));
+  } catch (error) {
+    if (getErrorStatus(error) === 404) return [];
+    throw toApiError(error, 'apple');
+  }
+  return data.map((entry) => {
+    const territoryId = entry.relationships?.territory?.data?.id;
+    const pricePointId = entry.relationships?.inAppPurchasePricePoint?.data?.id;
+    if (!territoryId || !pricePointId) {
+      throw new ApiError(
+        `Apple returned manual price ${entry.id} without its ${territoryId ? 'price point' : 'territory'}; the price schedule can't be updated safely`,
+        { status: 502, code: 'INCOMPLETE_PRICE_SCHEDULE', platform: 'apple', retryable: false }
+      );
+    }
+    return {
+      territoryId,
+      pricePointId,
+      startDate: entry.attributes?.startDate ?? null,
+      endDate: entry.attributes?.endDate ?? null,
+    };
+  });
+}
+
+/**
+ * Change some territories' manual prices of an in-app purchase.
+ *
+ * POST /inAppPurchasePriceSchedules creates the whole schedule (base
+ * territory plus every manual price), so posting one schedule per territory
+ * would leave only the last one. This reads the current manual prices,
+ * replaces the entries of the territories in `changes`, keeps every other
+ * territory's entries (past start dates sent as "now", future ones as
+ * scheduled) and sends ONE schedule. Expired entries are dropped.
+ */
+export async function replaceInAppPurchaseManualPrices(
+  credentials: AppleConnectCredentials,
+  inAppPurchaseId: string,
+  changes: Record<string, { pricePointId: string; startDate?: string }>,
+  baseTerritoryId: string,
+  ctx: RequestContext = {},
+  today: string = new Date().toISOString().slice(0, 10)
+): Promise<{ sent: number; kept: number }> {
+  const changed = new Map<string, { pricePointId: string; startDate?: string }>();
+  for (const [territory, change] of Object.entries(changes)) {
+    const alpha3 = territory.length === 2 ? alpha2ToAlpha3(territory) : alpha3ToAlpha2(territory) ? territory : null;
+    if (!alpha3) {
+      throw new ApiError(`Unknown Apple territory "${territory}"`, { status: 400, code: 'INVALID_TERRITORY', platform: 'apple' });
+    }
+    changed.set(alpha3, change);
+  }
+
+  const existing = await getInAppPurchaseManualPrices(credentials, inAppPurchaseId, ctx);
+  const kept = existing
+    .filter((p) => !changed.has(p.territoryId))
+    .filter((p) => !p.endDate || p.endDate.slice(0, 10) > today)
+    .map((p) => ({
+      territoryId: p.territoryId,
+      pricePointId: p.pricePointId,
+      startDate: p.startDate && p.startDate.slice(0, 10) > today ? p.startDate : null,
+    }));
+  const updates = [...changed].map(([territoryId, change]) => ({
+    territoryId,
+    pricePointId: change.pricePointId,
+    startDate: change.startDate ?? null,
+  }));
+
+  await updateInAppPurchasePrices(credentials, inAppPurchaseId, [...kept, ...updates], baseTerritoryId, ctx);
+  return { sent: updates.length, kept: kept.length };
 }

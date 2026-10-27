@@ -54,6 +54,7 @@ PricingKit has no tagged releases yet; everything below is on its way to `main`.
 
 ### Fixed
 
+- **Editing several Apple in-app purchase territories by price point kept only the last one.** Apple's price schedule create replaces the whole schedule, and PricingKit sent one schedule per territory, each making that territory the base. It now reads the current manual prices and sends one schedule: the territories you changed, every other territory's manual prices as they were, and the product's existing base territory. A product without a schedule takes one immediate price, which becomes its base territory.
 - The Apple products list and app price reader dropped the cursor from Apple's next-page link, so an app with more than one page of in-app purchases or prices re-read the first page instead of moving on. All Apple list reads now share one pagination helper that follows the next link exactly, and stop with an error rather than return a silently truncated list.
 
 - The bulk update button on the Google subscriptions list page failed every selected subscription, because it sends no base plan. It now updates each subscription's base plans.

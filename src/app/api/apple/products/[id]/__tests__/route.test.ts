@@ -18,7 +18,7 @@ vi.mock('@/middleware/auth', () => ({
 const getInAppPurchase = vi.fn();
 const getInAppPurchasePrices = vi.fn();
 const getBaseTerritoryForProduct = vi.fn();
-const updateInAppPurchasePrice = vi.fn();
+const replaceInAppPurchaseManualPrices = vi.fn();
 vi.mock('@/lib/apple-connect', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/apple-connect')>();
   return {
@@ -26,7 +26,7 @@ vi.mock('@/lib/apple-connect', async (importOriginal) => {
     getInAppPurchase: (...args: unknown[]) => getInAppPurchase(...args),
     getInAppPurchasePrices: (...args: unknown[]) => getInAppPurchasePrices(...args),
     getBaseTerritoryForProduct: (...args: unknown[]) => getBaseTerritoryForProduct(...args),
-    updateInAppPurchasePrice: (...args: unknown[]) => updateInAppPurchasePrice(...args),
+    replaceInAppPurchaseManualPrices: (...args: unknown[]) => replaceInAppPurchaseManualPrices(...args),
   };
 });
 
@@ -43,7 +43,7 @@ beforeEach(() => {
   getInAppPurchase.mockReset();
   getInAppPurchasePrices.mockReset();
   getBaseTerritoryForProduct.mockReset();
-  updateInAppPurchasePrice.mockReset();
+  replaceInAppPurchaseManualPrices.mockReset();
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
@@ -95,7 +95,7 @@ describe('PATCH /api/apple/products/[id]', () => {
       .mockResolvedValueOnce({ ...product })
       .mockRejectedValueOnce(appleFailure(503));
     getBaseTerritoryForProduct.mockResolvedValue('USA');
-    updateInAppPurchasePrice.mockResolvedValue(undefined);
+    replaceInAppPurchaseManualPrices.mockResolvedValue({ sent: 1, kept: 0 });
 
     const response = await PATCH(
       new NextRequest('http://localhost/x', {
@@ -112,5 +112,49 @@ describe('PATCH /api/apple/products/[id]', () => {
     expect(body.updated).toBe(1);
     expect(body.product).toBeNull();
     expect(body.refreshError).toBe('Apple returned 503');
+  });
+
+  function patch(prices: Record<string, unknown>) {
+    return PATCH(
+      new NextRequest('http://localhost/x', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prices }),
+      }),
+      params()
+    );
+  }
+
+  it('sends every territory in one schedule, not one schedule per territory', async () => {
+    getInAppPurchase.mockResolvedValue({ ...product });
+    getInAppPurchasePrices.mockResolvedValue({});
+    getBaseTerritoryForProduct.mockResolvedValue('GBR');
+    replaceInAppPurchaseManualPrices.mockResolvedValue({ sent: 2, kept: 5 });
+
+    const response = await patch({ GB: { pricePointId: 'pp-gb' }, FR: { pricePointId: 'pp-fr', startDate: '2099-01-01' } });
+    expect(response.status).toBe(200);
+    expect(replaceInAppPurchaseManualPrices).toHaveBeenCalledTimes(1);
+    const [, iapId, changes, base] = replaceInAppPurchaseManualPrices.mock.calls[0];
+    expect(iapId).toBe('iap-1');
+    expect(changes).toEqual({ GB: { pricePointId: 'pp-gb' }, FR: { pricePointId: 'pp-fr', startDate: '2099-01-01' } });
+    expect(base).toBe('GBR');
+    expect((await response.json()).updated).toBe(2);
+  });
+
+  it('refuses several territories for a product without a schedule (no base territory to keep)', async () => {
+    getInAppPurchase.mockResolvedValue({ ...product });
+    getBaseTerritoryForProduct.mockResolvedValue(null);
+    const response = await patch({ GB: { pricePointId: 'pp-gb' }, FR: { pricePointId: 'pp-fr' } });
+    expect(response.status).toBe(422);
+    expect(replaceInAppPurchaseManualPrices).not.toHaveBeenCalled();
+  });
+
+  it('uses a single immediate price as the base of a new schedule', async () => {
+    getInAppPurchase.mockResolvedValue({ ...product });
+    getInAppPurchasePrices.mockResolvedValue({});
+    getBaseTerritoryForProduct.mockResolvedValue(null);
+    replaceInAppPurchaseManualPrices.mockResolvedValue({ sent: 1, kept: 0 });
+    await patch({ GB: { pricePointId: 'pp-gb' } });
+    expect(replaceInAppPurchaseManualPrices.mock.calls[0][3]).toBe('GBR');
   });
 });
