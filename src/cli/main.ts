@@ -165,11 +165,20 @@ export async function main(argv = process.argv.slice(2)): Promise<ExitCode> {
   if (argv[0] === 'mcp' && argv.length === 1) {
     // A long-running MCP server over stdio: stdout carries protocol messages only
     const { serveMcp } = await import('./mcp');
+    // The client went away (EPIPE): stop reading instead of crashing on an unhandled 'error'
+    let outputClosed = false;
+    process.stdout.on('error', () => {
+      outputClosed = true;
+      process.stdin.destroy();
+    });
     await serveMcp({
       cwd: process.cwd(),
       env: process.env,
       input: process.stdin,
-      output: (line) => process.stdout.write(`${line}\n`),
+      output: (line) => {
+        if (outputClosed) throw Object.assign(new Error('stdout closed'), { code: 'EPIPE' });
+        process.stdout.write(`${line}\n`);
+      },
       log: (text) => process.stderr.write(text),
     });
     return EXIT_OK;
