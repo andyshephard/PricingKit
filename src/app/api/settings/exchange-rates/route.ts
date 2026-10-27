@@ -1,7 +1,14 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
+import { hasAuthenticatedSession } from '@/lib/session';
+import { AttemptLimiter, clientKeyFromHeaders } from '@/lib/utils/attempt-limiter';
 
 const COOKIE_NAME = 'exchange_rates_api_key';
+
+// Without a store session, testing a key is limited so this endpoint can't be
+// used as a free Open Exchange Rates proxy: 5 tests per client per 10 minutes,
+// 50 per instance. Signed-in users are not limited here.
+const anonymousKeyTests = new AttemptLimiter({ limit: 5, globalLimit: 50, windowMs: 10 * 60 * 1000 });
 
 // GET: Report whether a key is configured. Never returns any part of the
 // operator's environment key; a user-saved key is shown by its last 4 chars only.
@@ -46,6 +53,17 @@ export async function POST(request: Request) {
       );
     }
 
+    const cookieStore = await cookies();
+    if (!(await hasAuthenticatedSession(cookieStore))) {
+      const decision = anonymousKeyTests.attempt(clientKeyFromHeaders(request.headers));
+      if (!decision.allowed) {
+        return NextResponse.json(
+          { success: false, error: 'Too many key tests. Try again later, or sign in first.' },
+          { status: 429, headers: { 'Retry-After': String(decision.retryAfterSeconds) } }
+        );
+      }
+    }
+
     // Validate the API key by making a test request
     const testUrl = `https://openexchangerates.org/api/latest.json?app_id=${encodeURIComponent(apiKey)}`;
     const testResponse = await fetch(testUrl);
@@ -62,7 +80,6 @@ export async function POST(request: Request) {
     }
 
     // Save the API key in a cookie (httpOnly for security)
-    const cookieStore = await cookies();
     cookieStore.set(COOKIE_NAME, apiKey, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
