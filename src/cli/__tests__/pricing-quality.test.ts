@@ -65,7 +65,10 @@ describe('existing subscribers in plans and diff', () => {
     expect(byTerritory.DE).toMatchObject({ classification: 'increase-needs-consent', reasons: [expect.stringMatching(/DE requires consent for any price increase/)] });
 
     const diff = await run(['diff', 'plan.json'], { cwd: tmp.dir });
-    expect(diff.stdout).toMatch(/Proceeds\s+Existing subscribers/);
+    expect(diff.stdout).toMatch(/Proceeds\*\s+Existing subscribers\*/);
+    expect(diff.stdout).toContain('* planner notes, not covered by the plan hash.');
+    expect(diff.stdout).toContain('Planner notes (not covered by the plan hash):');
+    expect(diff.stdout).not.toContain('WARNING');
     expect(diff.stdout).toMatch(/US\s+setPrice\s+24\.99 USD\s+34\.99 USD\s+\+40\.02%\s+17\.49 -> 24\.49\s+notified, no consent/);
     expect(diff.stdout).toMatch(/DE\s+setPrice.*NEEDS CONSENT/);
     expect(diff.stdout).toContain('Existing subscribers: ');
@@ -74,6 +77,31 @@ describe('existing subscribers in plans and diff', () => {
     const json = JSON.parse((await run(['diff', 'plan.json', '--json'], { cwd: tmp.dir })).stdout);
     expect(json.byExistingSubscribers).toEqual({ 'increase-within-no-consent-threshold': 1, decrease: 1, 'increase-needs-consent': 1 });
     expect(json.products[0].ops.find((o: { territory: string }) => o.territory === 'DE')).toMatchObject({ existingSubscribers: 'increase-needs-consent', proceeds: '20.99' });
+  });
+
+  it('diff recomputes the class from the op and warns when an edited plan left its note behind', async () => {
+    writeSpec([{ product, targets: prices, preserveCurrentPrice: false }]);
+    expect((await plan()).code).toBe(2);
+    const changeSet = readPlan();
+    const de = changeSet.ops.find((o) => (o as BasePriceOp).target.territory === 'DE') as BasePriceOp;
+    expect(changeSet.priceChanges?.find((n) => n.opId === de.id)?.classification).toBe('increase-needs-consent');
+    // Someone flips preserveCurrentPrice in the op (a new hash) but leaves the note as it was
+    de.options = { preserveCurrentPrice: true };
+    writeFileSync(join(tmp.dir, 'edited.json'), JSON.stringify(changeSet));
+    const text = (await run(['diff', 'edited.json'], { cwd: tmp.dir })).stdout;
+    expect(text).toMatch(/DE\s+setPrice.*new subscribers only\n/);
+    expect(text).toContain(`WARNING: ${de.id} DE: the plan's note says increase-needs-consent, but the op gives increase-to-new-subscribers-only. The note was edited or is stale; the op is what applies.`);
+    expect(text).not.toContain('Needs consent (subscribers');
+    const json = JSON.parse((await run(['diff', 'edited.json', '--json'], { cwd: tmp.dir })).stdout);
+    expect(json.noteMismatches).toEqual([{ opId: de.id, territory: 'DE', stored: 'increase-needs-consent', recomputed: 'increase-to-new-subscribers-only' }]);
+    expect(json.byExistingSubscribers['increase-needs-consent']).toBeUndefined();
+    // The same works the other way: a note edited to look harmless is overruled by the op
+    const original = readPlan();
+    for (const n of original.priceChanges ?? []) n.classification = 'decrease';
+    writeFileSync(join(tmp.dir, 'whitewashed.json'), JSON.stringify(original));
+    const whitewashed = (await run(['diff', 'whitewashed.json'], { cwd: tmp.dir })).stdout;
+    expect(whitewashed).toMatch(/DE\s+setPrice.*NEEDS CONSENT/);
+    expect(whitewashed).toMatch(/WARNING: op-\d+ DE: the plan's note says decrease, but the op gives increase-needs-consent/);
   });
 
   it('maxIncreaseWithoutConsent refuses the plan before writing it; preserving prices passes', async () => {
@@ -135,7 +163,7 @@ describe('proceeds targets', () => {
     expect(op.after).toEqual({ currency: 'USD', amount: '30' });
     expect(changeSet.priceChanges?.[0]).toMatchObject({ tax: '0', proceeds: { after: '25.5', estimated: true, commission: '0.15' }, classification: 'increase-to-new-subscribers-only', ifMigrated: 'opt-out-possible' });
     const diff = await run(['diff', 'plan.json'], { cwd: tmp.dir });
-    expect(diff.stdout).toMatch(/Proceeds\s+Tax\s+Existing subscribers/);
+    expect(diff.stdout).toMatch(/Proceeds\*\s+Tax\*\s+Existing subscribers\*/);
     expect(diff.stdout).toMatch(/25\.5 \(est\.\)\s+0\s+new subscribers only \(migrating: opt-out possible\)/);
     expect(diff.stdout).toContain('Google Play proceeds are estimates: (price - tax) x (1 - commission), commission 0.15.');
     expect(play.writes()).toEqual([]);

@@ -21,6 +21,9 @@ import {
   type ProductRef,
   type PriceChangeNote,
   type FreshnessEntry,
+  type BasePriceOp,
+  classifyPriceChange,
+  noteConsentContext,
 } from '@/lib/pricing';
 import { stringFlag } from '../args';
 import { readInputFile, type CommandContext, type CommandResult } from '../context';
@@ -57,8 +60,14 @@ export interface PlanSummary {
       note?: string;
       /** Offer ops: the base-price ops it waits for (sync plans) */
       dependsOn?: string[];
-      /** Base-price ops: what existing subscribers see (price-increase.ts classes) */
+      /**
+       * Base-price ops: what existing subscribers see (price-increase.ts classes).
+       * Recomputed by diff from the op (before, after, options) and the note's
+       * inputs; for a scheduled change (current price not in the op) it is the
+       * stored note, and existingSubscribersVerified is false.
+       */
       existingSubscribers?: string;
+      existingSubscribersVerified?: boolean;
       /** Google Play: what migrating the legacy cohort to this price would need */
       ifMigrated?: string;
       /** Developer proceeds after the change (Google Play: estimated) */
@@ -71,8 +80,10 @@ export interface PlanSummary {
   }>;
   /** Per base-price op: existing-subscriber class, reasons, assumptions, proceeds, tax (from the plan's priceChanges) */
   priceChanges: PriceChangeNote[];
-  /** Base-price ops by existing-subscriber class */
+  /** Base-price ops by existing-subscriber class (as diff recomputed it) */
   byExistingSubscribers: Record<string, number>;
+  /** Ops whose stored note disagrees with the class recomputed from the op (the note was edited or is stale) */
+  noteMismatches: Array<{ opId: string; territory: string; stored: string; recomputed: string }>;
   /** The reference data the plan's targets came from, with ages */
   dataFreshness: FreshnessEntry[];
   /** Ops per group: base prices are applied before offers */
@@ -106,6 +117,8 @@ export interface PlanSummary {
 export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
   const products = new Map<string, PlanSummary['products'][number]>();
   const notes = new Map((changeSet.priceChanges ?? []).map((n) => [n.opId, n]));
+  const noteMismatches: PlanSummary['noteMismatches'] = [];
+  const effective: string[] = [];
   for (const op of changeSet.ops) {
     const key = productKey(op.target.product);
     if (!products.has(key)) products.set(key, { product: op.target.product, key, ops: [] });
@@ -115,6 +128,9 @@ export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
     }
     const change = percentChange(op.before, op.after);
     const note = notes.get(op.id);
+    const checked = note ? recheckNote(op, note, changeSet.createdAt) : undefined;
+    if (checked?.mismatch) noteMismatches.push({ opId: op.id, territory: op.target.territory, ...checked.mismatch });
+    if (checked) effective.push(checked.classification);
     products.get(key)!.ops.push({
       id: op.id,
       kind: op.kind,
@@ -123,8 +139,8 @@ export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
       after: op.after,
       ...(change ? { change } : {}),
       ...(op.note ? { note: op.note } : {}),
-      ...(note ? { existingSubscribers: note.classification } : {}),
-      ...(note?.ifMigrated ? { ifMigrated: note.ifMigrated } : {}),
+      ...(checked ? { existingSubscribers: checked.classification, existingSubscribersVerified: checked.verified } : {}),
+      ...(checked?.ifMigrated ? { ifMigrated: checked.ifMigrated } : {}),
       ...(note?.proceeds?.after !== undefined ? { proceeds: note.proceeds.after } : {}),
       ...(note?.proceeds?.before !== undefined ? { proceedsBefore: note.proceeds.before } : {}),
       ...(note?.proceeds?.estimated ? { proceedsEstimated: true } : {}),
@@ -150,7 +166,8 @@ export function summarizeChangeSet(changeSet: ChangeSet): PlanSummary {
     notReversible: changeSet.notReversible ?? [],
     manualActions: changeSet.manualActions ?? [],
     priceChanges: changeSet.priceChanges ?? [],
-    byExistingSubscribers: countBy(changeSet.priceChanges ?? [], (n) => n.classification),
+    byExistingSubscribers: countBy(effective, (c) => c),
+    noteMismatches,
     dataFreshness: changeSet.dataFreshness ?? [],
     playOffers: changeSet.ops.filter(isOfferOp).filter(isPlayOfferOp).map((op) => {
       const state = (op.after ?? op.before)!;
@@ -255,7 +272,7 @@ export function formatPlanSummary(summary: PlanSummary): string {
       lines.push('', product.key);
       lines.push(
         table([
-          ['Op', 'Territory', 'Kind', 'Before', 'After', 'Change', ...(withProceeds ? ['Proceeds'] : []), ...(withTax ? ['Tax'] : []), ...(withSubscribers ? ['Existing subscribers'] : [])],
+          ['Op', 'Territory', 'Kind', 'Before', 'After', 'Change', ...(withProceeds ? ['Proceeds*'] : []), ...(withTax ? ['Tax*'] : []), ...(withSubscribers ? ['Existing subscribers*'] : [])],
           ...rows.map((op) => [
             op.id,
             op.territory,
@@ -269,6 +286,9 @@ export function formatPlanSummary(summary: PlanSummary): string {
           ]),
         ])
       );
+      if (withProceeds || withTax || withSubscribers) {
+        lines.push('  * planner notes, not covered by the plan hash. Existing subscribers is recomputed from each op; "(unverified)" marks a scheduled change, shown as noted.');
+      }
       const waits = [...new Set(rows.filter((r) => r.dependsOn?.length).map((r) => `${r.id} after ${r.dependsOn!.join(', ')}`))];
       if (waits.length > 0) lines.push(`  Applied only once its base prices are: ${waits.join('; ')}`);
     }
@@ -308,11 +328,17 @@ export function formatPlanSummary(summary: PlanSummary): string {
       lines.push(table(notable.map((s) => [productKey(s.product), s.territory, s.reason, s.detail ?? ''])));
     }
   }
+  if (summary.priceChanges.length > 0 || summary.dataFreshness.length > 0) {
+    lines.push('', 'Planner notes (not covered by the plan hash):');
+  }
+  for (const m of summary.noteMismatches) {
+    lines.push(`  WARNING: ${m.opId} ${m.territory}: the plan's note says ${m.stored}, but the op gives ${m.recomputed}. The note was edited or is stale; the op is what applies.`);
+  }
   if (summary.priceChanges.length > 0) {
-    lines.push('', `Existing subscribers: ${describeCounts(summary.byExistingSubscribers)}`);
-    const consent = summary.priceChanges.filter((n) => n.classification === 'increase-needs-consent');
+    lines.push(`  Existing subscribers: ${describeCounts(summary.byExistingSubscribers)}`);
+    const consent = summary.products.flatMap((p) => p.ops).filter((o) => o.existingSubscribers === 'increase-needs-consent');
     if (consent.length > 0) {
-      lines.push(`  Needs consent (subscribers who don't agree are lost at renewal): ${consent.map((n) => n.territory).join(', ')}`);
+      lines.push(`  Needs consent (subscribers who don't agree are lost at renewal): ${consent.map((o) => o.territory).join(', ')}`);
     }
     const assumptions = [...new Set(summary.priceChanges.flatMap((n) => n.assumptions ?? []))];
     if (assumptions.length > 0) lines.push('  Assumed (not checked):', ...assumptions.map((a) => `    - ${a}`));
@@ -322,7 +348,7 @@ export function formatPlanSummary(summary: PlanSummary): string {
     }
   }
   if (summary.dataFreshness.length > 0) {
-    lines.push('', 'Reference data:', ...summary.dataFreshness.map((f) => `  ${f.stale ? 'STALE ' : ''}${f.message}`));
+    lines.push('  Reference data:', ...summary.dataFreshness.map((f) => `    ${f.stale ? 'STALE ' : ''}${f.message}`));
   }
   if (summary.warnings.length > 0) lines.push('', 'Warnings:', ...summary.warnings.map((w) => `  ${w.opId}: ${w.message}`));
   if (summary.notReversible.length > 0) lines.push('', 'Not reversible:', ...summary.notReversible.map((w) => `  ${w.opId}: ${w.reason}`));
@@ -342,8 +368,39 @@ const MIGRATION_LABELS: Record<string, string> = { 'no-consent': 'no consent', '
 
 function subscribersCell(op: PlanSummary['products'][number]['ops'][number]): string {
   if (!op.existingSubscribers) return '';
-  const label = SUBSCRIBER_LABELS[op.existingSubscribers] ?? op.existingSubscribers;
+  const label = `${SUBSCRIBER_LABELS[op.existingSubscribers] ?? op.existingSubscribers}${op.existingSubscribersVerified === false ? ' (unverified)' : ''}`;
   return op.ifMigrated ? `${label} (migrating: ${MIGRATION_LABELS[op.ifMigrated] ?? op.ifMigrated})` : label;
+}
+
+/**
+ * Notes aren't covered by the plan hash, so diff doesn't take their class on
+ * trust: it recomputes it from the op (before = the price subscribers pay now,
+ * after, options.preserveCurrentPrice) with the note's inputs. A scheduled
+ * change can't be recomputed (the op's before is the scheduled slot, not the
+ * current price), so its stored class is shown as unverified.
+ */
+function recheckNote(op: BasePriceOp, note: PriceChangeNote, createdAt: string) {
+  if (op.kind !== 'setPrice' || !op.after) {
+    return { classification: note.classification as string, ifMigrated: note.ifMigrated as string | undefined, verified: false };
+  }
+  const c = classifyPriceChange({
+    platform: op.platform,
+    productType: op.target.product.type,
+    territory: op.target.territory,
+    current: op.before,
+    after: op.after,
+    effectiveDate: note.inputs?.effectiveDate ?? createdAt.slice(0, 10),
+    ...(op.options?.preserveCurrentPrice !== undefined ? { preserveCurrentPrice: op.options.preserveCurrentPrice } : {}),
+    context: noteConsentContext(note, op.after.currency),
+  });
+  const stored = `${note.classification}${note.ifMigrated ? ` (migrating: ${note.ifMigrated})` : ''}`;
+  const recomputed = `${c.classification}${c.ifMigrated ? ` (migrating: ${c.ifMigrated})` : ''}`;
+  return {
+    classification: c.classification as string,
+    ifMigrated: c.ifMigrated as string | undefined,
+    verified: true,
+    ...(stored !== recomputed ? { mismatch: { stored, recomputed } } : {}),
+  };
 }
 
 function proceedsCell(op: PlanSummary['products'][number]['ops'][number]): string {

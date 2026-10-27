@@ -300,6 +300,10 @@ export const changeSetSchema = z
               .optional(),
             tax: z.string().optional(),
             target: z.object({ measure: z.enum(['customerPrice', 'proceeds']), amount: z.string() }).strict().optional(),
+            inputs: z
+              .object({ effectiveDate: z.string(), billingPeriod: z.string().optional(), lastIncreaseAt: z.string().optional(), usdRate: z.string().optional() })
+              .strict()
+              .optional(),
           })
           .strict()
       )

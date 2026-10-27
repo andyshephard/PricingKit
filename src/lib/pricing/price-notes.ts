@@ -26,6 +26,22 @@ export interface PriceChangeNote {
   tax?: Decimal;
   /** The spec targeted proceeds: the amount asked for */
   target?: { measure: TargetMeasure; amount: Decimal };
+  /**
+   * The classification's inputs that aren't in the op, so a reviewer
+   * (pricingkit diff) can recompute it from the op: effective date, billing
+   * period, last increase and the currency's rate per USD.
+   */
+  inputs?: { effectiveDate: string; billingPeriod?: string; lastIncreaseAt?: string; usdRate?: Decimal };
+}
+
+/** The consent context a note's inputs describe, for recomputing its classification */
+export function noteConsentContext(note: Pick<PriceChangeNote, 'inputs'>, currency: string): ConsentContext {
+  const i = note.inputs;
+  return {
+    ...(i?.billingPeriod ? { billingPeriod: i.billingPeriod } : {}),
+    ...(i?.lastIncreaseAt ? { lastIncreaseAt: i.lastIncreaseAt } : {}),
+    ...(i?.usdRate ? { exchangeRates: { [currency]: i.usdRate } } : {}),
+  };
 }
 
 export interface PriceNoteProductInput {
@@ -47,13 +63,17 @@ export function priceChangeNotes(ops: BasePriceOp[], products: PriceNoteProductI
     if (!input) continue;
     const territory = op.target.territory;
     const current = input.state.territories[territory]?.current ?? null;
+    const effectiveDate = op.after.startDate ?? createdAt.slice(0, 10);
+    const last = input.consent?.lastIncreaseAt;
+    const lastIncreaseAt = typeof last === 'string' ? last : last?.[territory];
+    const usdRate = input.consent?.exchangeRates?.[op.after.currency];
     const c = classifyPriceChange({
       platform: op.platform,
       productType: op.target.product.type,
       territory,
       current,
       after: op.after,
-      effectiveDate: op.after.startDate ?? createdAt.slice(0, 10),
+      effectiveDate,
       ...(op.options?.preserveCurrentPrice !== undefined ? { preserveCurrentPrice: op.options.preserveCurrentPrice } : {}),
       ...(input.consent ? { context: input.consent } : {}),
     });
@@ -81,6 +101,12 @@ export function priceChangeNotes(ops: BasePriceOp[], products: PriceNoteProductI
         : {}),
       ...(resolved?.tax !== undefined ? { tax: resolved.tax } : {}),
       ...(input.measure === 'proceeds' && resolved ? { target: { measure: 'proceeds' as const, amount: resolved.target } } : {}),
+      inputs: {
+        effectiveDate,
+        ...(input.consent?.billingPeriod ? { billingPeriod: input.consent.billingPeriod } : {}),
+        ...(lastIncreaseAt ? { lastIncreaseAt } : {}),
+        ...(usdRate ? { usdRate } : {}),
+      },
     });
   }
   return notes;
