@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { AlertTriangle, ChevronDown, ChevronRight, Loader2, RefreshCw, Tag } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, Loader2, Plus, RefreshCw, Tag } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -13,6 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { getTerritoryByAlpha2 } from '@/lib/apple-connect/territories';
 import { defaultOfferBasis, type AppleOfferKind, type OfferDriftStatus, type StoreOffer } from '@/lib/pricing';
 import { useAppleOfferDrift, useAppleSubscriptionOffers, type OfferDriftQuery } from '@/hooks/use-apple-subscription-offers';
+import { AppleOfferRuleDialog } from './apple-offer-rule-dialog';
 
 const KIND_LABELS: Record<string, string> = {
   'apple.intro': 'Introductory',
@@ -99,6 +100,7 @@ function DriftCheck({ subscriptionId, offer }: { subscriptionId: string; offer: 
   const [snap, setSnap] = useState<OfferDriftQuery['snap']>('nearest');
   const [query, setQuery] = useState<OfferDriftQuery | null>(null);
   const { data, isFetching, error, refetch } = useAppleOfferDrift(subscriptionId, query);
+  const [updating, setUpdating] = useState(false);
   const report = data?.report;
   const drifted = report?.territories.filter((t) => t.status !== 'match') ?? [];
 
@@ -154,8 +156,13 @@ function DriftCheck({ subscriptionId, offer }: { subscriptionId: string; offer: 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
       {report && (
         <div className="space-y-2">
-          <div className="flex flex-wrap gap-2 text-sm">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
             <Badge variant={report.inSync ? 'secondary' : 'destructive'}>{report.inSync ? 'In step with the rule' : 'Drifted'}</Badge>
+            {!report.inSync && offer.kind === 'apple.promo' && query && (
+              <Button size="sm" variant="outline" onClick={() => setUpdating(true)}>
+                Update prices to rule
+              </Button>
+            )}
             {(Object.entries(report.summary) as Array<[OfferDriftStatus, number]>)
               .filter(([, n]) => n > 0)
               .map(([status, n]) => (
@@ -198,6 +205,14 @@ function DriftCheck({ subscriptionId, offer }: { subscriptionId: string; offer: 
                 </TableBody>
               </Table>
             </div>
+          )}
+          {updating && query && (
+            <AppleOfferRuleDialog
+              subscriptionId={subscriptionId}
+              target={{ kind: 'update', offer, rule: { percent: query.percent, basis: query.basis, snap: query.snap } }}
+              open={updating}
+              onOpenChange={setUpdating}
+            />
           )}
           {report.warnings && report.warnings.length > 0 && (
             <p className="text-xs text-muted-foreground">
@@ -271,17 +286,27 @@ function OfferRow({ subscriptionId, offer }: { subscriptionId: string; offer: St
   );
 }
 
-/** Read-only list of a subscription's offers. No create or edit actions (Phase 2a). */
+/**
+ * A subscription's offers. Promotional offers can be created from a
+ * percent-of-current rule, and a drifted one re-priced to its rule; every
+ * write is previewed first and applied behind a confirm dialog.
+ */
 export function AppleSubscriptionOffers({ subscriptionId }: { subscriptionId: string }) {
   const { data, isLoading, error, refetch } = useAppleSubscriptionOffers(subscriptionId);
+  const [creating, setCreating] = useState(false);
   const offers = data?.offers ?? [];
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0">
         <CardTitle className="text-lg flex items-center gap-2">
           <Tag className="h-5 w-5" />
           Offers
         </CardTitle>
+        <Button variant="outline" size="sm" onClick={() => setCreating(true)}>
+          <Plus className="mr-2 h-4 w-4" />
+          Create offer from rule
+        </Button>
+        {creating && <AppleOfferRuleDialog subscriptionId={subscriptionId} target={{ kind: 'create' }} open={creating} onOpenChange={setCreating} />}
       </CardHeader>
       <CardContent>
         {isLoading ? (

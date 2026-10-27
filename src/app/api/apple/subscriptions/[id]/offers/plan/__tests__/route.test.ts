@@ -1,0 +1,72 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { NextRequest } from 'next/server';
+
+const session = {
+  credentials: { privateKey: 'unused', keyId: 'TESTKEY123', issuerId: 'issuer', bundleId: 'com.example.test' },
+  bundleId: 'com.example.test',
+};
+const getAppleAuthFromCookies = vi.fn();
+vi.mock('@/middleware/auth', () => ({ getAppleAuthFromCookies: () => getAppleAuthFromCookies() }));
+
+const planOffers = vi.fn();
+const fetchOffer = vi.fn();
+const constructed: unknown[] = [];
+vi.mock('@/lib/adapters/apple', () => ({
+  AppleAdapter: class {
+    constructor(options: unknown) {
+      constructed.push(options);
+    }
+    planOffers = (...args: unknown[]) => planOffers(...args);
+    fetchOffer = (...args: unknown[]) => fetchOffer(...args);
+  },
+}));
+
+import { POST } from '../route';
+
+const call = (body: unknown, id = '123') =>
+  POST(new NextRequest(`http://localhost/api/apple/subscriptions/${id}/offers/plan`, { method: 'POST', body: JSON.stringify(body) }), { params: Promise.resolve({ id }) });
+
+const create = { action: 'create', offerCode: 'example_half', name: 'Half', mode: 'PAY_UP_FRONT', duration: 'P1Y', percent: '50', basis: 'totalOverDuration', snap: 'nearest' };
+
+beforeEach(() => {
+  getAppleAuthFromCookies.mockReset();
+  getAppleAuthFromCookies.mockResolvedValue(session);
+  planOffers.mockReset();
+  planOffers.mockResolvedValue({ changeSet: { ops: [] }, hash: '0123456789abcdef', entries: [{ action: 'create' }] });
+  fetchOffer.mockReset();
+  constructed.length = 0;
+});
+
+describe('POST offers/plan', () => {
+  it('returns 401 without a session and reads nothing', async () => {
+    getAppleAuthFromCookies.mockResolvedValue(null);
+    expect((await call(create)).status).toBe(401);
+    expect(constructed).toHaveLength(0);
+  });
+
+  it('plans a promotional offer for the signed-in app from the rule', async () => {
+    const response = await call(create);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ changeSet: { ops: [] }, hash: '0123456789abcdef', entry: { action: 'create' } });
+    const [{ app, offers }] = planOffers.mock.calls[0];
+    expect(app).toEqual({ bundleId: 'com.example.test' });
+    expect(offers[0]).toMatchObject({ id: 'example_half', name: 'Half', kind: 'apple.promo', mode: 'PAY_UP_FRONT', duration: 'P1Y', pricing: { percent: '50', basis: 'totalOverDuration' } });
+  });
+
+  it('re-prices an existing promo with its own terms', async () => {
+    fetchOffer.mockResolvedValue({ kind: 'apple.promo', storeId: 'p1', key: 'example_half', name: 'Half', mode: 'PAY_UP_FRONT', duration: 'P6M', periods: 1, prices: {} });
+    const response = await call({ action: 'updatePrices', offer: 'p1', percent: '40', basis: 'perPeriod', snap: 'floor' });
+    expect(response.status).toBe(200);
+    expect(planOffers.mock.calls[0][0].offers[0]).toMatchObject({ id: 'example_half', duration: 'P6M', pricing: { percent: '40', snap: 'floor' } });
+    fetchOffer.mockResolvedValue(null);
+    expect((await call({ action: 'updatePrices', offer: 'nope', percent: '40', basis: 'perPeriod' })).status).toBe(404);
+  });
+
+  it('refuses bad input before reading anything', async () => {
+    expect((await call({ ...create, percent: '150' })).status).toBe(400);
+    expect((await call({ ...create, mode: 'FREE_TRIAL' })).status).toBe(400);
+    expect((await call({ ...create, extra: 1 })).status).toBe(400);
+    expect((await call(create, 'com.example.sub')).status).toBe(400);
+    expect(planOffers).not.toHaveBeenCalled();
+  });
+});
