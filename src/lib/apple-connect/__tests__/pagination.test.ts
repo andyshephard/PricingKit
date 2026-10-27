@@ -17,7 +17,9 @@ const credentials: AppleConnectCredentials = {
   bundleId: 'com.example.test',
 };
 
-beforeEach(() => appleApiRequest.mockReset());
+beforeEach(() => {
+  appleApiRequest.mockReset();
+});
 
 describe('appleNextLinkToEndpoint', () => {
   it('keeps the cursor and the API version', () => {

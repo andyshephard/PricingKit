@@ -11,7 +11,9 @@ import { RequestBudget } from '@/lib/utils/request-budget';
 const fetchMock = vi.mocked(googlePlayFetch);
 const credentials = {} as ServiceAccountCredentials;
 
-beforeEach(() => fetchMock.mockReset());
+beforeEach(() => {
+  fetchMock.mockReset();
+});
 
 describe('Google helpers charge every request to the caller budget', () => {
   it('base plan price edit: read and PATCH', async () => {
