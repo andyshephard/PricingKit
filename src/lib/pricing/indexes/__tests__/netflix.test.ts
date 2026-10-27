@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getSupportedAppleTerritories } from '../../apple-connect/territories';
+import { getSupportedAppleTerritories } from '@/lib/apple-connect/territories';
 import {
   NETFLIX_PRICE_INDEX,
   DEFAULT_NETFLIX_MULTIPLIER,

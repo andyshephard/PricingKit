@@ -54,7 +54,7 @@ import {
   type RoundingMode,
   type DynamicPPPData,
   type DynamicExchangeRates,
-} from '@/lib/google-play/currency';
+} from '@/lib/pricing';
 import { useUpdateBasePlanPrices } from '@/hooks/use-subscriptions';
 
 interface PPPApiResponse {

@@ -4,7 +4,7 @@ const SOURCE_REPO = 'https://github.com/tompec/netflix-prices';
 const SOURCE_URL = 'https://raw.githubusercontent.com/tompec/netflix-prices/main/data/latest.json';
 const SOURCE_LICENSE = 'CC-BY-4.0';
 const SOURCE_COMMIT = process.env.NETFLIX_PRICES_COMMIT || 'a46477c39bc95049bca452b4476d0ed1ac64d1ea';
-const OUTPUT_FILE = new URL('../src/lib/conversion-indexes/netflix.ts', import.meta.url);
+const OUTPUT_FILE = new URL('../src/lib/pricing/indexes/netflix.ts', import.meta.url);
 const INFERRED_REGIONS = {
   CN: 'HK',
   XK: 'AL',

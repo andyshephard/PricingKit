@@ -3,15 +3,15 @@ import {
   calculateRegionalPrice,
   calculateBulkPrices,
   filterApplicablePrices,
-} from '../currency';
-import { calculateNewPrice } from '../products';
+} from '../strategies';
+import { calculateNewPrice } from '@/lib/google-play/products';
 import {
   TEST_PPP_DATA,
   TEST_EXCHANGE_RATES,
   APPLE_BILLED_IN_USD,
 } from './fixtures/ppp-snapshot';
-import type { Money } from '../types';
-import { getNetflixMultiplier } from '../../conversion-indexes/netflix';
+import type { Money } from '@/lib/google-play/types';
+import { getNetflixMultiplier } from '../indexes/netflix';
 
 describe('calculateRegionalPrice — direct strategy', () => {
   it('US base: applies exchange rate only (multiplier 1.0)', () => {

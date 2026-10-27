@@ -59,7 +59,7 @@ import {
   type RoundingMode,
   type DynamicPPPData,
   type DynamicExchangeRates,
-} from '@/lib/google-play/currency';
+} from '@/lib/pricing';
 import { useUpdateProductPrices } from '@/hooks/use-products';
 
 // Re-exported from shared util for backwards compatibility within this module.

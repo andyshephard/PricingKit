@@ -1,6 +1,6 @@
 import { googlePlayFetch } from './client';
 import type { ServiceAccountCredentials, InAppProduct, Money } from './types';
-import { isZeroDecimalCurrency, roundDownToPriceEnding } from './currency';
+import { isZeroDecimalCurrency, roundDownToPriceEnding } from '../pricing/rounding';
 
 // Type for regional pricing config
 interface RegionalPricingConfig {

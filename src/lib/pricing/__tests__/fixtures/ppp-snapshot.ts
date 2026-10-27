@@ -1,6 +1,6 @@
 // Synthetic but realistic PPP / exchange-rate fixtures for currency-engine tests.
 // Numbers are picked to exercise interesting branches; not meant to mirror real markets.
-import type { DynamicPPPData, DynamicExchangeRates } from '../../currency';
+import type { DynamicPPPData, DynamicExchangeRates } from '../../strategies';
 
 /**
  * PPP factor (LCU per int'l $) and ppp-vs-market multiplier for each region.

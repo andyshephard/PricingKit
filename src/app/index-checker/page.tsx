@@ -34,7 +34,7 @@ import {
   getAllRegionCodes,
   type DynamicPPPData,
   type DynamicExchangeRates,
-} from '@/lib/google-play/currency';
+} from '@/lib/pricing';
 import { GOOGLE_PLAY_REGIONS, formatMoney } from '@/lib/google-play/types';
 import { getCurrencySymbol } from '@/lib/utils/currency';
 

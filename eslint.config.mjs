@@ -17,6 +17,24 @@ const eslintConfig = defineConfig([
       ],
     },
   },
+  // The pricing core is framework-free: no Next.js, React or web-app imports.
+  // src/lib/pricing/__tests__/core-boundary.test.ts also checks the transitive graph.
+  {
+    files: ["src/lib/pricing/**/*.ts"],
+    ignores: ["src/lib/pricing/**/__tests__/**"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            { group: ["next", "next/*", "react", "react/*", "react-dom", "react-dom/*"], message: "The pricing core must stay framework-free." },
+            { group: ["@/app/*", "@/components/*", "@/hooks/*", "@/store/*", "@/middleware/*", "@/lib/adapters/*"], message: "The pricing core must not depend on the web app or adapters." },
+            { group: ["**/apple-connect/client", "**/google-play/client"], message: "The pricing core does no network I/O; use an adapter." },
+          ],
+        },
+      ],
+    },
+  },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:

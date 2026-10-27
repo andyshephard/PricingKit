@@ -58,7 +58,7 @@ import {
   type RoundingMode,
   type DynamicPPPData,
   type DynamicExchangeRates,
-} from '@/lib/google-play/currency';
+} from '@/lib/pricing';
 import { useUpdateAppleSubscriptionPrices, useResolveAppleSubscriptionPricePoints } from '@/hooks/use-subscriptions';
 
 // Format price with currency

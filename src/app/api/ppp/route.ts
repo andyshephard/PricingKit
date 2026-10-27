@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { getPPPMultipliers } from '@/lib/world-bank/ppp';
-import { PRICING_INDEX, DEFAULT_PRICING_INDEX_ENTRY, LOCAL_CURRENCIES } from '@/lib/conversion-indexes/ppp';
-import { BIG_MAC_INDEX, DEFAULT_BIG_MAC_MULTIPLIER } from '@/lib/conversion-indexes/big-mac';
-import { NETFLIX_PRICE_INDEX, DEFAULT_NETFLIX_MULTIPLIER } from '@/lib/conversion-indexes/netflix';
+import { PRICING_INDEX, DEFAULT_PRICING_INDEX_ENTRY, LOCAL_CURRENCIES } from '@/lib/pricing/indexes/ppp';
+import { BIG_MAC_INDEX, DEFAULT_BIG_MAC_MULTIPLIER } from '@/lib/pricing/indexes/big-mac';
+import { NETFLIX_PRICE_INDEX, DEFAULT_NETFLIX_MULTIPLIER } from '@/lib/pricing/indexes/netflix';
 import { getExchangeRates } from '@/lib/exchange-rates/client';
-import { FALLBACK_EXCHANGE_RATES } from '@/lib/conversion-indexes/exchange-rates';
+import { FALLBACK_EXCHANGE_RATES } from '@/lib/pricing/indexes/exchange-rates';
 import { hasAuthenticatedSession } from '@/lib/session';
 
 const EXCHANGE_RATES_COOKIE = 'exchange_rates_api_key';
