@@ -473,8 +473,8 @@ export async function updateSubscriptionPrice(
   startDate?: string,
   preserveCurrentPrice: boolean = true,
   ctx: RequestContext = {}
-): Promise<void> {
-  await appleApiRequest(credentials, `/subscriptionPrices`, {
+): Promise<{ id?: string }> {
+  const created = await appleApiRequest<{ data?: { id?: string } }>(credentials, `/subscriptionPrices`, {
     method: 'POST',
     budget: ctx.budget,
     body: {
@@ -508,6 +508,7 @@ export async function updateSubscriptionPrice(
       },
     },
   });
+  return { id: created?.data?.id };
 }
 
 // Delete subscription price for a territory
