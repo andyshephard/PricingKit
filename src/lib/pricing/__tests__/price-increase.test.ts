@@ -91,6 +91,29 @@ describe('classifyPriceChange: App Store', () => {
   });
 });
 
+describe('consent rules fail closed on bad price history', () => {
+  it('App Store: an unreadable or future lastIncreaseAt means needs consent, with a note', () => {
+    for (const lastIncreaseAt of ['2029-02-30', '2029-13-01', 'last spring', { US: '2029-02-30' }]) {
+      const c = classifyPriceChange(apple('9.99', '10.99', { context: { lastIncreaseAt } }));
+      expect(c.classification).toBe('increase-needs-consent');
+      expect(c.assumptions.join(' ')).toMatch(/not a real date/);
+    }
+    const future = classifyPriceChange(apple('9.99', '10.99', { context: { lastIncreaseAt: '2030-07-01' } }));
+    expect(future.classification).toBe('increase-needs-consent');
+    expect(future.assumptions.join(' ')).toMatch(/after the change takes effect/);
+    // Exactly the effective date counts as within 12 months; a year and a day before does not
+    expect(classifyPriceChange(apple('9.99', '10.99', { context: { lastIncreaseAt: '2030-06-01' } })).classification).toBe('increase-needs-consent');
+    expect(classifyPriceChange(apple('9.99', '10.99', { context: { lastIncreaseAt: '2029-05-31' } })).classification).toBe('increase-within-no-consent-threshold');
+  });
+
+  it('Google Play: the same dates mean migrating needs opt-in', () => {
+    const play = (lastIncreaseAt: string): PriceChangeInput => ({ ...apple('9.99', '10.99'), platform: 'google', context: { lastIncreaseAt } });
+    expect(classifyPriceChange(play('2029-02-30')).ifMigrated).toBe('opt-in-required');
+    expect(classifyPriceChange(play('2031-01-01')).ifMigrated).toBe('opt-in-required');
+    expect(classifyPriceChange(play('2028-01-01')).ifMigrated).toBe('opt-out-possible');
+  });
+});
+
 describe('classifyPriceChange: Google Play', () => {
   const play = (current: string, after: string, context?: PriceChangeInput['context']): PriceChangeInput => ({ ...apple(current, after), platform: 'google', ...(context ? { context } : {}) });
 

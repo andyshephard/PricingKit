@@ -53,7 +53,7 @@
 import { z } from 'zod';
 import { appRefSchema, productRefSchema, type PlanSkip } from './changeset';
 import { compareDecimal, decimalFromNumber, decimalToNumber, divideDecimal, isDecimalString, multiplyDecimal, normalizeDecimal, type Decimal } from './decimal';
-import type { AppRef, ProductPriceState, ProductRef } from './model';
+import { isCalendarDate, type AppRef, type ProductPriceState, type ProductRef } from './model';
 import type { ResolveTarget } from './adapter';
 import { currencyScale } from './rounding';
 import type { SnapMode } from './snap';
@@ -157,7 +157,7 @@ const decimalSchema = z
   .transform((v) => normalizeDecimal(v));
 const nonNegativeDecimal = decimalSchema.refine((v) => !v.startsWith('-'), { message: 'must not be negative' });
 const territorySchema = z.string().regex(/^[A-Z]{2}$/, 'territory must be ISO 3166-1 alpha-2, e.g. "GB"');
-const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be a date, YYYY-MM-DD');
+const dateSchema = z.string().refine((v) => isCalendarDate(v), { message: 'must be a real date, YYYY-MM-DD' });
 /** Custom multipliers: within [0.01, 10] (index multipliers are clamped to [0.1, 2]; a custom table may go further, not without limit) */
 const multiplierSchema = z
   .string()
@@ -232,7 +232,7 @@ const specProductSchema = z
     product: productRefSchema,
     targets: targetsSchema,
     snap: z.enum(['nearest', 'floor', 'ceil']).optional(),
-    startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'startDate must be a date, YYYY-MM-DD').optional(),
+    startDate: z.string().refine((v) => isCalendarDate(v), { message: 'startDate must be a real date, YYYY-MM-DD' }).optional(),
     allowNewTerritories: z.boolean().optional(),
     preserveCurrentPrice: z.boolean().optional(),
     measure: z.enum(['customerPrice', 'proceeds']).optional(),

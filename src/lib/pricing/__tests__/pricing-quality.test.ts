@@ -195,6 +195,13 @@ describe('proceeds and consent spec options', () => {
     expect(problems(spec([{ product: playPlan, targets: fixed, commission: '1' }], {}, { packageName: 'com.example.app' }))).toEqual([expect.stringMatching(/fraction/)]);
     expect(problems(spec([{ product: appleSub, targets: fixed, consent: { billingPeriod: 'monthly' } }]))).toEqual([expect.stringMatching(/ISO 8601 period/)]);
     expect(problems(spec([{ product: appleSub, targets: fixed, consent: { lastIncreaseAt: 'yesterday' } }]))).toHaveLength(1);
+    // Dates must exist: no month 13, no 30 February (in every date field)
+    for (const date of ['2026-13-01', '2026-02-30', '2026-04-31']) {
+      expect(problems(spec([{ product: appleSub, targets: fixed, consent: { lastIncreaseAt: date } }]))).toEqual([expect.stringMatching(/must be a real date/)]);
+      expect(problems(spec([{ product: appleSub, targets: fixed, consent: { lastIncreaseAt: { GB: date } } }]))).toHaveLength(1);
+      expect(problems(spec([{ product: appleSub, targets: fixed, startDate: date }]))).toEqual([expect.stringMatching(/startDate must be a real date/)]);
+    }
+    expect(problems(spec([{ product: appleSub, targets: fixed, consent: { lastIncreaseAt: '2028-02-29' } }]))).toEqual([]);
   });
 
   it('accepts freshness limits and the PPP staleness policy', () => {

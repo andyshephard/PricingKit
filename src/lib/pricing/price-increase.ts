@@ -69,7 +69,7 @@
 import { alpha2ToAlpha3 } from '../apple-connect/territories';
 import { compareDecimal, decimalFromNumber, divideDecimal, isZeroDecimal, multiplyDecimal, subtractDecimal, type Decimal } from './decimal';
 import { FALLBACK_EXCHANGE_RATES } from './indexes/exchange-rates';
-import type { Platform, PriceValue } from './model';
+import { isCalendarDate, type Platform, type PriceValue } from './model';
 
 export const APPLE_PRICE_INCREASE_RULES_URL =
   'https://developer.apple.com/help/app-store-connect/manage-subscriptions/manage-pricing-for-auto-renewable-subscriptions';
@@ -197,12 +197,18 @@ function lastIncreaseFor(context: ConsentContext | undefined, territory: string)
   return typeof value === 'string' ? value : value?.[territory];
 }
 
-/** Within 365 days before the effective date? undefined when either date is unreadable */
-function withinTwelveMonths(last: string, effective: string): boolean | undefined {
-  const a = Date.parse(`${last.slice(0, 10)}T00:00:00Z`);
+/**
+ * When was the last increase, against the effective date? Anything PricingKit
+ * can't read, or a date after the effective date (the history given doesn't
+ * fit this plan), is treated as if consent were needed: never ignored.
+ */
+type LastIncrease = 'recent' | 'old' | 'unreadable' | 'after-effective-date';
+function lastIncreaseStatus(last: string, effective: string): LastIncrease {
+  if (!isCalendarDate(last) || !isCalendarDate(effective.slice(0, 10))) return 'unreadable';
+  const a = Date.parse(`${last}T00:00:00Z`);
   const b = Date.parse(`${effective.slice(0, 10)}T00:00:00Z`);
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return undefined;
-  return b - a < 365 * DAY_MS && b >= a;
+  if (a > b) return 'after-effective-date';
+  return b - a < 365 * DAY_MS ? 'recent' : 'old';
 }
 
 function usdRate(currency: string, context: ConsentContext | undefined): Decimal | undefined {
@@ -255,9 +261,16 @@ export function classifyPriceChange(input: PriceChangeInput): PriceChangeClassif
 
   const last = lastIncreaseFor(context, territory);
   if (last !== undefined) {
-    const recent = withinTwelveMonths(last, input.effectiveDate);
-    if (recent === undefined) assumptions.push(`consent.lastIncreaseAt "${last}" is not a date; ignored`);
-    else if (recent) return needs(`a price increase on ${last} is within 12 months of ${input.effectiveDate} (A1)`);
+    const status = lastIncreaseStatus(last, input.effectiveDate);
+    if (status === 'recent') return needs(`a price increase on ${last} is within 12 months of ${input.effectiveDate} (A1)`);
+    if (status === 'unreadable') {
+      assumptions.push('consent.lastIncreaseAt is not a real date, so the 12-month rule can\'t be checked: treated as needing consent');
+      return needs('the last increase date can\'t be read (A1)');
+    }
+    if (status === 'after-effective-date') {
+      assumptions.push(`consent.lastIncreaseAt (${last}) is after the change takes effect (${input.effectiveDate.slice(0, 10)}): treated as needing consent`);
+      return needs('the last increase date is after the effective date (A1)');
+    }
   } else {
     assumptions.push('no price increase in the last 12 months (PricingKit can\'t read the price history; set consent.lastIncreaseAt)');
   }
@@ -291,8 +304,14 @@ function directionOf(current: PriceValue, after: PriceValue): PriceChangeClassif
 function playMigration(input: PriceChangeInput, diff: Decimal, reasons: string[], assumptions: string[]): PlayMigrationClass {
   const { current, context, territory } = input;
   const last = lastIncreaseFor(context, territory);
-  if (last !== undefined && withinTwelveMonths(last, input.effectiveDate)) {
+  const status = last === undefined ? undefined : lastIncreaseStatus(last, input.effectiveDate);
+  if (status === 'recent') {
     reasons.push(`migrating needs opt-in: an increase on ${last} is within 365 days (G3)`);
+    return 'opt-in-required';
+  }
+  if (status === 'unreadable' || status === 'after-effective-date') {
+    assumptions.push(`consent.lastIncreaseAt ${status === 'unreadable' ? 'is not a real date' : `(${last}) is after the effective date`}: treated as needing opt-in`);
+    reasons.push('migrating needs opt-in: the last increase date can\'t be used (G3)');
     return 'opt-in-required';
   }
   if (last === undefined) assumptions.push('no opt-out increase in the last 365 days (set consent.lastIncreaseAt)');
