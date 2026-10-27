@@ -58,10 +58,24 @@ function done(tx: IDBTransaction): Promise<void> {
   });
 }
 
+const ALGORITHM: Record<KeyPlatform, string> = { apple: 'ECDSA', google: 'RSASSA-PKCS1-v1_5' };
+
+/** A private, non-extractable signing key for this platform's algorithm */
+function isSigningKey(key: unknown, platform: KeyPlatform): key is CryptoKey {
+  return (
+    typeof CryptoKey !== 'undefined' &&
+    key instanceof CryptoKey &&
+    key.type === 'private' &&
+    key.extractable === false &&
+    key.usages.includes('sign') &&
+    key.algorithm.name === ALGORITHM[platform]
+  );
+}
+
 function isStoredKey(value: unknown, platform: KeyPlatform): value is StoredKey {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
-  if (v.platform !== platform || typeof v.createdAt !== 'number' || typeof v.key !== 'object' || v.key === null) return false;
+  if (v.platform !== platform || typeof v.createdAt !== 'number' || !isSigningKey(v.key, platform)) return false;
   if (platform === 'apple') return typeof v.keyId === 'string' && typeof v.issuerId === 'string';
   return typeof v.clientEmail === 'string' && typeof v.privateKeyId === 'string' && typeof v.projectId === 'string';
 }
@@ -92,27 +106,47 @@ export class IndexedDbKeyStore implements KeyStore {
             req.result.createObjectStore(KEY_STORE_NAME, { keyPath: 'platform' });
           }
         };
-        req.onsuccess = () => resolve(req.result);
+        req.onsuccess = () => {
+          const db = req.result;
+          // Drop the cached connection when the browser closes it, or when another
+          // tab upgrades the database (closing it so that upgrade isn't blocked)
+          db.onclose = () => this.drop(opening);
+          db.onversionchange = () => {
+            db.close();
+            this.drop(opening);
+          };
+          resolve(db);
+        };
         req.onerror = () => reject(storageError());
-        req.onblocked = () => reject(storageError());
+        // onblocked is not a failure: another tab holds an older version open,
+        // and success (or error) follows once it closes
       });
+      const opening = this.db;
       // A failed open is retried on the next call rather than cached
-      this.db.catch(() => {
-        this.db = null;
-      });
+      opening.catch(() => this.drop(opening));
     }
     return this.db;
   }
 
-  private async run<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
-    const db = await this.open();
+  private drop(connection: Promise<IDBDatabase>): void {
+    if (this.db === connection) this.db = null;
+  }
+
+  /** One request in its own transaction. A connection that has gone away (a sync throw) is reopened once. */
+  private async run<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBRequest<T>, retried = false): Promise<T> {
+    const connection = this.open();
+    const db = await connection;
     let tx: IDBTransaction;
+    let req: IDBRequest<T>;
     try {
       tx = db.transaction(KEY_STORE_NAME, mode);
+      req = fn(tx.objectStore(KEY_STORE_NAME));
     } catch {
+      this.drop(connection);
+      if (!retried) return this.run(mode, fn, true);
       throw storageError();
     }
-    const [result] = await Promise.all([request(fn(tx.objectStore(KEY_STORE_NAME))), done(tx)]);
+    const [result] = await Promise.all([request(req), done(tx)]);
     return result;
   }
 

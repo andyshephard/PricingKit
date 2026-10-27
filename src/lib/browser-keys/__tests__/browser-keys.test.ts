@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi, type Mock } from 'vitest';
-import { BrowserKeys, BrowserKeyError, MemoryKeyStore, type KeyStore } from '..';
+import { APPLE_APPLY_MIN_VALID_SECONDS, BrowserKeys, BrowserKeyError, GOOGLE_APPLY_MIN_VALID_SECONDS, MemoryKeyStore, type KeyStore } from '..';
+import type { KeyPlatform, StoredKey } from '../types';
 import { GOOGLE_TOKEN_ENDPOINT, type FetchLike } from '../sign';
 import { decodeJwt, jsonResponse, makeAppleKey, makeRsaKey, serviceAccountJson, verifyJwt } from './keys';
 
@@ -27,6 +28,41 @@ function setup(options: { store?: KeyStore; fetch?: Mock<FetchLike> } = {}) {
   const store = options.store ?? new MemoryKeyStore();
   const keys = new BrowserKeys({ store, fetch: fetchMock, clock: () => now });
   return { keys, store, clock, fetchMock };
+}
+
+/** A MemoryKeyStore whose reads and writes can be held, to order races exactly */
+function gatedStore() {
+  const store = new MemoryKeyStore();
+  let readsHeld = false;
+  let writesHeld = false;
+  const waiting: Array<() => void> = [];
+  let writes = 0;
+  const hold = <T>(held: boolean, run: () => Promise<T>, isWrite = false): Promise<T> => {
+    if (!held) return run();
+    if (isWrite) writes += 1;
+    return new Promise<void>((resolve) => waiting.push(resolve)).then(run);
+  };
+  const get = store.get.bind(store);
+  const put = store.put.bind(store);
+  // A held read takes its value now and delivers it on open(), like a read that was slow to return
+  store.get = (platform: KeyPlatform) => {
+    const value = get(platform);
+    return readsHeld ? hold(true, () => value) : value;
+  };
+  store.put = (record: StoredKey) => hold(writesHeld, () => put(record), true);
+  const del = store.delete.bind(store);
+  store.delete = (platform: KeyPlatform) => hold(writesHeld, () => del(platform));
+  const gate = {
+    close: () => (readsHeld = true),
+    closeWrites: () => (writesHeld = true),
+    pendingWrites: () => writes,
+    open: () => {
+      readsHeld = writesHeld = false;
+      // Release in arrival order, as IndexedDB applies transactions
+      waiting.splice(0).forEach((release) => release());
+    },
+  };
+  return { store, gate };
 }
 
 const appleInput = () => ({ privateKeyPem: apple.pem, keyId: 'ABC123DEFG', issuerId: '57246542-96fe-1a63-e053-0824d011072a' });
@@ -83,14 +119,55 @@ describe('BrowserKeys: Apple', () => {
     expect(await keys.getAppleToken()).toBe(second);
   });
 
-  it('re-signs on forceRefresh', async () => {
+  it('re-signs once for parallel rejections of the same token, and ignores a stale rejection', async () => {
     const { keys, clock } = setup();
     await keys.importApple(appleInput());
     const first = await keys.getAppleToken();
     clock.advance(1);
-    const second = await keys.getAppleToken({ forceRefresh: true });
+    const sign = vi.spyOn(crypto.subtle, 'sign');
+    const retried = await Promise.all([1, 2, 3].map(() => keys.getAppleToken({ rejected: first })));
+    expect(new Set(retried).size).toBe(1);
+    expect(retried[0]).not.toBe(first);
+    expect(await verifyJwt(retried[0], apple.publicKey)).toBe(true);
+    // A 401 for the old token arriving late reuses the new one
+    expect(await keys.getAppleToken({ rejected: first })).toBe(retried[0]);
+    expect(sign).toHaveBeenCalledTimes(1);
+    sign.mockRestore();
+  });
+
+  it('re-signs when the token would not outlive minValidSeconds', async () => {
+    const { keys, clock } = setup();
+    await keys.importApple(appleInput());
+    const first = await keys.getAppleToken();
+    clock.advance(59); // 1141 s left
+    expect(await keys.getAppleToken({ minValidSeconds: APPLE_APPLY_MIN_VALID_SECONDS })).toBe(first);
+    clock.advance(2); // 1139 s left
+    const second = await keys.getAppleToken({ minValidSeconds: APPLE_APPLY_MIN_VALID_SECONDS });
     expect(second).not.toBe(first);
-    expect(await verifyJwt(second, apple.publicKey)).toBe(true);
+    // A request for more than a token can give is capped, so a fresh token is reused
+    clock.advance(1);
+    expect(await keys.getAppleToken({ minValidSeconds: 99_999 })).toBe(second);
+  });
+
+  it('signs with the clock offset, and a new offset drops the cached token', async () => {
+    const { keys } = setup();
+    await keys.importApple(appleInput());
+    const first = await keys.getAppleToken();
+    keys.setClockOffsetMs(-3_600_000);
+    expect(keys.getClockOffsetMs()).toBe(-3_600_000);
+    const second = await keys.getAppleToken();
+    expect(second).not.toBe(first);
+    expect(decodeJwt(second).claims.iat).toBe(T0_SECONDS - 3600);
+    keys.setClockOffsetMs(Number.NaN);
+    expect(keys.getClockOffsetMs()).toBe(0);
+    keys.setClockOffsetMs(10 * 24 * 3_600_000);
+    expect(keys.getClockOffsetMs()).toBe(24 * 3_600_000);
+  });
+
+  it('takes a clock offset in the options', async () => {
+    const keys = new BrowserKeys({ store: new MemoryKeyStore(), clock: () => T0, clockOffsetMs: 120_000 });
+    await keys.importApple(appleInput());
+    expect(decodeJwt(await keys.getAppleToken()).claims.iat).toBe(T0_SECONDS + 120);
   });
 
   it('shares one signing between concurrent callers', async () => {
@@ -172,11 +249,58 @@ describe('BrowserKeys: Google', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('mints a new token on forceRefresh', async () => {
-    const { keys } = setup();
+  it('mints one new token for parallel rejections of the same token', async () => {
+    const { keys, fetchMock } = setup();
+    await keys.importGoogle(serviceAccountJson(google.pem));
+    const first = await keys.getGoogleAccessToken();
+    const retried = await Promise.all([1, 2, 3].map(() => keys.getGoogleAccessToken({ rejected: first })));
+    expect(retried).toEqual(['ya29.token-2', 'ya29.token-2', 'ya29.token-2']);
+    expect(await keys.getGoogleAccessToken({ rejected: first })).toBe('ya29.token-2');
+    expect(await keys.getGoogleAccessToken({ rejected: 'some-other-token' })).toBe('ya29.token-2');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('mints a new token when it would not outlive minValidSeconds', async () => {
+    const { keys, clock } = setup();
     await keys.importGoogle(serviceAccountJson(google.pem));
     await keys.getGoogleAccessToken();
-    expect(await keys.getGoogleAccessToken({ forceRefresh: true })).toBe('ya29.token-2');
+    clock.advance(3599 - GOOGLE_APPLY_MIN_VALID_SECONDS - 1);
+    expect(await keys.getGoogleAccessToken({ minValidSeconds: GOOGLE_APPLY_MIN_VALID_SECONDS })).toBe('ya29.token-1');
+    clock.advance(2);
+    expect(await keys.getGoogleAccessToken({ minValidSeconds: GOOGLE_APPLY_MIN_VALID_SECONDS })).toBe('ya29.token-2');
+  });
+
+  it('refuses redirects and sends no credentials', async () => {
+    const { keys, fetchMock } = setup();
+    await keys.importGoogle(serviceAccountJson(google.pem));
+    await keys.getGoogleAccessToken();
+    const init = fetchMock.mock.calls[0][1];
+    expect(init.redirect).toBe('error');
+    expect(init.referrerPolicy).toBe('no-referrer');
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('times out with an AbortController when AbortSignal.timeout is missing', async () => {
+    const original = AbortSignal.timeout;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      (AbortSignal as { timeout?: unknown }).timeout = undefined;
+      const fetchMock = vi.fn<FetchLike>(
+        (_url, init) =>
+          new Promise((_resolve, reject) => {
+            init.signal!.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+          })
+      );
+      const { keys } = setup({ fetch: fetchMock });
+      await keys.importGoogle(serviceAccountJson(google.pem));
+      const pending = keys.getGoogleAccessToken().catch((e: unknown) => e);
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(await pending).toMatchObject({ code: 'network' });
+    } finally {
+      AbortSignal.timeout = original;
+      vi.useRealTimers();
+    }
   });
 
   it('does not cache a failed exchange', async () => {
@@ -273,13 +397,72 @@ describe('BrowserKeys: forget', () => {
     await expect(keys.getGoogleAccessToken()).rejects.toMatchObject({ code: 'not_connected' });
   });
 
-  it('a token signed while forgetting is not cached afterwards', async () => {
-    const { keys } = setup();
-    await keys.importApple(appleInput());
-    const pending = keys.getAppleToken();
+  it('a token being signed when the key is forgotten is not returned', async () => {
+    const { store, gate } = gatedStore();
+    await new BrowserKeys({ store, clock: () => T0 }).importApple(appleInput());
+    const keys = new BrowserKeys({ store, clock: () => T0 });
+    gate.close();
+    const pending = keys.getAppleToken().catch((e: unknown) => e);
     await keys.forget('apple');
-    await pending.catch(() => undefined);
+    gate.open(); // the read started before the forget now returns the old key
+    expect(await pending).toMatchObject({ code: 'not_connected' });
     await expect(keys.getAppleToken()).rejects.toMatchObject({ code: 'not_connected' });
+  });
+
+  it('a token being signed when the key is replaced comes from the new key', async () => {
+    const { store, gate } = gatedStore();
+    await new BrowserKeys({ store, clock: () => T0 }).importApple(appleInput());
+    const keys = new BrowserKeys({ store, clock: () => T0 });
+    gate.close();
+    const pending = keys.getAppleToken();
+    const other = await makeAppleKey();
+    await keys.importApple({ ...appleInput(), privateKeyPem: other.pem, keyId: 'NEWKEY1234' });
+    gate.open();
+    const token = await pending;
+    expect(await verifyJwt(token, other.publicKey)).toBe(true);
+    expect(decodeJwt(token).header.kid).toBe('NEWKEY1234');
+  });
+
+  it('an import overtaken by a forget does not come back', async () => {
+    const { store, gate } = gatedStore();
+    const keys = new BrowserKeys({ store, clock: () => T0 });
+    gate.closeWrites();
+    const importing = keys.importApple(appleInput());
+    await vi.waitFor(() => expect(gate.pendingWrites()).toBe(1));
+    const forgetting = keys.forget('apple');
+    gate.open();
+    await importing;
+    await forgetting;
+    expect(await store.get('apple')).toBeNull();
+    expect(await keys.info('apple')).toBeNull();
+    await expect(keys.getAppleToken()).rejects.toMatchObject({ code: 'not_connected' });
+  });
+
+  it('the later of two overlapping imports wins', async () => {
+    const { store, gate } = gatedStore();
+    const keys = new BrowserKeys({ store, clock: () => T0 });
+    const other = await makeAppleKey();
+    gate.closeWrites();
+    const firstImport = keys.importApple(appleInput());
+    await vi.waitFor(() => expect(gate.pendingWrites()).toBe(1));
+    const secondImport = keys.importApple({ ...appleInput(), privateKeyPem: other.pem, keyId: 'NEWKEY1234' });
+    await vi.waitFor(() => expect(gate.pendingWrites()).toBe(2));
+    gate.open();
+    await Promise.all([firstImport, secondImport]);
+    expect(await keys.info('apple')).toMatchObject({ keyId: 'NEWKEY1234' });
+    expect(await verifyJwt(await keys.getAppleToken(), other.publicKey)).toBe(true);
+  });
+
+  it('forgetAll() keeps everything when the store fails, and throws', async () => {
+    const store = new MemoryKeyStore();
+    const keys = new BrowserKeys({ store, clock: () => T0 });
+    await keys.importApple(appleInput());
+    const token = await keys.getAppleToken();
+    vi.spyOn(store, 'clear').mockRejectedValueOnce(new BrowserKeyError('storage', 'no'));
+    await expect(keys.forgetAll()).rejects.toMatchObject({ code: 'storage' });
+    // Memory still matches the store: the key is still there and still usable
+    expect(await store.get('apple')).not.toBeNull();
+    expect(await keys.getAppleToken()).toBe(token);
   });
 
   it('reports not_connected when nothing was ever stored', async () => {

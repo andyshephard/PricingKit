@@ -11,7 +11,9 @@
 import { importAppleKey, importGoogleKey, type AppleKeyInput } from './import';
 import { IndexedDbKeyStore, type KeyStore } from './store';
 import {
+  APPLE_MAX_MIN_VALID_SECONDS,
   APPLE_RESIGN_MARGIN_SECONDS,
+  GOOGLE_MAX_MIN_VALID_SECONDS,
   APPLE_TOKEN_TTL_SECONDS,
   GOOGLE_REFRESH_MARGIN_SECONDS,
   TokenSlot,
@@ -19,8 +21,10 @@ import {
   nowSeconds,
   signAppleJwt,
   signGoogleAssertion,
+  type CachedToken,
   type Clock,
   type FetchLike,
+  type TokenSlotOptions,
 } from './sign';
 import { BrowserKeyError, type AppleKeyInfo, type GoogleKeyInfo, type KeyInfo, type KeyPlatform, type StoredKey } from './types';
 
@@ -28,7 +32,14 @@ export { BrowserKeyError } from './types';
 export type { AppleKeyInfo, BrowserKeyErrorCode, GoogleKeyInfo, KeyInfo, KeyPlatform } from './types';
 export type { AppleKeyInput } from './import';
 export { IndexedDbKeyStore, MemoryKeyStore, type KeyStore } from './store';
-export { APPLE_AUDIENCE, APPLE_TOKEN_TTL_SECONDS, GOOGLE_SCOPE, GOOGLE_TOKEN_ENDPOINT } from './sign';
+export {
+  APPLE_APPLY_MIN_VALID_SECONDS,
+  APPLE_AUDIENCE,
+  APPLE_TOKEN_TTL_SECONDS,
+  GOOGLE_APPLY_MIN_VALID_SECONDS,
+  GOOGLE_SCOPE,
+  GOOGLE_TOKEN_ENDPOINT,
+} from './sign';
 
 export interface BrowserKeysOptions {
   /** Defaults to IndexedDB */
@@ -37,11 +48,24 @@ export interface BrowserKeysOptions {
   fetch?: FetchLike;
   /** Milliseconds since the epoch; defaults to Date.now */
   clock?: Clock;
+  /** Added to the clock, e.g. the server's Date minus local time when this computer's clock is wrong */
+  clockOffsetMs?: number;
 }
 
-export interface TokenOptions {
-  /** Ignore the cached token and sign or mint a new one (e.g. after a 401) */
-  forceRefresh?: boolean;
+/**
+ * - rejected: the token the server just refused (after a 401). A new one is
+ *   made only if that is still the cached token, so parallel 401s share one.
+ * - minValidSeconds: make a new token unless at least this long is left, for
+ *   a long request (APPLE_APPLY_MIN_VALID_SECONDS, GOOGLE_APPLY_MIN_VALID_SECONDS).
+ */
+export type TokenOptions = TokenSlotOptions;
+
+/** Clock offsets beyond a day are a bad Date header, not a wrong clock */
+const MAX_CLOCK_OFFSET_MS = 24 * 60 * 60 * 1000;
+
+function clampOffset(ms: number): number {
+  if (!Number.isFinite(ms)) return 0;
+  return Math.max(-MAX_CLOCK_OFFSET_MS, Math.min(MAX_CLOCK_OFFSET_MS, Math.round(ms)));
 }
 
 function toInfo(record: StoredKey): KeyInfo {
@@ -63,7 +87,9 @@ function notConnected(platform: KeyPlatform): BrowserKeyError {
 export class BrowserKeys {
   private readonly store: KeyStore;
   private readonly fetchFn: FetchLike;
-  private readonly clock: Clock;
+  private readonly baseClock: Clock;
+  private clockOffsetMs: number;
+  private readonly clock: Clock = () => this.baseClock() + this.clockOffsetMs;
   private readonly loaded = new Map<KeyPlatform, StoredKey>();
   /** Bumped on every save or forget, so a slow read can't bring back a replaced or forgotten key */
   private readonly versions: Record<KeyPlatform, number> = { apple: 0, google: 0 };
@@ -72,11 +98,29 @@ export class BrowserKeys {
   constructor(options: BrowserKeysOptions = {}) {
     this.store = options.store ?? new IndexedDbKeyStore();
     this.fetchFn = options.fetch ?? ((input, init) => fetch(input, init));
-    this.clock = options.clock ?? Date.now;
+    this.baseClock = options.clock ?? Date.now;
+    this.clockOffsetMs = clampOffset(options.clockOffsetMs ?? 0);
     this.slots = {
-      apple: new TokenSlot(APPLE_RESIGN_MARGIN_SECONDS, this.clock),
-      google: new TokenSlot(GOOGLE_REFRESH_MARGIN_SECONDS, this.clock),
+      apple: new TokenSlot(APPLE_RESIGN_MARGIN_SECONDS, APPLE_MAX_MIN_VALID_SECONDS, this.clock),
+      google: new TokenSlot(GOOGLE_REFRESH_MARGIN_SECONDS, GOOGLE_MAX_MIN_VALID_SECONDS, this.clock),
     };
+  }
+
+  /**
+   * Correct for a wrong local clock: tokens are signed at local time plus
+   * this offset (capped at a day). Changing it drops cached tokens, which were
+   * signed with the old time.
+   */
+  setClockOffsetMs(ms: number): void {
+    const next = clampOffset(ms);
+    if (next === this.clockOffsetMs) return;
+    this.clockOffsetMs = next;
+    this.slots.apple.reset();
+    this.slots.google.reset();
+  }
+
+  getClockOffsetMs(): number {
+    return this.clockOffsetMs;
   }
 
   /** Import an App Store Connect .p8 key and keep it in this browser, replacing any earlier one */
@@ -110,48 +154,71 @@ export class BrowserKeys {
 
   /** An App Store Connect JWT (20 minutes), re-signed once under 2 minutes remain */
   async getAppleToken(options: TokenOptions = {}): Promise<string> {
-    return this.slots.apple.get(async () => {
+    return this.token('apple', options, async () => {
       const record = await this.require('apple');
       if (record.platform !== 'apple') throw notConnected('apple');
       const iat = nowSeconds(this.clock);
       const token = await signAppleJwt(record.key, record, iat);
       return { token, expiresAt: iat + APPLE_TOKEN_TTL_SECONDS };
-    }, options);
+    });
   }
 
   /** A Google access token minted by the browser at Google's token endpoint, reused until near expiry */
   async getGoogleAccessToken(options: TokenOptions = {}): Promise<string> {
-    return this.slots.google.get(async () => {
+    return this.token('google', options, async () => {
       const record = await this.require('google');
       if (record.platform !== 'google') throw notConnected('google');
       const iat = nowSeconds(this.clock);
       const assertion = await signGoogleAssertion(record.key, record, iat);
       const { accessToken, expiresIn } = await exchangeGoogleAssertion(assertion, this.fetchFn);
       return { token: accessToken, expiresAt: iat + expiresIn };
-    }, options);
+    });
   }
 
-  /** Delete this platform's key from the browser and drop its tokens */
+  /**
+   * Delete this platform's key from the browser and drop its tokens. The
+   * store is cleared first: if that fails the error is thrown and nothing is
+   * dropped, so callers must show it (the key is still stored).
+   */
   async forget(platform: KeyPlatform): Promise<void> {
+    await this.store.delete(platform);
+    this.drop(platform);
+  }
+
+  /** Delete every stored key and token (sign out). Throws, dropping nothing, if the store can't be cleared; callers must show that. */
+  async forgetAll(): Promise<void> {
+    await this.store.clear();
+    this.drop('apple');
+    this.drop('google');
+  }
+
+  private drop(platform: KeyPlatform): void {
     this.versions[platform] += 1;
     this.slots[platform].reset();
     this.loaded.delete(platform);
-    await this.store.delete(platform);
   }
 
-  /** Delete every stored key and token (sign out) */
-  async forgetAll(): Promise<void> {
-    for (const platform of ['apple', 'google'] as const) {
-      this.versions[platform] += 1;
-      this.slots[platform].reset();
+  /**
+   * A token from the platform's slot, made from the key current when it
+   * finishes: if the key was replaced or forgotten meanwhile, the token (made
+   * from the old key) is not returned. One retry against the current key,
+   * which throws not_connected when there is none.
+   */
+  private async token(platform: KeyPlatform, options: TokenOptions, make: () => Promise<CachedToken>): Promise<string> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const version = this.versions[platform];
+      const token = await this.slots[platform].get(make, options);
+      if (version === this.versions[platform]) return token;
     }
-    this.loaded.clear();
-    await this.store.clear();
+    throw notConnected(platform);
   }
 
   private async save(record: StoredKey): Promise<void> {
+    // Claim a version first, so a forget or a later import that starts while
+    // this is being written wins (the store applies writes in order)
+    const version = ++this.versions[record.platform];
     await this.store.put(record);
-    this.versions[record.platform] += 1;
+    if (version !== this.versions[record.platform]) return;
     this.slots[record.platform].reset();
     this.loaded.set(record.platform, record);
   }

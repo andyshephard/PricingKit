@@ -22,6 +22,16 @@ export const GOOGLE_SCOPE = 'https://www.googleapis.com/auth/androidpublisher';
 export const GOOGLE_ASSERTION_TTL_SECONDS = 3600;
 /** Mint a new Google access token once less than this is left */
 export const GOOGLE_REFRESH_MARGIN_SECONDS = 5 * 60;
+
+/**
+ * minValidSeconds for a long request such as an apply: the token must outlive
+ * it. Apple: 19 of the 20 minutes; Google: 50 of the 60.
+ */
+export const APPLE_APPLY_MIN_VALID_SECONDS = 19 * 60;
+export const GOOGLE_APPLY_MIN_VALID_SECONDS = 50 * 60;
+/** The most minValidSeconds may ask for, so a freshly made token always satisfies it */
+export const APPLE_MAX_MIN_VALID_SECONDS = APPLE_TOKEN_TTL_SECONDS - 30;
+export const GOOGLE_MAX_MIN_VALID_SECONDS = 55 * 60;
 const GOOGLE_TOKEN_TIMEOUT_MS = 15_000;
 /** A Google access token is a few hundred characters; refuse anything absurd */
 const MAX_ACCESS_TOKEN_CHARS = 4096;
@@ -83,7 +93,7 @@ function googleTokenError(status: number, body: unknown): BrowserKeyError {
   // The description is read only to pick a message, never shown or kept
   const description = typeof b.error_description === 'string' ? b.error_description.toLowerCase() : '';
 
-  if (code === 'invalid_grant' && (description.includes('iat') || description.includes('exp') || description.includes('timeframe'))) {
+  if (code === 'invalid_grant' && /\b(iat|exp)\b|timeframe/.test(description)) {
     return new BrowserKeyError('token_rejected', "Google refused the sign-in because this computer's clock looks wrong. Set the clock automatically and try again.", status);
   }
   if (code === 'invalid_grant' || code === 'invalid_client' || code === 'unauthorized_client') {
@@ -107,6 +117,16 @@ export async function exchangeGoogleAssertion(
   fetchFn: FetchLike
 ): Promise<{ accessToken: string; expiresIn: number }> {
   let response: Response;
+  // AbortSignal.timeout is missing from some older browsers
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let signal: AbortSignal;
+  if (typeof AbortSignal.timeout === 'function') {
+    signal = AbortSignal.timeout(GOOGLE_TOKEN_TIMEOUT_MS);
+  } else {
+    const controller = new AbortController();
+    timer = setTimeout(() => controller.abort(), GOOGLE_TOKEN_TIMEOUT_MS);
+    signal = controller.signal;
+  }
   try {
     response = await fetchFn(GOOGLE_TOKEN_ENDPOINT, {
       method: 'POST',
@@ -116,9 +136,12 @@ export async function exchangeGoogleAssertion(
       credentials: 'omit',
       referrerPolicy: 'no-referrer',
       cache: 'no-store',
-      signal: typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(GOOGLE_TOKEN_TIMEOUT_MS) : undefined,
+      // The assertion goes to Google's endpoint and nowhere else
+      redirect: 'error',
+      signal,
     });
   } catch {
+    if (timer !== undefined) clearTimeout(timer);
     throw new BrowserKeyError('network', "Couldn't reach Google's sign-in service. Check your connection and try again.");
   }
 
@@ -127,6 +150,8 @@ export async function exchangeGoogleAssertion(
     body = await response.json();
   } catch {
     body = null;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
   if (!response.ok) throw googleTokenError(response.status, body);
 
@@ -151,10 +176,22 @@ export interface CachedToken {
   expiresAt: number;
 }
 
+export interface TokenSlotOptions {
+  /**
+   * A token the server just refused. The cached token is dropped only if it
+   * is this one; otherwise the newer cached or in-flight token is reused, so
+   * parallel 401s cause one new token, not one each.
+   */
+  rejected?: string;
+  /** Make a new token unless at least this many seconds are left (capped by the slot) */
+  minValidSeconds?: number;
+}
+
 /**
- * Holds one token in memory and makes a new one when less than `margin`
- * seconds are left. Concurrent callers share one in-flight request, and a
- * reset() while a request is in flight stops its result from being cached.
+ * Holds one token in memory and makes a new one when less than
+ * max(margin, minValidSeconds) seconds are left. Concurrent callers share one
+ * in-flight request, and a reset() while a request is in flight stops its
+ * result from being cached.
  */
 export class TokenSlot {
   private cached: CachedToken | null = null;
@@ -163,14 +200,18 @@ export class TokenSlot {
 
   constructor(
     private readonly margin: number,
+    /** The most minValidSeconds can ask for: a fresh token must be able to satisfy it */
+    private readonly maxMinValid: number,
     private readonly clock: Clock
   ) {}
 
-  async get(make: () => Promise<CachedToken>, options: { forceRefresh?: boolean } = {}): Promise<string> {
-    if (!options.forceRefresh && this.cached && this.cached.expiresAt - nowSeconds(this.clock) > this.margin) {
+  async get(make: () => Promise<CachedToken>, options: TokenSlotOptions = {}): Promise<string> {
+    if (options.rejected !== undefined && this.cached?.token === options.rejected) this.cached = null;
+    const minValid = Math.min(Math.max(0, options.minValidSeconds ?? 0), this.maxMinValid);
+    const need = Math.max(this.margin, minValid);
+    if (this.cached && this.cached.expiresAt - nowSeconds(this.clock) > need) {
       return this.cached.token;
     }
-    if (options.forceRefresh) this.reset();
     if (!this.inflight) {
       const generation = this.generation;
       const pending = make().then((fresh) => {
@@ -186,7 +227,7 @@ export class TokenSlot {
     return (await this.inflight).token;
   }
 
-  /** Drop the cached token, e.g. after the server reports it was rejected */
+  /** Drop the cached and in-flight token (the key was replaced or forgotten) */
   reset(): void {
     this.generation += 1;
     this.cached = null;
