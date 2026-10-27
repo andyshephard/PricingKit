@@ -1,6 +1,11 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
+  changeSetHash,
+  OFFER_PLAN_SPEC_KIND,
+  parseOfferPlanSpec,
+  type OfferPlan,
+  type OfferPlanSpec,
   buildChangeSet,
   createStateSnapshot,
   parsePricingSpec,
@@ -15,7 +20,7 @@ import {
 } from '@/lib/pricing';
 import { appSelection, stringFlag } from '../args';
 import { appleAdapter, playAdapter, readInputFile, readOnly, writeOutputFile, type CommandContext, type CommandResult, type PriceReader } from '../context';
-import { CliError, EXIT_CHANGES, EXIT_OK, UsageError } from '../errors';
+import { CliError, EXIT_CHANGES, EXIT_ERROR, EXIT_OK, UsageError } from '../errors';
 import { formatPlanSummary, summarizeChangeSet } from './diff';
 
 export const DEFAULT_PLAN_FILE = 'pricingkit-plan.json';
@@ -81,9 +86,12 @@ export async function planCommand(ctx: CommandContext): Promise<CommandResult> {
   const stateOut = stringFlag(ctx.flags, 'state-out');
   if (stateOut && stateOut === out) throw new UsageError('--out and --state-out must be different files');
 
+  const specText = await readInputFile(ctx, specPath, 'spec file');
+  if (specKind(specText) === OFFER_PLAN_SPEC_KIND) return planOffersCommand(ctx, specText, out);
+
   let spec: PricingSpec;
   try {
-    spec = parsePricingSpec(await readInputFile(ctx, specPath, 'spec file'));
+    spec = parsePricingSpec(specText);
   } catch (error) {
     if (error instanceof CliError) throw error;
     throw new CliError((error as Error).message, 'INVALID_SPEC');
@@ -108,4 +116,54 @@ export async function planCommand(ctx: CommandContext): Promise<CommandResult> {
     'Dry run: nothing was changed in the store.',
   ].join('\n');
   return { exitCode: changeSet.ops.length > 0 ? EXIT_CHANGES : EXIT_OK, json: changeSet, text };
+}
+
+function specKind(text: string): unknown {
+  try {
+    return (JSON.parse(text) as { kind?: unknown })?.kind;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The read side of offer planning only: no way to reach applyOffer */
+export interface OfferPlanner {
+  planOffers(input: { app: OfferPlanSpec['app']; offers: OfferPlanSpec['offers']; createdAt?: string; description?: string }): Promise<OfferPlan>;
+}
+
+export function formatOfferPlan(plan: OfferPlan): string {
+  const lines = [formatPlanSummary(summarizeChangeSet(plan.changeSet))];
+  for (const entry of plan.entries) {
+    const where = `${entry.product.platform === 'apple' ? entry.product.id : ''} ${entry.kind} ${entry.key}`;
+    if (entry.action === 'none') lines.push('', `${where}: already matches its rule`);
+    for (const r of entry.refusals) lines.push('', `${where}: refused (${r.code}): ${r.message}`);
+  }
+  lines.push('', `Plan hash: ${plan.hash} (pass it to "pricingkit apply --confirm" after review)`);
+  return lines.join('\n');
+}
+
+/** pricingkit plan with a pricingkit.offerPlanSpec: plan creating or re-pricing offers. Reads only. */
+async function planOffersCommand(ctx: CommandContext, specText: string, out: string): Promise<CommandResult> {
+  let spec: OfferPlanSpec;
+  try {
+    spec = parseOfferPlanSpec(specText);
+  } catch (error) {
+    throw new CliError((error as Error).message, 'INVALID_SPEC');
+  }
+  const selected = appSelection(ctx.flags, false);
+  if (selected && !(selected.platform === 'apple' && 'bundleId' in spec.app && spec.app.bundleId === selected.bundleId)) {
+    throw new UsageError('The app given on the command line is not the app in the spec');
+  }
+  const adapter = await appleAdapter(ctx, (spec.app as { bundleId: string }).bundleId);
+  const planner: OfferPlanner = { planOffers: (input) => adapter.planOffers(input) };
+  const plan = await planner.planOffers({ app: spec.app, offers: spec.offers, createdAt: ctx.now().toISOString(), ...(spec.description ? { description: spec.description } : {}) });
+  if (plan.hash !== changeSetHash(plan.changeSet)) throw new CliError('Internal error: plan hash mismatch');
+  const written = await writeOutputFile(ctx, out, serializeChangeSet(plan.changeSet));
+  const refused = plan.entries.filter((e) => e.action === 'refused').length;
+  const text = [formatOfferPlan(plan), '', `Plan written to ${written}`, 'Dry run: nothing was changed in the store.'].join('\n');
+  return {
+    exitCode: refused > 0 ? EXIT_ERROR : plan.changeSet.ops.length > 0 ? EXIT_CHANGES : EXIT_OK,
+    json: { changeSet: plan.changeSet, hash: plan.hash, entries: plan.entries },
+    text,
+  };
 }

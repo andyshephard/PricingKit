@@ -27,15 +27,16 @@ describe('parseCliArgs', () => {
   });
 
   it('refuses unknown commands and unknown or misplaced flags', () => {
-    expect(() => parseCliArgs(['apply'])).toThrow(/Unknown command "apply"/);
+    expect(() => parseCliArgs(['publish'])).toThrow(/Unknown command "publish"/);
     expect(() => parseCliArgs(['--json'])).toThrow(/Give a command first/);
     expect(() => parseCliArgs(['export', '--spec', 'x.json'])).toThrow(UsageError);
     expect(() => parseCliArgs(['plan', '--percent', '50'])).toThrow(/Unknown option '--percent'/);
     expect(() => parseCliArgs(['export', '--subscription'])).toThrow(UsageError);
   });
 
-  it('has no write command', () => {
-    expect(COMMANDS).toEqual(['export', 'plan', 'diff', 'offers', 'drift']);
+  it('has exactly one write command, apply, and it needs --confirm', () => {
+    expect(COMMANDS).toEqual(['export', 'plan', 'diff', 'offers', 'drift', 'apply']);
+    expect(parseCliArgs(['apply', 'plan.json', '--confirm', 'abc'])).toMatchObject({ command: 'apply', positionals: ['plan.json'], flags: { confirm: 'abc' } });
   });
 
   it('recognises help and version in every form', () => {

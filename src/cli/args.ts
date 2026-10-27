@@ -4,7 +4,7 @@
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { UsageError } from './errors';
 
-export const COMMANDS = ['export', 'plan', 'diff', 'offers', 'drift'] as const;
+export const COMMANDS = ['export', 'plan', 'diff', 'offers', 'drift', 'apply'] as const;
 export type CommandName = (typeof COMMANDS)[number];
 
 type OptionSpec = NonNullable<ParseArgsConfig['options']>;
@@ -37,9 +37,10 @@ const OPTIONS: Record<CommandName, OptionSpec> = {
     threshold: { type: 'string' },
     territories: { type: 'string' },
   },
+  apply: { ...COMMON, plan: { type: 'string' }, confirm: { type: 'string' }, resume: { type: 'string' }, 'run-out': { type: 'string' }, 'force-delete': { type: 'boolean' } },
 };
 
-const ALLOWS_POSITIONAL: Partial<Record<CommandName, true>> = { diff: true };
+const ALLOWS_POSITIONAL: Partial<Record<CommandName, true>> = { diff: true, apply: true };
 
 export type Flags = Record<string, string | boolean | undefined>;
 
@@ -132,8 +133,8 @@ const SHARED_HELP = `Shared options:
   --budget <n>      Most store requests this run may send (default ${DEFAULT_CLI_BUDGET})
   -h, --help        Help for the command`;
 
-export const MAIN_HELP = `pricingkit: read store prices, plan price changes and check offers for drift.
-Read-only: no command writes to a store.
+export const MAIN_HELP = `pricingkit: read store prices, plan price and offer changes, check offers for drift,
+and apply reviewed offer plans. Only "apply" writes to a store, and only with --confirm.
 
 Usage: pricingkit <command> [options]
 
@@ -143,6 +144,7 @@ Commands:
   diff     Human-readable summary of a plan file
   offers   List an App Store subscription's offers with their prices per territory
   drift    Check an App Store offer's prices against a percent-of-current rule
+  apply    Apply a reviewed App Store offer plan (needs --confirm <plan hash>); saves the run log
 
 ${SHARED_HELP}
 
@@ -171,6 +173,12 @@ Connect subscription ID.
 ${SHARED_HELP}`,
   plan: `Usage:
   pricingkit plan --spec <spec.json> [--out <plan.json>] [--state-out <state.json>] [--force]
+
+The spec is a pricingkit.spec (base prices) or a pricingkit.offerPlanSpec
+(App Store offers: create or re-price, several products in one spec, each
+offer with its own key). For an offer plan the output also lists refused
+offers and the plan hash to pass to "pricingkit apply --confirm"; exit code 1
+when an offer was refused.
 
 Reads the products in the spec, turns its targets into per-territory prices,
 snaps them to valid store prices and writes the ChangeSet (default
@@ -215,6 +223,24 @@ territories are listed as outOfScope and don't affect the result.
 
 Exit code 2 when the offer is not in sync (any mismatch, missing, extra,
 unresolved or unreadable territory), 0 when every territory matches.
+
+${SHARED_HELP}`,
+  apply: `Usage:
+  pricingkit apply <plan.json> --confirm <plan hash> [--run-out <run.json>]
+  pricingkit apply <plan.json> --confirm <plan hash> --resume <run.json>
+                   [--force-delete]
+
+Applies an App Store offer plan (made by "pricingkit plan" with an offer plan
+spec). --confirm must be the plan's hash, as printed by "plan" and "diff":
+any other value refuses the whole run before anything is read or sent.
+Each op is checked against App Store Connect first: one already done is
+skipped, one whose offer changed since the plan was made fails with nothing
+sent. The run log (pricingkit.applyRun) is saved after every step to
+--run-out (default <plan>.run.json, never overwritten); resume a failed or
+interrupted run with --resume. Deleting an offer needs --force-delete, because
+App Store Connect doesn't report redemptions.
+
+Exit code 0 when every op is done, 1 otherwise (the log says which).
 
 ${SHARED_HELP}`,
 };

@@ -1,4 +1,4 @@
-// pricingkit CLI entry. Read-only commands over the framework-free pricing
+// pricingkit CLI entry. Commands over the framework-free pricing
 // core (src/lib/pricing) and the store adapters (src/lib/adapters). Nothing
 // here imports Next.js or the web app (the "CLI boundary" tests in
 // src/lib/pricing/__tests__/core-boundary.test.ts).
@@ -15,6 +15,7 @@ import { COMMAND_HELP, MAIN_HELP, parseCliArgs, type CommandName } from './args'
 import type { CommandContext, CommandResult } from './context';
 import { CliError, EXIT_ERROR, EXIT_OK, UsageError, type ExitCode } from './errors';
 import { Redactor } from './redact';
+import { applyCommand } from './commands/apply';
 import { diffCommand } from './commands/diff';
 import { driftCommand } from './commands/drift';
 import { exportCommand } from './commands/export';
@@ -29,6 +30,7 @@ const HANDLERS: Record<CommandName, (ctx: CommandContext) => Promise<CommandResu
   diff: diffCommand,
   offers: offersCommand,
   drift: driftCommand,
+  apply: applyCommand,
 };
 
 export interface CliIO {
