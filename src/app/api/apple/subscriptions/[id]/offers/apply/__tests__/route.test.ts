@@ -88,8 +88,10 @@ describe('POST offers/apply', () => {
 
   it('refuses a plan whose confirm hash does not match', async () => {
     const plan = makePlan();
-    const response = await call({ changeSet: plan.changeSet, confirm: 'ffffffffffffffff' });
+    const response = await call({ changeSet: plan.changeSet, confirm: 'f'.repeat(32) });
     expect(response.status).toBe(409);
+    // Only a 32-digit SHA-256 hash is a confirm hash at all (no 16-digit FNV)
+    expect((await call({ changeSet: plan.changeSet, confirm: 'f'.repeat(16) })).status).toBe(400);
     expect(JSON.stringify(await response.json())).not.toContain(plan.hash);
     expect(applyOffer).not.toHaveBeenCalled();
     expect((await call({ changeSet: plan.changeSet })).status).toBe(400);

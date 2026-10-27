@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildWorkspacePlan,
-  legacyWorkspaceHashWarning,
   parsePricingSpec,
   parseWorkspace,
   parseWorkspacePlan,
@@ -183,14 +182,14 @@ describe('workspace plan index', () => {
     app: IOS,
     part: 'prices',
     file: 'ios.json',
-    hash: '0123456789abcdef',
+    hash: '0123456789abcdef0123456789abcdef',
     ops: 2,
     baseOps: 2,
     offerOps: 0,
     manualActions: 0,
     ...over,
   });
-  const plans = [entry(), entry({ appId: 'android', app: ANDROID, file: 'android.json', hash: 'fedcba9876543210' })];
+  const plans = [entry(), entry({ appId: 'android', app: ANDROID, file: 'android.json', hash: 'fedcba9876543210fedcba9876543210' })];
 
   it('hashes every plan with its app, part, file and hash, in order', () => {
     const index = buildWorkspacePlan({ createdAt: '2030-01-01T00:00:00Z', plans });
@@ -201,18 +200,13 @@ describe('workspace plan index', () => {
     expect(workspacePlanHash([{ ...plans[0], ops: 99 } as WorkspacePlanEntry, plans[1]])).toBe(index.hash);
   });
 
-  it('hashes new indexes with SHA-256 and still reads version 1 indexes with their FNV hash, with a warning', () => {
+  it('hashes every index with SHA-256, whatever its version; a 16-digit (FNV) hash is refused', () => {
     const index = buildWorkspacePlan({ createdAt: '2030-01-01T00:00:00Z', plans });
     expect(index.schemaVersion).toBe(2);
     expect(index.hash).toMatch(/^[0-9a-f]{32}$/);
-    expect(legacyWorkspaceHashWarning(index)).toBeNull();
-    const v1 = { ...index, schemaVersion: 1, hash: workspacePlanHash(plans, 1) };
-    expect(v1.hash).toMatch(/^[0-9a-f]{16}$/);
-    const read = parseWorkspacePlan(v1);
-    expect(legacyWorkspaceHashWarning(read)).toMatch(/not collision-resistant/);
-    // A version 1 index can't borrow the SHA-256 hash, nor the other way round
-    expect(() => parseWorkspacePlan({ ...index, schemaVersion: 1 })).toThrow(/the hash doesn't match/);
-    expect(() => parseWorkspacePlan({ ...v1, schemaVersion: 2 })).toThrow(/the hash doesn't match/);
+    // Relabelled as version 1: still read, still checked against the SHA-256 hash
+    expect(parseWorkspacePlan({ ...index, schemaVersion: 1 }).hash).toBe(index.hash);
+    expect(() => parseWorkspacePlan({ ...index, schemaVersion: 1, hash: 'a'.repeat(16) })).toThrow(/32 hex digits/);
   });
 
   it('refuses an index edited after planning, a plan listed twice or a path outside its folder', () => {

@@ -6,7 +6,6 @@ import {
   changeSetHash,
   ChangeSetValidationError,
   fnv1a64,
-  legacyHashWarning,
   sha256Hex,
   diffPrices,
   invertOp,
@@ -240,21 +239,19 @@ describe('invertOp', () => {
 });
 
 describe('ChangeSet schema versions', () => {
-  it('writes version 3 with a SHA-256 confirm hash; versions 1 and 2 keep their FNV hash, with a warning; refuses newer ones', () => {
+  it('writes version 3; every version is confirmed with the SHA-256 hash (a relabelled version never picks FNV); refuses newer ones', () => {
     const plan = applePlan();
     expect(plan.schemaVersion).toBe(3);
     const content = canonicalJson({ app: plan.app, ops: plan.ops });
     // SHA-256 of app + ops, first 32 hex digits; unchanged by re-serialising
     expect(changeSetHash(plan)).toBe(sha256Hex(content).slice(0, 32));
     expect(changeSetHash(parseChangeSet(serializeChangeSet(plan)))).toBe(changeSetHash(plan));
-    expect(legacyHashWarning(plan)).toBeNull();
 
     for (const version of [1, 2]) {
       const old = parseChangeSet(JSON.stringify({ ...JSON.parse(serializeChangeSet(plan)), schemaVersion: version }));
       expect(old.schemaVersion).toBe(version);
-      // What older builds printed and users confirmed
-      expect(changeSetHash(old)).toBe(fnv1a64(content));
-      expect(legacyHashWarning(old)).toMatch(/old FNV-1a confirm hash, which is not collision-resistant/);
+      expect(changeSetHash(old)).toBe(changeSetHash(plan));
+      expect(changeSetHash(old)).not.toBe(fnv1a64(content));
     }
     const v1 = { ...JSON.parse(serializeChangeSet(plan)), schemaVersion: 1 };
 

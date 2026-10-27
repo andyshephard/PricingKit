@@ -97,21 +97,20 @@ export function sha256Hex(text: string): string {
 }
 
 /**
- * Confirm-hash algorithms. 'sha256' (plans from schema version 3, workspace
- * plan indexes from version 2): the first 32 hex digits (128 bits) of
- * SHA-256, so finding two plans with one hash costs about 2^64 work.
- * 'fnv1a64' (older files): 16 hex digits of FNV-1a 64, which someone who
- * writes both plans can collide; still accepted, with a warning.
+ * Confirm hashes (plans, workspace plan indexes, run logs): the first 32 hex
+ * digits (128 bits) of SHA-256, so finding two plans with one hash costs
+ * about 2^64 work. Always SHA-256, whatever a file's schemaVersion says: a
+ * version field is part of the file an attacker writes, so it never picks a
+ * weaker hash. (fnv1a64 above is only for idempotency keys, never a confirm hash.)
  */
-export type HashAlg = 'sha256' | 'fnv1a64';
 export const CONFIRM_HASH_HEX_DIGITS = 32;
 
-export function contentHash(text: string, alg: HashAlg): string {
-  return alg === 'sha256' ? sha256Hex(text).slice(0, CONFIRM_HASH_HEX_DIGITS) : fnv1a64(text);
+export function confirmHash(text: string): string {
+  return sha256Hex(text).slice(0, CONFIRM_HASH_HEX_DIGITS);
 }
 
-/** A confirm hash of either algorithm: 32 or 16 lowercase hex digits */
-export const confirmHashSchema = z.string().regex(/^(?:[0-9a-f]{32}|[0-9a-f]{16})$/, 'must be a plan hash (32 hex digits; 16 for older plans)');
+/** A confirm hash: 32 lowercase hex digits */
+export const confirmHashSchema = z.string().regex(/^[0-9a-f]{32}$/, 'must be a plan hash (32 hex digits)');
 
 
 export const decimalSchema = z

@@ -7,7 +7,7 @@
 
 import { z } from 'zod';
 import { normalizeDecimal } from './decimal';
-import { canonicalJson, contentHash, priceValueSchema, productRefSchema, appRefSchema, territorySchema, type HashAlg } from './refs';
+import { canonicalJson, confirmHash, priceValueSchema, productRefSchema, appRefSchema, territorySchema } from './refs';
 import { checkOfferOpRules, describeOfferOp, isOfferOp, isOfferOpKind, offerOpSchema, offerTargetKey, type OfferOp, type OfferOpKind } from './offer-ops';
 import { OFFER_KINDS, type OfferKind } from './offers';
 import type { PlayOfferOp } from './play-offers';
@@ -26,10 +26,10 @@ import {
 
 /**
  * Version written by this build. 2 adds the planner notes priceChanges and
- * dataFreshness (Phase 8); 3 changes the confirm hash from FNV-1a 64 to
- * SHA-256 (truncated to 32 hex digits); everything else is as in 1. The plan
- * hash covers app + ops only, so a v1 or v2 plan keeps its (FNV) hash when
- * read by this build, with a deprecation warning (`legacyHashWarning`).
+ * dataFreshness (Phase 8); 3 marks plans confirmed with the SHA-256 hash, so
+ * older builds (which computed another hash) refuse them instead of asking
+ * for a hash nobody has; everything else is as in 1. Every version this
+ * build reads is hashed the same way (`changeSetHash`).
  */
 export const CHANGESET_SCHEMA_VERSION = 3 as const;
 /** Versions this build reads */
@@ -209,29 +209,18 @@ export function describeOp(op: ChangeOp): string {
   return `${op.kind} ${productKey(op.target.product)} ${op.target.territory}: ${describePrice(op.before)} -> ${describePrice(op.after)}`;
 }
 
-/** The confirm-hash algorithm of a plan: SHA-256 from schema version 3 (and for drafts without a version), FNV-1a 64 before */
-export function changeSetHashAlg(changeSet: { schemaVersion?: number }): HashAlg {
-  return changeSet.schemaVersion !== undefined && changeSet.schemaVersion < 3 ? 'fnv1a64' : 'sha256';
-}
-
 /**
  * Hash of what a ChangeSet does (app + ops): what `apply --confirm` must
- * name. Ignores id, createdAt, description and planner notes, so
- * re-serialising never changes it. SHA-256 (32 hex digits) for plans of
- * schema version 3; plans of versions 1 and 2 keep their FNV-1a 64 hash.
+ * name. SHA-256, 32 hex digits, for every schema version: the version is
+ * part of the file, so it can't choose the hash. Ignores id, createdAt,
+ * description and planner notes, so re-serialising never changes it.
  */
-export function changeSetHash(changeSet: Pick<ChangeSet, 'app' | 'ops'> & { schemaVersion?: number }): string {
-  return contentHash(canonicalJson({ app: changeSet.app, ops: changeSet.ops }), changeSetHashAlg(changeSet));
-}
-
-/** A warning for plans whose confirm hash is the old, non-collision-resistant FNV-1a 64; null for current plans */
-export function legacyHashWarning(changeSet: { schemaVersion?: number; id?: string }): string | null {
-  if (changeSetHashAlg(changeSet) !== 'fnv1a64') return null;
-  return `Plan ${changeSet.id ?? ''} (schema version ${changeSet.schemaVersion}) uses the old FNV-1a confirm hash, which is not collision-resistant: someone who writes two plans can give them the same hash. It is still accepted for now; plan it again with this PricingKit for a SHA-256 hash.`.replace('Plan  (', 'Plan (');
+export function changeSetHash(changeSet: Pick<ChangeSet, 'app' | 'ops'>): string {
+  return confirmHash(canonicalJson({ app: changeSet.app, ops: changeSet.ops }));
 }
 
 export { canonicalJson, fnv1a64, priceValueSchema, productRefSchema, appRefSchema } from './refs';
-export { confirmHashSchema, contentHash, sha256Hex, CONFIRM_HASH_HEX_DIGITS, type HashAlg } from './refs';
+export { confirmHash, confirmHashSchema, sha256Hex, CONFIRM_HASH_HEX_DIGITS } from './refs';
 
 // ---------------------------------------------------------------------------
 // Validation

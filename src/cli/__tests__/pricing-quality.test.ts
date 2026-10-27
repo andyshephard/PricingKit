@@ -122,7 +122,7 @@ describe('existing subscribers in plans and diff', () => {
 });
 
 describe('plan schema versions', () => {
-  it('versions 1 and 2 keep their old FNV confirm hash and still apply, with a warning; version 3 plans use SHA-256', async () => {
+  it('every plan version is confirmed with the SHA-256 hash: a plan relabelled as version 1 or 2 gains nothing', async () => {
     writeSpec([{ product, targets: { type: 'fixed', prices: { US: '29.99' } } }]);
     expect((await plan()).code).toBe(2);
     const v3 = readPlan();
@@ -136,15 +136,13 @@ describe('plan schema versions', () => {
     writeFileSync(join(tmp.dir, 'v2.json'), JSON.stringify({ ...v3, schemaVersion: 2 }));
     for (const file of ['v1.json', 'v2.json']) {
       const diff = await run(['diff', file], { cwd: tmp.dir });
-      expect(diff.stdout).toContain(`Plan hash: ${fnv}`);
-      expect(diff.stdout).toMatch(/WARNING: .*old FNV-1a confirm hash/);
+      expect(diff.stdout).toContain(`Plan hash: ${sha}`);
+      expect(diff.stdout).not.toContain('FNV');
+      expect((await run(['apply', file, '--confirm', fnv, '--allow-base-prices'], { env: appleEnv, cwd: tmp.dir })).code).toBe(1);
     }
-    // The SHA-256 hash of the same ops doesn't confirm an old plan, and the old hash doesn't confirm a new one
-    expect((await run(['apply', 'v2.json', '--confirm', sha, '--allow-base-prices'], { env: appleEnv, cwd: tmp.dir })).code).toBe(1);
-    expect((await run(['apply', 'plan.json', '--confirm', fnv, '--allow-base-prices'], { env: appleEnv, cwd: tmp.dir })).code).toBe(1);
-    const applied = await run(['apply', 'v1.json', '--confirm', fnv, '--allow-base-prices'], { env: appleEnv, cwd: tmp.dir });
+    expect(apple.writes()).toEqual([]);
+    const applied = await run(['apply', 'v1.json', '--confirm', sha, '--allow-base-prices'], { env: appleEnv, cwd: tmp.dir });
     expect(applied.code).toBe(0);
-    expect(applied.stderr).toMatch(/WARNING: .*old FNV-1a confirm hash/);
     writeFileSync(join(tmp.dir, 'v9.json'), JSON.stringify({ ...rest, schemaVersion: 9 }));
     const newer = await run(['diff', 'v9.json', '--json'], { cwd: tmp.dir });
     expect(newer.code).toBe(1);

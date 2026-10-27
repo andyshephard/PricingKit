@@ -20,8 +20,6 @@ import {
   buildWorkspacePlan,
   changeSetHash,
   isOfferOp,
-  legacyHashWarning,
-  legacyWorkspaceHashWarning,
   parityAppleProduct,
   parityMappingReport,
   parityPlayProduct,
@@ -331,12 +329,8 @@ export async function readWorkspacePlan(ctx: CommandContext, indexPath: string):
     if (changeSetHash(changeSet) !== entry.hash) {
       throw new CliError(`${entry.file} has changed since the workspace plan was written; plan the workspace again`, 'PLAN_CHANGED');
     }
-    const planWarning = legacyHashWarning(changeSet);
-    if (planWarning) console.warn(`WARNING: ${entry.file}: ${planWarning}`);
     plans.push({ entry, path, changeSet });
   }
-  const indexWarning = legacyWorkspaceHashWarning(index);
-  if (indexWarning) console.warn(`WARNING: ${indexWarning}`);
   return { index, plans };
 }
 
