@@ -2,12 +2,19 @@
 // other front end can use it without Next.js. This walks the full import graph
 // of every file under src/lib/pricing (tests excluded) and fails if it reaches
 // Next, React, the web app, or anything that does network I/O.
+//
+// The CLI (src/cli, launched by bin/pricingkit.mjs) gets the same walk with a
+// wider allowance: it may reach the adapters and store clients (it does
+// network I/O), but never Next, React, the web app or its cookie sessions.
 import { describe, it, expect } from 'vitest';
+import { builtinModules } from 'node:module';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 
 const SRC = resolve(__dirname, '../../..');
 const CORE = resolve(__dirname, '..');
+const CLI = join(SRC, 'cli');
+const BIN = resolve(SRC, '../bin/pricingkit.mjs');
 
 // Third-party packages the core may use. Everything else is refused.
 const ALLOWED_PACKAGES = new Set(['zod']);
@@ -58,13 +65,32 @@ function resolveLocal(from: string, spec: string): string | undefined {
   return undefined;
 }
 
-function walk(entry: string, violations: string[], seen: Set<string>): void {
+// The CLI may reach the store clients and adapters, but not the web app or cookie sessions
+const CLI_ALLOWED_PACKAGES = new Set(['zod']);
+const CLI_FORBIDDEN_PATHS = ['app/', 'components/', 'hooks/', 'store/', 'middleware/', 'lib/session.ts'];
+
+interface Boundary {
+  allowedPackages: Set<string>;
+  forbiddenPaths: string[];
+  /** Node built-ins (node:fs, ...) */
+  allowBuiltins: boolean;
+  allowFetch: boolean;
+}
+
+const CORE_BOUNDARY: Boundary = { allowedPackages: ALLOWED_PACKAGES, forbiddenPaths: FORBIDDEN_PATHS, allowBuiltins: false, allowFetch: false };
+const CLI_BOUNDARY: Boundary = { allowedPackages: CLI_ALLOWED_PACKAGES, forbiddenPaths: CLI_FORBIDDEN_PATHS, allowBuiltins: true, allowFetch: true };
+
+function isBuiltin(spec: string): boolean {
+  return spec.startsWith('node:') || builtinModules.includes(spec.split('/')[0]);
+}
+
+function walk(entry: string, violations: string[], seen: Set<string>, boundary: Boundary = CORE_BOUNDARY): void {
   if (seen.has(entry)) return;
   seen.add(entry);
   if (!/\.tsx?$/.test(entry)) return; // JSON data
   const source = readFileSync(entry, 'utf8');
   const rel = relative(SRC, entry);
-  if (/\bfetch\s*\(/.test(source.replace(/\/\/.*$/gm, ''))) {
+  if (!boundary.allowFetch && /\bfetch\s*\(/.test(source.replace(/\/\/.*$/gm, ''))) {
     violations.push(`${rel} calls fetch()`);
   }
   for (const spec of specifiers(source)) {
@@ -75,15 +101,17 @@ function walk(entry: string, violations: string[], seen: Set<string>): void {
         continue;
       }
       const targetRel = relative(SRC, target);
-      const forbidden = FORBIDDEN_PATHS.find((p) => targetRel === p || targetRel.startsWith(p));
+      const forbidden = boundary.forbiddenPaths.find((p) => targetRel === p || targetRel.startsWith(p));
       if (forbidden) {
         violations.push(`${rel} imports ${targetRel}`);
         continue;
       }
-      walk(target, violations, seen);
+      walk(target, violations, seen, boundary);
+    } else if (boundary.allowBuiltins && isBuiltin(spec)) {
+      continue;
     } else {
       const pkg = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
-      if (!ALLOWED_PACKAGES.has(pkg)) violations.push(`${rel} imports package "${spec}"`);
+      if (!boundary.allowedPackages.has(pkg)) violations.push(`${rel} imports package "${spec}"`);
     }
   }
 }
@@ -106,5 +134,35 @@ describe('pricing core boundary', () => {
     expect(specifiers(`import { NextResponse } from 'next/server';`)).toEqual(['next/server']);
     expect(specifiers(`export * from './strategies';`)).toEqual(['./strategies']);
     expect(specifiers(`import type { X } from "@/lib/google-play/client";`)).toEqual(['@/lib/google-play/client']);
+  });
+});
+
+describe('CLI boundary', () => {
+  const files = listCoreFiles(CLI);
+
+  it('finds the CLI sources, entry included', () => {
+    expect(files).toContain(join(CLI, 'main.ts'));
+  });
+
+  it('never reaches Next.js, React, the web app or cookie sessions', () => {
+    const violations: string[] = [];
+    const seen = new Set<string>();
+    for (const file of files) walk(file, violations, seen, CLI_BOUNDARY);
+    expect(violations).toEqual([]);
+    // The walk really follows the CLI into the core and the adapters
+    expect([...seen].map((f) => relative(SRC, f))).toEqual(expect.arrayContaining(['lib/pricing/index.ts', 'lib/adapters/apple.ts', 'lib/adapters/play.ts']));
+  });
+
+  it('launches through tsx and node built-ins only', () => {
+    const source = readFileSync(BIN, 'utf8');
+    const packages = specifiers(source).filter((s) => !isBuiltin(s));
+    expect(packages.every((s) => s === 'tsx' || s.startsWith('tsx/'))).toBe(true);
+    expect(source).toContain('../src/cli/main.ts');
+  });
+
+  it('flags a web-app import from the CLI (self-check)', () => {
+    const violations: string[] = [];
+    walk(join(SRC, 'app/api/export/route.ts'), violations, new Set(), CLI_BOUNDARY);
+    expect(violations.some((v) => v.includes('next'))).toBe(true);
   });
 });

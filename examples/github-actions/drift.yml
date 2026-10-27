@@ -1,0 +1,157 @@
+# Example: weekly offer drift check with the pricingkit CLI.
+#
+# Documentation only. This file is NOT active in the PricingKit repo. To use
+# it, copy it to .github/workflows/ in your own repository and set:
+#
+#   Repository secrets (Settings > Secrets and variables > Actions > Secrets)
+#     ASC_KEY_ID         App Store Connect API key ID
+#     ASC_ISSUER_ID      App Store Connect issuer ID
+#     ASC_PRIVATE_KEY    Contents of the AuthKey_XXXX.p8 file
+#
+#   Repository variables (... > Variables)
+#     PRICINGKIT_BUNDLE_ID      e.g. com.example.app
+#     PRICINGKIT_SUBSCRIPTION   numeric App Store Connect subscription ID
+#     PRICINGKIT_OFFER_KIND     apple.intro | apple.promo | apple.offerCode | apple.winBack
+#     PRICINGKIT_OFFER          the offer's ID or key (promo offer code, win-back offer ID, ...)
+#     PRICINGKIT_PERCENT        e.g. 50 (percent of each territory's current price)
+#
+# What it does: runs `pricingkit drift`.
+#   exit 0  in sync: the run passes
+#   exit 2  drift: the "report" job opens (or comments on) an issue labelled
+#           "pricing-drift", then fails
+#   other   1 is an error; anything else is a crash, an out-of-memory kill or
+#           a signal. The run fails either way.
+# The credentials stay in environment variables and are never written to disk.
+#
+# PUBLIC REPOSITORIES: the issue body contains the drift report (territories,
+# offer prices, the offer's key). Issues in a public repository are public.
+# Run this from a private repository, or remove the report from the issue body
+# and rely on the job summary instead.
+
+name: Pricing drift check
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  workflow_dispatch:
+
+# Nothing more than read access by default; only the report job can write issues
+permissions:
+  contents: read
+
+concurrency:
+  group: pricing-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      exit_code: ${{ steps.drift.outputs.exit_code }}
+      report: ${{ steps.drift.outputs.report }}
+    steps:
+      - name: Check out PricingKit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: andyshephard/PricingKit
+          # Pin the full commit SHA of a PricingKit version you have reviewed
+          ref: 0000000000000000000000000000000000000000 # REPLACE with a reviewed commit SHA
+          path: pricingkit
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: pricingkit/.nvmrc
+          cache: npm
+          cache-dependency-path: pricingkit/package-lock.json
+
+      - name: Install
+        working-directory: pricingkit
+        run: npm ci --no-audit --no-fund
+
+      - name: Check offer drift
+        id: drift
+        working-directory: pricingkit
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          BUNDLE_ID: ${{ vars.PRICINGKIT_BUNDLE_ID }}
+          SUBSCRIPTION: ${{ vars.PRICINGKIT_SUBSCRIPTION }}
+          OFFER_KIND: ${{ vars.PRICINGKIT_OFFER_KIND }}
+          OFFER: ${{ vars.PRICINGKIT_OFFER }}
+          PERCENT: ${{ vars.PRICINGKIT_PERCENT }}
+        run: |
+          set +e
+          # Text report for people; add --json for the machine-readable pricingkit.offerDrift report
+          npx pricingkit drift \
+            --bundle-id "$BUNDLE_ID" \
+            --subscription "$SUBSCRIPTION" \
+            --kind "$OFFER_KIND" \
+            --offer "$OFFER" \
+            --percent "$PERCENT" \
+            --budget 500 > "$RUNNER_TEMP/drift.txt"
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
+          # The report holds prices and offer names, no credentials
+          delimiter="REPORT_$(openssl rand -hex 16)"
+          {
+            echo "report<<$delimiter"
+            cat "$RUNNER_TEMP/drift.txt"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo '## Pricing drift'
+            echo '```'
+            cat "$RUNNER_TEMP/drift.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Only 0 (in sync) and 2 (drift, handled by the report job) are results.
+          # 1 is an error; any other code is a crash, an OOM kill or a signal.
+          if [ "$code" != "0" ] && [ "$code" != "2" ]; then
+            echo "::error::pricingkit drift failed with exit code $code (see the log above)"
+            exit 1
+          fi
+
+  report:
+    needs: drift
+    if: needs.drift.outputs.exit_code == '2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REPORT: ${{ needs.drift.outputs.report }}
+        run: |
+          body="$RUNNER_TEMP/issue.md"
+          {
+            echo "The weekly drift check found offer prices that no longer match their rule."
+            echo
+            echo '```'
+            printf '%s\n' "$REPORT"
+            echo '```'
+            echo
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > "$body"
+          gh label create pricing-drift --color D93F0B --description "pricingkit drift check" 2>/dev/null || true
+          existing=$(gh issue list --label pricing-drift --state open --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$body"
+          else
+            gh issue create --title "Offer prices drifted from their rule" --label pricing-drift --body-file "$body"
+          fi
+
+      - name: Fail on drift
+        run: |
+          echo "::error::Offer prices drifted from their rule"
+          exit 1

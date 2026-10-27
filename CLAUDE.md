@@ -18,6 +18,7 @@ npm test             # Run Vitest test suite
 npm test -- <path>   # Run specific test file(s)
 npm run preview      # OpenNext build, run locally on the Cloudflare Workers runtime
 npm run deploy       # OpenNext build, deploy to Cloudflare Workers
+npx pricingkit --help  # Read-only CLI (src/cli, launched by bin/pricingkit.mjs through tsx)
 ```
 
 CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm test`, `npm run typecheck` and `npm run lint` on Node 22 (`.nvmrc`) for every PR and every push to `main`. Run all three locally before committing.
@@ -70,6 +71,9 @@ CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm test`, `npm run typecheck` a
   session.ts            # Session cookie names and lifetime, hasAuthenticatedSession()
   token-cache.ts        # LRU cache for Apple JWTs / Google access tokens
 
+/src/cli/               # pricingkit CLI (read-only): args, commands/, credentials (env only), redact
+/bin/pricingkit.mjs     # CLI launcher (tsx)
+/examples/github-actions/  # Example workflows for users' repos (not active here)
 /src/middleware/auth.ts # The only place routes get credentials: getGoogleAuthFromCookies,
                         # getAppleAuthFromCookies, getAppleSessionFromCookies
 /src/hooks/             # React Query hooks for products/subscriptions
@@ -136,6 +140,20 @@ CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm test`, `npm run typecheck` a
 - **Offers (Phase 2a, read-only)** (`offers.ts`, `offer-derivation.ts`): `OfferSpec` (kinds `apple.intro|promo|offerCode|winBack`, `play.offer` reserved), ISO durations (`P1Y`; Apple enums map via `appleDurationToIso`), and the `StoreOffer` read model. `deriveOfferPrices` applies `percentOfCurrent` per territory: `current x percent` (`perPeriod`) or `x offerDuration/billingPeriod` (`totalOverDuration`; weeks vs months is refused), snapped to that territory's own ladder (ties lower) against the exact fraction (percent has at most 4 decimals), with flags (`NOT_BELOW_CURRENT`, `NO_PRICE_POINT`, deviation above 5% as a warning; weeks vs months skip the below-current check with `SPAN_NOT_COMPARABLE`). Without a basis, pay-up-front offers use `totalOverDuration` (`defaultOfferBasis`). `AppleAdapter.checkOfferDrift`/`previewOffer` refuse a free trial, unknown mode/duration or an impossible ratio before reading base prices or ladders. `checkOfferDrift` returns a JSON `pricingkit.offerDrift` report (match/mismatch/missing/extra/unresolved/unreadable). No plan op creates or edits offers yet; the ChangeSet offer kinds stay reserved.
 - **Apple offer reads** (`lib/apple-connect/offers.ts`, `AppleAdapter.fetchOffers/fetchOffer/previewOffer/checkOfferDrift`): offer lists without `include=prices` (capped at 50), then each offer's `/prices` list (limit 200, paginated) with `include=territory,subscriptionPricePoint`. Territory, price point and currency come only from relationships and included resources; anything missing is a `territoryProblems`/`problems` entry. Intro offers (one resource per territory) are grouped by their terms. Routes: `GET /api/apple/subscriptions/[id]/offers` and `.../offers/drift` (numeric subscription ID, one `RequestBudget` per request).
 - **Apple IAP schedules**: `POST /inAppPurchasePriceSchedules` replaces the whole schedule. Change prices with `replaceInAppPurchaseManualPrices` (one schedule, other territories kept), never one POST per territory. **Play adapter**: base plans and one-time products; snapping via `convertRegionPrices`; one PATCH per product.
+
+### CLI (`src/cli`, Phase 5a, read-only)
+- `bin/pricingkit.mjs` registers `tsx` (CJS and ESM hooks, the repo's tsconfig for `@/`) and runs `src/cli/main.ts`; `npx pricingkit` works from the repo. No build step. `runCli(argv, io)` is the testable entry and never throws.
+- Commands: `export`, `plan --spec`, `diff`, `offers`, `drift`. **There is no `apply`**; don't add one without the approval flow planned for it. `plan` receives only a `PriceReader` (`fetchState` + `resolvePricePoints`, see `readOnly()` in `context.ts`), so it can't reach `apply`. Google's `convertRegionPrices` is a POST but read-only.
+- Imports the core and the adapters directly. No Next, React, `@/app`, `@/middleware` or `@/lib/session` (ESLint rule plus the CLI walk in `core-boundary.test.ts`).
+- Exit codes (`errors.ts`): 0 OK, 1 error (usage, spec/plan, credentials, store, budget), 2 drift or a plan with ops. `--json` prints the document itself on stdout, or `{ error: { message, code, status } }`. All other output, including the store clients' `console.*` logging, goes to stderr while a command runs.
+- Credentials only from env (`credentials.ts`): `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_PRIVATE_KEY` | `ASC_PRIVATE_KEY_HEX` | `ASC_PRIVATE_KEY_PATH`; `GOOGLE_APPLICATION_CREDENTIALS` | `GOOGLE_SERVICE_ACCOUNT_JSON`. Keys are test-imported with Web Crypto up front (`CliError` naming the variable). Never add credential flags, never write credentials to disk, never quote key files or JSON parse errors in messages (the core parsers say only "not valid JSON"). Every value goes to the `Redactor` (`redact.ts`), which scrubs every stdout/stderr write (secrets, their lines, PEM blocks, bearer tokens, `ya29.` tokens, JWTs). While a command runs, `withTokensRedacted` (main.ts) wraps `fetch` to register minted bearer tokens, Google's assertion and `access_token` too.
+- Report the message of anything thrown with `errorMessage()` (handles plain objects). Store clients must throw `ApiError` subclasses, never plain objects.
+- One `RequestBudget` per command run (`--budget`, default 1000), passed to the adapter. The request-count line is printed only when requests were sent.
+- `plan` never replaces the default `pricingkit-plan.json` (gitignored) without `--force`; an explicit `--out` replaces.
+- `drift --territories` (and the API route's `territories`) scopes the check: other offer territories go to `outOfScope`, never `extra`, and don't affect `inSync`.
+- Spec format: `src/lib/pricing/spec.ts` (`pricingkit.spec` v1, JSON, zod). Targets `fixed` or `percentOfCurrent`; `specTargets()` is pure. Bump `PRICING_SPEC_SCHEMA_VERSION` on breaking changes.
+- CLI tests (`src/cli/__tests__`) run in-process against `fake-apple.ts`, `fake-apple-offers.ts` and a Play fake with `appleApiRequest`/`googlePlayFetch` mocked; the redaction tests use the real clients with a stubbed `fetch` and throwaway keys.
+- `examples/github-actions/drift.yml` is documentation only; never copy it into `.github/workflows` here.
 
 ### Adding a new pricing strategy
 Touchpoints (all required, in order):

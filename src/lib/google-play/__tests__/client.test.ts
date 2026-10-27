@@ -249,6 +249,11 @@ describe('googlePlayFetch retries', () => {
     });
     await settle(promise);
     await assertion;
+    // A real Error (not a plain object), so callers never print "[object Object]"
+    const error = await promise.catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GooglePlayApiError);
+    expect(String(error)).toMatch(/Failed to obtain Google access token \(400\)/);
+    expect((error as GooglePlayApiError).retryable).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

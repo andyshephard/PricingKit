@@ -53,6 +53,16 @@ describe('GET offers/drift', () => {
     expect(constructed[0].budget).toBeInstanceOf(RequestBudget);
   });
 
+  it('passes a territory list through, normalised, and refuses a malformed one', async () => {
+    checkOfferDrift.mockResolvedValue({});
+    const ok = await call('123', 'kind=apple.promo&offer=x&percent=50&territories=gb,%20US,GB');
+    expect(ok.status).toBe(200);
+    expect(checkOfferDrift.mock.calls[0][1].territories).toEqual(['GB', 'US']);
+    const bad = await call('123', 'kind=apple.promo&offer=x&percent=50&territories=GBR');
+    expect(bad.status).toBe(400);
+    expect(checkOfferDrift).toHaveBeenCalledTimes(1);
+  });
+
   it('leaves the basis to the adapter (decided by the offer mode) and defaults snapping to nearest', async () => {
     checkOfferDrift.mockResolvedValue({});
     await call('123', 'kind=apple.winBack&offer=x&percent=25');

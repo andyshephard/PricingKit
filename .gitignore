@@ -63,3 +63,6 @@ next-env.d.ts
 
 # local working notes, never committed
 docs/local/
+
+# pricingkit CLI default plan output
+pricingkit-plan.json

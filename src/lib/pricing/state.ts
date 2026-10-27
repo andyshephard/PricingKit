@@ -75,8 +75,9 @@ export function parseStateSnapshot(input: string | unknown): PricingStateSnapsho
   if (typeof input === 'string') {
     try {
       raw = JSON.parse(input);
-    } catch (error) {
-      throw new StateValidationError([`not valid JSON: ${(error as Error).message}`]);
+    } catch {
+      // JSON.parse messages quote the input, which may be anything (even a secret); never pass them on
+      throw new StateValidationError(['not valid JSON']);
     }
   }
   const exports = Array.isArray(raw) ? raw : [raw];
