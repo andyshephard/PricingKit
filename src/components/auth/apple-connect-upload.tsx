@@ -56,7 +56,7 @@ export function AppleConnectUpload() {
     if (!file.name.endsWith('.p8')) {
       setState((prev) => ({
         ...prev,
-        error: 'Please upload a .p8 file (Apple API Key)',
+        error: 'Please choose a .p8 file (Apple API Key)',
         file: null,
       }));
       return false;
@@ -135,7 +135,7 @@ export function AppleConnectUpload() {
       <CardHeader>
         <CardTitle>Connect to App Store Connect</CardTitle>
         <CardDescription>
-          Upload your API key (.p8 file) to manage in-app purchases and
+          Choose your API key (.p8 file) to manage in-app purchases and
           subscriptions
         </CardDescription>
       </CardHeader>

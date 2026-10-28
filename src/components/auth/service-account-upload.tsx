@@ -51,7 +51,7 @@ export function ServiceAccountUpload() {
     if (!file.name.endsWith('.json')) {
       setState((prev) => ({
         ...prev,
-        error: 'Please upload a JSON file',
+        error: 'Please choose a JSON file',
         file: null,
       }));
       return false;
@@ -136,7 +136,7 @@ export function ServiceAccountUpload() {
       <CardHeader>
         <CardTitle>Connect to Google Play</CardTitle>
         <CardDescription>
-          Upload your service account JSON file to manage in-app product pricing
+          Choose your service account JSON file to manage in-app product pricing
         </CardDescription>
       </CardHeader>
       <CardContent>

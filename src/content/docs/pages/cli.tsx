@@ -83,7 +83,7 @@ pricingkit --help`}
 security add-generic-password -s pricingkit-asc -a "$USER" -w "$(cat ~/Downloads/AuthKey_XXXX.p8)"
 # then delete the downloaded key file
 
-# Each session (or in a wrapper script)
+# In each new shell (or in a wrapper script)
 export ASC_KEY_ID=... ASC_ISSUER_ID=...
 export ASC_PRIVATE_KEY_HEX="$(security find-generic-password -s pricingkit-asc -a "$USER" -w)"
 pricingkit offers --bundle-id com.example.app --subscription 1234567890`}

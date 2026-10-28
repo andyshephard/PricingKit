@@ -48,7 +48,7 @@ describe('docs', () => {
       expect(index.map((e) => e.href)).toContain(docHref(page.slug));
       for (const s of page.sections) expect(index.map((e) => e.href)).toContain(`${docHref(page.slug)}#${s.id}`);
     }
-    expect(searchDocs(index, 'encryption')[0].href).toBe('/docs/run-it-yourself#encryption-key');
+    expect(searchDocs(index, 'no longer used')[0].href).toBe('/docs/run-it-yourself#variables-no-longer-used');
     expect(searchDocs(index, 'keychain').map((e) => e.href)).toContain('/docs/cli-install#macos-keychain');
     expect(searchDocs(index, 'zzzz')).toEqual([]);
   });

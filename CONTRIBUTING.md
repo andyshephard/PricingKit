@@ -18,12 +18,10 @@ correctness is high and the rules below about tests and store access are strict.
    npm run dev
    ```
 
-   Open http://localhost:3000. `ENCRYPTION_KEY` is optional under `npm run dev` (sessions fall
-   back to a plaintext base64 cookie), but required for `npm start`, `npm run preview` and
-   deployed instances. To test production behaviour locally, add to `.env.local`:
+   Open http://localhost:3000. No configuration is needed: store keys stay in the browser,
+   and the server has no secret of its own. For live exchange rates, add to `.env.local`:
 
    ```env
-   ENCRYPTION_KEY=<output of: openssl rand -base64 32>
    OPEN_EXCHANGE_RATES_APP_ID=<optional, for live exchange rates>
    ```
 
@@ -88,10 +86,15 @@ Run a single file with `npm test -- src/lib/google-play/__tests__/currency.test.
   directly.
 - Keep store writes minimal: change only what the user asked for, send everything else back
   as fetched, and surface the store's own error rather than guessing. Never add writes to
-  read-only paths (sign-in, app switching, export).
+  read-only paths (connecting, app switching, export).
 - Code must work both self-hosted (single user, Node or Workers) and on a shared hosted
-  instance: no per-user state in module-level variables unless it is keyed by the
-  credential, and nothing written to disk that the app relies on.
+  instance: no per-user state in module-level variables, nothing written to disk that the app
+  relies on, and nothing a user sends (a token, their own Open Exchange Rates key) cached for
+  other users.
+- The web server never handles a store key. Store routes get their token only through
+  `requireAppleAuth` / `requireGoogleAuth` (`src/middleware/auth.ts`); browser code calls
+  `/api` routes only through `apiFetch` (`src/lib/web`). Never log tokens or request headers.
+  The route-guard test enforces most of this.
 - Keep `src/lib/pricing` framework-free: no Next.js, React, web-app or network imports (a test
   checks the whole import graph). Amounts there are decimal strings, never JS numbers.
 - Store helpers take an optional `RequestContext` (`{ budget }`) and pass it to every request.

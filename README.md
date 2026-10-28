@@ -2,7 +2,7 @@
 
 # PricingKit
 
-Free, open-source regional pricing tool for the App Store and Google Play. Set PPP-adjusted prices across 175+ territories in one click, snapped to real store price points, and review every change before it is applied. Your credentials are sent only to the server you use, kept in an encrypted HttpOnly cookie, and never stored server-side &mdash; or self-host for full control.
+Free, open-source regional pricing tool for the App Store and Google Play. Set PPP-adjusted prices across 175+ territories in one click, snapped to real store price points, and review every change before it is applied. Your store key stays in your browser: PricingKit's server only receives short-lived access tokens &mdash; or self-host for full control.
 
 **Documentation: [pricing-kit.com/docs](https://pricing-kit.com/docs)** (the same pages are built into every deployment at `/docs`; their source is `src/content/docs`).
 
@@ -28,26 +28,23 @@ npm ci
 npm run dev        # http://localhost:3000
 ```
 
-`npm run dev` needs no configuration. A production build (`npm run build`, then `npm start`) refuses sign-in until `ENCRYPTION_KEY` is set. To run on Cloudflare Workers:
+Neither `npm run dev` nor a production build (`npm run build`, then `npm start`) needs any configuration: there is no secret to set. To run on Cloudflare Workers:
 
 ```bash
 npm run preview   # build and run locally on the Workers runtime (reads .dev.vars)
 npm run deploy    # build and deploy with wrangler
 ```
 
-[Run it yourself](https://pricing-kit.com/docs/run-it-yourself) covers deploying, every environment variable and the legacy session cutoff.
+[Run it yourself](https://pricing-kit.com/docs/run-it-yourself) covers deploying and every environment variable.
 
 ## Environment variables
 
 | Variable | |
 | --- | --- |
-| `ENCRYPTION_KEY` | Required outside `next dev`. Base64 of at least 32 bytes with at least 16 distinct byte values: generate it with `openssl rand -base64 32`. Only the format is checked, so generate it, don't type it. |
-| `SESSION_VERSION` | Optional. Set or change it to sign everyone out. |
-| `OPEN_EXCHANGE_RATES_APP_ID` | Optional operator key for live exchange rates; users can also save their own in Settings. |
-| `TRUSTED_CLIENT_IP_HEADER` | Optional. The header your proxy sets to the client IP (`cf-connecting-ip`, `x-real-ip`, `x-forwarded-for`), for per-client rate limits. Only set it when every request passes that proxy. |
+| `OPEN_EXCHANGE_RATES_APP_ID` | Optional operator key for live exchange rates; users can also save their own in Settings (kept in their browser). |
 | `NEXT_PUBLIC_SITE_URL` | Optional, read at build time. The site's address for canonical URLs, social previews, `sitemap.xml` and `robots.txt`. Defaults to `https://pricing-kit.com`; set it when you host on your own domain (or to `http://localhost:3000` in `.env.local`). |
 
-Put them in `.env.local` for `npm run dev` / `npm start`, as Worker secrets on Cloudflare (`npx --no-install wrangler secret put ENCRYPTION_KEY`), and in `.dev.vars` for `npm run preview`. `NEXT_PUBLIC_SITE_URL` goes in the build environment.
+Put them in `.env.local` for `npm run dev` / `npm start`, as Worker secrets on Cloudflare (`npx --no-install wrangler secret put OPEN_EXCHANGE_RATES_APP_ID`), and in `.dev.vars` for `npm run preview`. `NEXT_PUBLIC_SITE_URL` goes in the build environment. `ENCRYPTION_KEY`, `SESSION_VERSION` and `TRUSTED_CLIENT_IP_HEADER` from earlier versions are no longer used and can be deleted.
 
 ## Command line
 
@@ -99,7 +96,7 @@ src/
 
 ## Security
 
-Credentials are sent to the PricingKit server you use, encrypted with `ENCRYPTION_KEY` (AES-256-GCM) into an HttpOnly cookie that the server expires after 24 hours, and never stored server-side. Using a hosted instance means trusting its operator with them; self-host for full control. The [Security model](https://pricing-kit.com/docs/security) has the details, and [SECURITY.md](SECURITY.md) the policy and how to report a vulnerability.
+Your App Store Connect or Google Play private key never leaves your browser: it is imported there as a non-extractable key and used to sign short-lived tokens (App Store Connect up to 20 minutes, Google Play up to 1 hour). The PricingKit server only receives those tokens, forwards them to Apple or Google, and keeps nothing. A dishonest or compromised hosted operator could misuse a token until it expires, but can't keep access or make new ones; self-host to remove even that. The key stays in that browser until you sign out or forget it in Settings. The [Security model](https://pricing-kit.com/docs/security) has the details, and [SECURITY.md](SECURITY.md) the policy and how to report a vulnerability.
 
 ## License
 

@@ -62,7 +62,7 @@ export const introduction: DocPage = {
       body: (
         <ol>
           <li>
-            <strong>Connect a store.</strong> Upload an App Store Connect API key or a Google Play service account key. Connecting only reads.
+            <strong>Connect a store.</strong> Choose an App Store Connect API key file or a Google Play service account key. Connecting only reads.
           </li>
           <li>
             <strong>Pick a strategy and a base price.</strong> PricingKit works out a price for every country in its own currency.
@@ -101,9 +101,11 @@ export const introduction: DocPage = {
       body: (
         <>
           <p>
-            Your store credentials are sent to the PricingKit server you use (a hosted instance or your own), kept in an encrypted, HttpOnly cookie
-            that expires 24 hours after sign-in, and never stored server-side. Using a hosted instance means trusting its operator with them;{' '}
-            <DocLink to="run-it-yourself">run it yourself</DocLink> for full control. The <DocLink to="security">Security model</DocLink> has the
+            Your store key stays in your browser. It is imported there as a key that can sign but can&apos;t be read back out, and kept until you sign
+            out or forget it in Settings. The browser signs short-lived access tokens with it (App Store Connect up to 20 minutes, Google Play up to 1
+            hour), and the PricingKit server you use only ever receives those tokens, forwards them to Apple or Google, and keeps nothing. A hosted
+            operator could misuse a token until it expires, but can&apos;t keep access or make new ones;{' '}
+            <DocLink to="run-it-yourself">run it yourself</DocLink> to remove even that. The <DocLink to="security">Security model</DocLink> has the
             details.
           </p>
           <p>
@@ -167,7 +169,7 @@ export const connectAppStore: DocPage = {
       body: (
         <>
           <p>
-            On <Link href="/setup">Connect</Link>, upload the <code>.p8</code> file and enter the Key ID and Issuer ID, then pick your app. Connecting and
+            On <Link href="/setup">Connect</Link>, choose the <code>.p8</code> file and enter the Key ID and Issuer ID, then pick your app. Connecting and
             switching apps only read from App Store Connect: if the key can&apos;t change prices, you find out on your first edit.
           </p>
           <p>
@@ -175,8 +177,9 @@ export const connectAppStore: DocPage = {
             app you picked (its group must be one of the app&apos;s subscription groups), so a subscription ID from another app is refused.
           </p>
           <Callout>
-            Use a dedicated key with only the access PricingKit needs, and revoke it when you are done. Short-lived App Store tokens (JWTs, up to 20
-            minutes) are cached in server memory; the session itself ends 24 hours after sign-in.
+            Use a dedicated key with only the access PricingKit needs, and revoke it when you are done. The key stays in your browser, which signs a
+            20-minute App Store Connect token for each request; PricingKit&apos;s server only receives those tokens. Sign out, or use Forget this key in
+            Settings, to remove it from the browser.
           </Callout>
         </>
       ),
@@ -237,9 +240,9 @@ export const connectGooglePlay: DocPage = {
       body: (
         <>
           <p>
-            On <Link href="/setup">Connect</Link>, upload the JSON key and enter the package name. Connecting and switching apps only read from Google
-            Play. PricingKit keeps only the key&apos;s <code>client_email</code>, <code>private_key_id</code>, <code>private_key</code> and{' '}
-            <code>project_id</code>, and accepts RSA keys of 2048 to 4096 bits.
+            On <Link href="/setup">Connect</Link>, choose the JSON key and enter the package name. Connecting and switching apps only read from Google
+            Play. The key stays in your browser, which mints Google access tokens (up to 1 hour) at Google&apos;s token endpoint itself; PricingKit&apos;s
+            server only receives those tokens. RSA keys of 2048 to 4096 bits are accepted.
           </p>
           <Callout>
             Google Play price edits change only the regions you edit. Other regions, availability and other base plans are sent back exactly as
@@ -256,7 +259,7 @@ export const runItYourself: DocPage = {
   slug: 'run-it-yourself',
   title: 'Run it yourself',
   description:
-    'Self-hosting keeps your credentials between you, Apple and Google. PricingKit is a Next.js app that runs on Node or on Cloudflare Workers, with no database.',
+    'Self-hosting keeps even the short-lived access tokens between you, Apple and Google. PricingKit is a Next.js app that runs on Node or on Cloudflare Workers, with no database and no secret to configure.',
   sections: [
     {
       id: 'run-locally',
@@ -272,8 +275,8 @@ npm ci
 npm run dev        # http://localhost:3000`}
           />
           <p>
-            <code>npm run dev</code> works without any configuration. A production build (<code>npm run build</code>, then <code>npm start</code>)
-            refuses sign-in until <code>ENCRYPTION_KEY</code> is set.
+            <code>npm run dev</code> and a production build (<code>npm run build</code>, then <code>npm start</code>) work without any configuration:
+            store keys stay in each user&apos;s browser, so the server has no secret of its own.
           </p>
         </>
       ),
@@ -289,8 +292,8 @@ npm run dev        # http://localhost:3000`}
             code={`npm run preview   # build and run locally on the Workers runtime (reads .dev.vars)
 npm run deploy    # build and deploy with wrangler`}
           />
-          <p>Set the variables below as Worker secrets, for example:</p>
-          <CodeBlock lang="bash" code={`npx --no-install wrangler secret put ENCRYPTION_KEY`} />
+          <p>Set any of the optional variables below as Worker secrets, for example:</p>
+          <CodeBlock lang="bash" code={`npx --no-install wrangler secret put OPEN_EXCHANGE_RATES_APP_ID`} />
           <p>
             For <code>npm run preview</code>, put them in <code>.dev.vars</code>. <code>NEXT_PUBLIC_SITE_URL</code> is read when the app is built, so set
             it in the build environment instead.
@@ -312,28 +315,11 @@ npm run deploy    # build and deploy with wrangler`}
           head={['Variable', 'What it does']}
           rows={[
             [
-              <code key="k">ENCRYPTION_KEY</code>,
-              <>
-                Required everywhere except <code>next dev</code>. Encrypts session cookies. See <a href="#encryption-key">ENCRYPTION_KEY</a>.
-              </>,
-            ],
-            [
-              <code key="k">SESSION_VERSION</code>,
-              <>
-                Optional. Set it, or change it, to sign everyone out at once. See <a href="#session-version">SESSION_VERSION</a>.
-              </>,
-            ],
-            [
               <code key="k">OPEN_EXCHANGE_RATES_APP_ID</code>,
               <>
-                Optional operator key for live exchange rates. Users can also save their own key in Settings. It is never returned to clients, and a
-                forced refresh never spends it (only a user&apos;s own key).
-              </>,
-            ],
-            [
-              <code key="k">TRUSTED_CLIENT_IP_HEADER</code>,
-              <>
-                Optional. The header your proxy sets to the real client IP. See <a href="#trusted-client-ip-header">TRUSTED_CLIENT_IP_HEADER</a>.
+                Optional operator key for live exchange rates. Users can also save their own key in Settings, which stays in their browser and is sent
+                only to the exchange-rate routes. The operator key is never returned to clients, and a forced refresh never spends it (only a
+                user&apos;s own key).
               </>,
             ],
             [
@@ -348,62 +334,16 @@ npm run deploy    # build and deploy with wrangler`}
       ),
     },
     {
-      id: 'encryption-key',
-      title: 'ENCRYPTION_KEY',
-      level: 3,
-      body: (
-        <>
-          <p>
-            Base64 (or base64url) of at least 32 bytes with at least 16 distinct byte values: what <code>openssl rand -base64 32</code> prints. A random
-            64-character hex key also qualifies. Anything else (a passphrase, a short value, a repeated pattern) is refused outside{' '}
-            <code>next dev</code>: sign-in fails with a message saying so, and existing sessions read as signed out.
-          </p>
-          <CodeBlock lang="bash" code={`openssl rand -base64 32`} />
-          <Callout tone="warn" title="It checks the format, not randomness.">
-            The check refuses obvious repeats but can&apos;t tell whether a key is random. Generate the key; don&apos;t type it.
-          </Callout>
-          <p>
-            Under <code>next dev</code> any key works (with a warning), and without one the session is stored unencrypted for local convenience. Never
-            expose a dev server to a network.
-          </p>
-          <p>
-            Rotating the key signs every user out: there is one key and no key ID, so cookies made under the old key no longer decrypt. Rotate it (set a
-            new random value and restart or redeploy) when it may have leaked.
-          </p>
-        </>
-      ),
-    },
-    {
-      id: 'session-version',
-      title: 'SESSION_VERSION',
+      id: 'variables-no-longer-used',
+      title: 'Variables no longer used',
       level: 3,
       body: (
         <p>
-          Part of every session&apos;s authenticated data. Setting or changing it (any value) signs everyone out without changing the key, for example
-          when a copied session cookie must stop working before its 24 hours are up. While it is set, cookies from the legacy formats below are
-          refused.
+          Earlier versions kept store keys in an encrypted session cookie and needed <code>ENCRYPTION_KEY</code>, with <code>SESSION_VERSION</code>{' '}
+          and <code>TRUSTED_CLIENT_IP_HEADER</code> as options. Keys now stay in the browser and the server sets no cookies, so none of the three is
+          read any more: delete them from your environment, <code>.dev.vars</code> and Worker secrets (
+          <code>npx --no-install wrangler secret delete ENCRYPTION_KEY</code>). After upgrading, every user connects their store once more.
         </p>
-      ),
-    },
-    {
-      id: 'trusted-client-ip-header',
-      title: 'TRUSTED_CLIENT_IP_HEADER',
-      level: 3,
-      body: (
-        <>
-          <p>
-            With it set, sign-in is limited to 10 attempts per client per 10 minutes (300 per server instance either way), and testing an Open Exchange
-            Rates key without signing in to 5 per client (50 per instance per 10 minutes either way).
-          </p>
-          <p>
-            Values: <code>cf-connecting-ip</code> (Cloudflare, Workers included), <code>x-real-ip</code>, or <code>x-forwarded-for</code> (its last
-            entry is used).
-          </p>
-          <Callout tone="warn">
-            Only set it when every request passes through that proxy. Clients can forge these headers, so without the proxy a per-client limit means
-            nothing.
-          </Callout>
-        </>
       ),
     },
     {
@@ -420,24 +360,6 @@ npm run deploy    # build and deploy with wrangler`}
           <CodeBlock example lang="bash" code={`NEXT_PUBLIC_SITE_URL=https://pricing.example.com npm run deploy`} />
           <p>
             For local runs, put <code>NEXT_PUBLIC_SITE_URL=http://localhost:3000</code> in <code>.env.local</code> if you want local absolute URLs.
-          </p>
-        </>
-      ),
-    },
-    {
-      id: 'legacy-session-cutoff',
-      title: 'Legacy sessions and the cutoff',
-      body: (
-        <>
-          <p>
-            Session cookies written by earlier versions (formats v1 and v2, and cookie names without the <code>__Host-</code> prefix) are read until{' '}
-            <strong>2026-11-10 00:00 UTC</strong> and re-written in the current format on the request that reads them, with an expiry no later than
-            that date. From then on they are refused, so anyone still on an old cookie signs in again. With a conforming <code>ENCRYPTION_KEY</code>,
-            nobody is signed out by the upgrade itself.
-          </p>
-          <p>
-            Rolling back to an older build would not read the new cookies (users sign in again). See the <DocLink to="changelog">Changelog</DocLink>{' '}
-            upgrade notes for everything else that changed for self-hosters.
           </p>
         </>
       ),

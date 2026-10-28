@@ -385,7 +385,7 @@ export default function AppleSetupGuidePage() {
                     <p>The .p8 key file may be invalid or corrupted.</p>
                     <ol className="list-decimal list-inside space-y-1">
                       <li>
-                        Verify you&apos;re uploading the .p8 file (not .cer or
+                        Verify you&apos;re choosing the .p8 file (not .cer or
                         .pem)
                       </li>
                       <li>

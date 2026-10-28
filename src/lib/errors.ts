@@ -146,7 +146,7 @@ export function toAppError(error: unknown): AppError {
   if (error instanceof Error) {
     // Check for common error patterns
     if (error.message.includes('401')) {
-      return new AuthenticationError('Session expired');
+      return new AuthenticationError('The store refused the access token. Connect again.');
     }
     if (error.message.includes('403')) {
       return new AuthorizationError();

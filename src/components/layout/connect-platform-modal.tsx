@@ -102,7 +102,7 @@ export function ConnectPlatformModal({
       if (!file.name.endsWith('.json')) {
         setState((prev) => ({
           ...prev,
-          error: 'Please upload a JSON file',
+          error: 'Please choose a JSON file',
           file: null,
         }));
         return false;
@@ -119,7 +119,7 @@ export function ConnectPlatformModal({
       if (!file.name.endsWith('.p8')) {
         setState((prev) => ({
           ...prev,
-          error: 'Please upload a .p8 file (Apple API Key)',
+          error: 'Please choose a .p8 file (Apple API Key)',
           file: null,
         }));
         return false;
@@ -250,8 +250,8 @@ export function ConnectPlatformModal({
           </DialogTitle>
           <DialogDescription>
             {platform === 'google'
-              ? 'Upload your service account JSON file to connect'
-              : 'Upload your API key (.p8 file) to connect'}
+              ? 'Choose your service account JSON file to connect'
+              : 'Choose your API key (.p8 file) to connect'}
           </DialogDescription>
         </DialogHeader>
 

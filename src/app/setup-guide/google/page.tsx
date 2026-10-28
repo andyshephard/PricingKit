@@ -408,7 +408,7 @@ export default function SetupGuidePage() {
                   <AccordionContent className="text-sm text-muted-foreground space-y-2">
                     <p>The JSON key file is invalid or corrupted.</p>
                     <ol className="list-decimal list-inside space-y-1">
-                      <li>Verify you&apos;re uploading the service account JSON file</li>
+                      <li>Verify you&apos;re choosing the service account JSON file</li>
                       <li>The file should contain <code className="rounded-md bg-chip px-1 font-mono text-foreground">&quot;type&quot;: &quot;service_account&quot;</code></li>
                       <li>Try creating and downloading a new key from Google Cloud Console</li>
                     </ol>
