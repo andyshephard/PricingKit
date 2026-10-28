@@ -3,6 +3,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
 import { appleHeaders, googleHeaders } from './helpers';
+import { CONNECT_CHECKS_PER_WINDOW, resetConnectLimitForTests } from '../_lib/connect-limit';
 
 import { readJsonBody, rejectCrossSite } from '@/lib/request-guard';
 import { isAcceptedServiceAccountKey, rsaPrivateKeyBits } from '@/lib/google-play/client';
@@ -133,5 +134,21 @@ describe('connect routes', () => {
     );
     expect(apple.status).toBe(403);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('limit connect checks per instance, across both stores', async () => {
+    resetConnectLimitForTests();
+    const statuses: number[] = [];
+    for (let i = 0; i < CONNECT_CHECKS_PER_WINDOW; i++) {
+      const route = i % 2 === 0 ? appleAuthPOST : authPOST;
+      const headers = i % 2 === 0 ? appleHeaders(null) : googleHeaders();
+      statuses.push((await route(new Request('http://localhost/api/x', { method: 'POST', headers }) as never)).status);
+    }
+    expect(statuses.every((s) => s === 401)).toBe(true);
+    const over = await appleAuthPOST(new Request('http://localhost/api/apple/auth', { method: 'POST', headers: appleHeaders(null) }) as never);
+    expect(over.status).toBe(429);
+    expect(over.headers.get('retry-after')).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(CONNECT_CHECKS_PER_WINDOW);
+    resetConnectLimitForTests();
   });
 });

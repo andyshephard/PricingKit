@@ -16,8 +16,9 @@ Only the latest `main` is supported.
 
 PricingKit needs store API credentials to read and update prices: an App Store Connect API
 key (`.p8` private key, Key ID, Issuer ID) and/or a Google Play service account JSON key.
-**The private key never leaves your browser.** The PricingKit server only receives
-short-lived access tokens, and keeps nothing.
+**The private key never reaches the PricingKit server**: the published code keeps it in your
+browser and sends the server only short-lived access tokens, and the server keeps nothing.
+(See "Hosted vs self-hosted" for what that relies on.)
 
 1. **Import in the browser.** When you connect, the browser reads the key file and imports
    the private key with the Web Crypto API as a *non-extractable* key: it can sign, but no
@@ -41,7 +42,8 @@ short-lived access tokens, and keeps nothing.
    keeps no session, sets no cookie and stores no credential.
 4. **Checked, not trusted.** Before using an App Store Connect token the server checks its
    shape: a JWT signed with ES256, for App Store Connect, valid for at most 20 minutes, not
-   expired and not issued in the future. These checks only save a pointless call; Apple and
+   expired, and not issued in the future (allowing up to 60 seconds of clock difference).
+   These checks only save a pointless call; Apple and
    Google verify every token. The server never logs, caches or echoes a token or these
    headers.
 5. **Long requests.** Writes, applies, bulk updates and exports ask the browser for a token
@@ -50,8 +52,9 @@ short-lived access tokens, and keeps nothing.
 6. **Connecting is read-only.** Connecting or switching apps only lists data. If the key
    lacks pricing-write permission, you find out on your first edit.
 7. **Kept until you remove it.** The key stays in that browser profile until you **Sign
-   out** (both keys) or use **Forget this key** in Settings. Signing out in one tab signs the
-   other tabs out too. On a shared computer, always sign out.
+   out** or use **Forget this key** in Settings. Signing out deletes both store keys, the
+   saved Open Exchange Rates key, the selected apps and the list of recent apps, and signs
+   the other tabs out too. On a shared computer, always sign out.
 
 Requests that change something (`POST`, `PUT`, `PATCH`, `DELETE`):
 
@@ -63,8 +66,8 @@ Requests that change something (`POST`, `PUT`, `PATCH`, `DELETE`):
   a second layer.
 - take a body only as `application/json` (`415` otherwise), so a cross-site HTML form can't
   act for a visitor.
-- are size-limited: 16 KB for connecting and app switching, 1 MB for store edits, plans,
-  applies and bulk updates (`413`), by `Content-Length` and by the bytes actually read.
+- are size-limited: 16 KB for app switching, 1 MB for store edits, plans, applies and bulk
+  updates (`413`), by `Content-Length` and by the bytes actually read.
 
 Every response carries a Content-Security-Policy (no `eval` outside `next dev`, no `<base>`
 changes, forms only to this site, connections only to this site, Google's token endpoint and
@@ -76,13 +79,15 @@ Other data:
 
 - The optional Open Exchange Rates key entered in Settings is tested from your browser
   against Open Exchange Rates, kept in this browser's local storage, and sent (in
-  `X-PK-OER-Key`) only with requests to `/api/exchange-rates` and `/api/ppp`. Rates fetched
-  with it are returned to you only, never cached for other visitors, and such fetches are
-  rate limited per server instance. Signing out deletes it. Settings only ever shows its last
-  four characters. An operator key set through `OPEN_EXCHANGE_RATES_APP_ID` is never
-  returned to clients.
-- The selected app (bundle ID or package name) is kept in this browser's local storage. It
-  isn't secret.
+  `X-PK-OER-Key`) only with requests to `/api/exchange-rates` and `/api/ppp`. The server
+  uses it only on a request that also carries a store token. Rates fetched with it are
+  returned to you only, never cached for other visitors, and such fetches are rate limited
+  per key and per server instance; over the limit, the operator's cached rates are served.
+  Signing out deletes it. Settings only ever shows its last four characters. An operator key
+  set through `OPEN_EXCHANGE_RATES_APP_ID` is never returned to clients.
+- The selected app (bundle ID or package name) and a list of recently used apps are kept in
+  this browser's local storage. They aren't secret.
+- The connect checks (`/api/apple/auth`, `/api/auth`) are rate limited per server instance.
 - The public endpoints (`/api/ppp`, `/api/exchange-rates`, `/index-checker`) need no
   sign-in. Forcing an upstream refresh with `?refresh=true` needs a store token header
   (`403` otherwise). That is a speed bump, not authentication: a refresh never spends the
@@ -97,21 +102,28 @@ print or write to a run log. They never talk to a PricingKit server.
 
 ## Hosted vs self-hosted
 
-**Hosted instance.** Your private key stays in your browser, so the operator never has it.
-The server does see the short-lived tokens it forwards: a dishonest or compromised operator
-could misuse a token until it expires (at most 20 minutes for App Store Connect, 1 hour for
-Google Play), but could not keep access after that or make new tokens. Use a dedicated API
-key with only the permissions PricingKit needs, and revoke it when you are done.
+**Hosted instance.** Your private key never reaches the PricingKit server, and the published
+code never sends it there. But the hosted operator serves the page's JavaScript, so using a
+hosted instance still means trusting that operator to serve the published code. Modified or
+injected script running in the page could read the key file while you connect, or use the
+stored key to sign tokens, including tokens dated for later, and so keep access until you
+revoke the key. The server also sees the short-lived tokens it forwards (App Store Connect up
+to 20 minutes, Google Play up to 1 hour). Use a dedicated API key with only the permissions
+PricingKit needs, revoke it when you are done, and revoke it at once in App Store Connect or
+Google Cloud if you suspect a compromise.
 
-**Self-hosted.** You run the server, so even the tokens never reach a third party apart from
-Apple and Google. This is the recommended setup for production accounts. Serve it over
-HTTPS. There is no secret to configure: `ENCRYPTION_KEY`, `SESSION_VERSION` and
+**Self-hosted.** You run the server and serve the JavaScript yourself, so neither the key nor
+the tokens depend on anyone else. Running the `pricingkit` CLI locally is the other way to
+keep everything on your machine. This is the recommended setup for production accounts.
+Serve it over HTTPS. There is no secret to configure: `ENCRYPTION_KEY`, `SESSION_VERSION` and
 `TRUSTED_CLIENT_IP_HEADER` from earlier versions are no longer used and can be deleted.
 
 ## Remaining risks
 
-- **Script injected into the page.** It couldn't read the key (it is non-extractable), but
-  while the tab is open it could ask the browser to sign tokens and use them. The
-  Content-Security-Policy is the main defence.
+- **Script running in the page.** Injected script, or a modified copy of the page, can't read
+  a key already stored (it is non-extractable), but it can ask the browser to sign with it.
+  It could sign App Store Connect tokens dated for later and keep using them after the tab is
+  closed, so it keeps access until you revoke the key. The Content-Security-Policy is the main
+  defence against injected script; self-hosting is the defence against a dishonest host.
 - **Shared computers.** The key stays in that browser profile until you sign out or forget
   it.

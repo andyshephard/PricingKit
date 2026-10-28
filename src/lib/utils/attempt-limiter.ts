@@ -1,10 +1,12 @@
 /**
  * Fixed-window attempt limiter, held in memory.
  *
- * Used as a per-instance brake on the App Store Connect connect check.
- * State is per process / per Worker isolate, so this is a brake, not a
+ * Used as per-instance brakes: on the connect checks (/api/apple/auth,
+ * /api/auth) and on upstream fetches with users' own Open Exchange Rates
+ * keys. State is per process / per Worker isolate, so this is a brake, not a
  * guarantee: a determined caller spread across isolates gets more attempts.
- * Keys are client identifiers, never credentials or tokens. The map is capped so it cannot grow without bound.
+ * Keys are opaque identifiers (never a raw credential or token). The map is
+ * capped so it cannot grow without bound.
  */
 
 export interface AttemptLimiterOptions {

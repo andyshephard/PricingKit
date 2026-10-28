@@ -38,7 +38,9 @@ export type BrowserKeyErrorCode =
   /** Google refused the key or the assertion */
   | 'token_rejected'
   /** The token endpoint could not be reached or answered unexpectedly */
-  | 'network';
+  | 'network'
+  /** The clock correction needed is over 10 minutes: the computer's clock is wrong */
+  | 'clock';
 
 /**
  * Errors from this module. Messages are fixed strings or name fields only:

@@ -4,12 +4,15 @@
 // - store routes: X-PK-Apple-Token (a JWT signed in this browser) or
 //   X-PK-Google-Token (an access token this browser minted), and X-PK-App
 // - /api/ppp and /api/exchange-rates: the user's own Open Exchange Rates key
-//   (X-PK-OER-Key) when one is saved, and a store token on ?refresh=true
+//   (X-PK-OER-Key) when one is saved, and a store token with it or on
+//   ?refresh=true (the server ignores both without one)
 //
 // Writes, applies, bulk updates and exports ask for a token with most of its
-// life left (APPLE_/GOOGLE_APPLY_MIN_VALID_SECONDS). On a 401 it sets the
-// clock offset from the server's Date header and retries once with a new
-// token (the refused one is passed as `rejected`). A write is retried only
+// life left (APPLE_/GOOGLE_APPLY_MIN_VALID_SECONDS). On a 401 it retries
+// once with a new token (the refused one is passed as `rejected`). The clock
+// offset is taken from the server's Date header only on the server's own
+// clock refusals (precheck CLOCK_SKEW / TOKEN_EXPIRED); BrowserKeys refuses to
+// sign with a correction over 10 minutes. A write is retried only
 // when the 401 carries the server's precheck marker (X-PK-Auth-Stage:
 // precheck), which only src/middleware/auth.ts sets, before anything was
 // sent to a store. If that fails too, onAuthFailure runs (the Connect prompt).
@@ -112,6 +115,10 @@ function tokenFailure(platform: KeyPlatform, error: unknown): { response: Respon
     if (error.code === 'storage') {
       return { response: jsonResponse(401, { error: error.message, code: 'KEY_STORAGE' }), auth: true };
     }
+    if (error.code === 'clock') {
+      // Not a key problem: the message asks the person to fix their clock
+      return { response: jsonResponse(400, { error: error.message, code: 'LOCAL_CLOCK' }), auth: false };
+    }
     return { response: jsonResponse(503, { error: error.message, code: 'TOKEN_NETWORK' }), auth: false };
   }
   return { response: jsonResponse(500, { error: `Could not make a ${STORE[platform]} token in this browser.` }), auth: false };
@@ -143,8 +150,16 @@ export function createApiFetch(deps: ApiFetchDeps) {
     return platform === 'apple' ? APPLE_APPLY_MIN_VALID_SECONDS : GOOGLE_APPLY_MIN_VALID_SECONDS;
   }
 
-  /** Server time minus local time, from a response's Date header */
-  function syncClock(response: Response): void {
+  /**
+   * Server time minus local time, from the Date header of the server's own
+   * clock refusal (precheck CLOCK_SKEW or TOKEN_EXPIRED) only: never from any
+   * other 401. Date is whole seconds and stamped before the response travels,
+   * so the offset can only come out slightly low: tokens are never dated
+   * ahead of the server's clock by it.
+   */
+  function syncClock(response: Response, code: string | undefined): void {
+    if (response.headers.get(AUTH_STAGE_HEADER) !== PRECHECK_STAGE) return;
+    if (code !== 'CLOCK_SKEW' && code !== 'TOKEN_EXPIRED') return;
     const date = response.headers.get('date');
     if (!date) return;
     const server = Date.parse(date);
@@ -167,13 +182,15 @@ export function createApiFetch(deps: ApiFetchDeps) {
     if (plan.publicData) {
       const oer = deps.oerKey();
       if (oer) headers.set(OER_KEY_HEADER, oer);
-      // A refresh needs a store token (a speed bump on the server); best effort
-      const refreshPlatform = url.searchParams.get('refresh') === 'true' ? deps.activePlatform() : null;
-      if (refreshPlatform) {
+      // The server honours a refresh, and the user's own key, only alongside a
+      // store token (a speed bump against anonymous use); best effort
+      const wantsToken = Boolean(oer) || url.searchParams.get('refresh') === 'true';
+      const tokenPlatform = wantsToken ? deps.activePlatform() : null;
+      if (tokenPlatform) {
         try {
-          headers.set(refreshPlatform === 'apple' ? APPLE_TOKEN_HEADER : GOOGLE_TOKEN_HEADER, await token(refreshPlatform, {}));
+          headers.set(tokenPlatform === 'apple' ? APPLE_TOKEN_HEADER : GOOGLE_TOKEN_HEADER, await token(tokenPlatform, {}));
         } catch {
-          // no key: the server answers without a refresh
+          // no key: the server answers with the operator's data, without a refresh
         }
       }
       return deps.fetch(input, { ...requestInit, headers });
@@ -203,8 +220,8 @@ export function createApiFetch(deps: ApiFetchDeps) {
     const first = await send(long ? { minValidSeconds: minValid(platform) } : {});
     if (first.response.status !== 401 || first.sent === undefined) return first.response;
 
-    syncClock(first.response);
     const code = await errorCode(first.response);
+    syncClock(first.response, code);
     const replayable = !(requestInit.body instanceof ReadableStream);
     const precheck = first.response.headers.get(AUTH_STAGE_HEADER) === PRECHECK_STAGE;
     const safe = !WRITE_METHODS.has(method) || precheck;
@@ -219,7 +236,7 @@ export function createApiFetch(deps: ApiFetchDeps) {
         : { rejected: first.sent, ...(long ? { minValidSeconds: minValid(platform) } : {}) };
     const second = await send(retryOptions);
     if (second.response.status === 401 && second.sent !== undefined) {
-      syncClock(second.response);
+      syncClock(second.response, await errorCode(second.response));
       if (!quietAuthFailure) deps.onAuthFailure(platform);
     }
     return second.response;

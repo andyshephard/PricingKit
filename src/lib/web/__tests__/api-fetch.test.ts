@@ -119,14 +119,19 @@ describe('apiFetch headers', () => {
     expect(keys.calls.map((c) => c.options.minValidSeconds)).toEqual([undefined, APPLE_APPLY_MIN_VALID_SECONDS, GOOGLE_APPLY_MIN_VALID_SECONDS, APPLE_APPLY_MIN_VALID_SECONDS]);
   });
 
-  it('public data routes get the OER key, and a store token only on refresh', async () => {
-    const { apiFetch, sent, keys } = setup([], { oerKey: () => '0123456789abcdef0123456789abcdef' });
-    await apiFetch('/api/ppp');
-    await apiFetch('/api/exchange-rates?refresh=true');
-    expect(sent[0].headers.get('x-pk-oer-key')).toBe('0123456789abcdef0123456789abcdef');
-    expect(sent[0].headers.get('x-pk-apple-token')).toBeNull();
-    expect(sent[1].headers.get('x-pk-apple-token')).toBe('apple-1');
-    expect(keys.calls).toHaveLength(1);
+  it('public data routes get the OER key with a store token, and a store token on refresh', async () => {
+    const withKey = setup([], { oerKey: () => '0123456789abcdef0123456789abcdef' });
+    await withKey.apiFetch('/api/ppp');
+    expect(withKey.sent[0].headers.get('x-pk-oer-key')).toBe('0123456789abcdef0123456789abcdef');
+    expect(withKey.sent[0].headers.get('x-pk-apple-token')).toBe('apple-1');
+
+    const noKey = setup([]);
+    await noKey.apiFetch('/api/ppp');
+    await noKey.apiFetch('/api/exchange-rates?refresh=true');
+    expect(noKey.sent[0].headers.get('x-pk-apple-token')).toBeNull();
+    expect(noKey.sent[0].headers.get('x-pk-oer-key')).toBeNull();
+    expect(noKey.sent[1].headers.get('x-pk-apple-token')).toBe('apple-1');
+    expect(noKey.keys.calls).toHaveLength(1);
   });
 
   it('leaves other routes alone', async () => {
@@ -156,6 +161,26 @@ describe('apiFetch on 401', () => {
     const close = setup([unauthorized('TOKEN_EXPIRED', new Date(NOW + 2000).toUTCString()), ok]);
     await close.apiFetch('/api/apple/products');
     expect(close.keys.offsets).toEqual([]);
+  });
+
+  it('takes the clock only from precheck CLOCK_SKEW / TOKEN_EXPIRED, never from other 401s', async () => {
+    const far = new Date(NOW + 5 * 60 * 1000).toUTCString();
+    const unmarked = () => Response.json({ error: 'no', code: 'CLOCK_SKEW' }, { status: 401, headers: { Date: far } });
+    for (const responses of [[storeRefused(), ok], [unmarked, ok], [unauthorized('INVALID_TOKEN', far), ok], [unauthorized('TOKEN_TOO_SHORT', far), ok]]) {
+      const { apiFetch, keys } = setup(responses);
+      await apiFetch('/api/apple/products');
+      expect(keys.offsets).toEqual([]);
+    }
+  });
+
+  it("shows the browser's clock error without the Connect prompt", async () => {
+    const { apiFetch, keys, sent, onAuthFailure } = setup([]);
+    vi.mocked(keys.getAppleToken).mockRejectedValueOnce(new BrowserKeyError('clock', "This computer's clock seems to be more than 10 minutes off."));
+    const response = await apiFetch('/api/apple/products');
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'LOCAL_CLOCK', error: expect.stringMatching(/clock/) });
+    expect(sent).toHaveLength(0);
+    expect(onAuthFailure).not.toHaveBeenCalled();
   });
 
   it('re-signs with minValidSeconds on TOKEN_TOO_SHORT', async () => {

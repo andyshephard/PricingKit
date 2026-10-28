@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi, type Mock } from 'vitest';
-import { APPLE_APPLY_MIN_VALID_SECONDS, BrowserKeys, BrowserKeyError, GOOGLE_APPLY_MIN_VALID_SECONDS, MemoryKeyStore, type KeyStore } from '..';
+import { APPLE_APPLY_MIN_VALID_SECONDS, BrowserKeys, BrowserKeyError, GOOGLE_APPLY_MIN_VALID_SECONDS, MAX_CLOCK_OFFSET_MS, MemoryKeyStore, type KeyStore } from '..';
 import type { KeyPlatform, StoredKey } from '../types';
 import { GOOGLE_TOKEN_ENDPOINT, type FetchLike } from '../sign';
 import { decodeJwt, jsonResponse, makeAppleKey, makeRsaKey, serviceAccountJson, verifyJwt } from './keys';
@@ -153,15 +153,29 @@ describe('BrowserKeys: Apple', () => {
     const { keys } = setup();
     await keys.importApple(appleInput());
     const first = await keys.getAppleToken();
-    keys.setClockOffsetMs(-3_600_000);
-    expect(keys.getClockOffsetMs()).toBe(-3_600_000);
+    keys.setClockOffsetMs(-300_000);
+    expect(keys.getClockOffsetMs()).toBe(-300_000);
     const second = await keys.getAppleToken();
     expect(second).not.toBe(first);
-    expect(decodeJwt(second).claims.iat).toBe(T0_SECONDS - 3600);
+    expect(decodeJwt(second).claims.iat).toBe(T0_SECONDS - 300);
     keys.setClockOffsetMs(Number.NaN);
     expect(keys.getClockOffsetMs()).toBe(0);
     keys.setClockOffsetMs(10 * 24 * 3_600_000);
     expect(keys.getClockOffsetMs()).toBe(24 * 3_600_000);
+  });
+
+  it('refuses to sign when the correction would be over 10 minutes, until it is back in range', async () => {
+    const { keys } = setup();
+    await keys.importApple(appleInput());
+    keys.setClockOffsetMs(MAX_CLOCK_OFFSET_MS);
+    await expect(keys.getAppleToken()).resolves.toBeTruthy();
+    keys.setClockOffsetMs(MAX_CLOCK_OFFSET_MS + 1000);
+    await expect(keys.getAppleToken()).rejects.toMatchObject({ code: 'clock', message: expect.stringMatching(/clock/) });
+    keys.setClockOffsetMs(-3_600_000);
+    await expect(keys.getAppleToken()).rejects.toMatchObject({ code: 'clock' });
+    await expect(keys.getGoogleAccessToken()).rejects.toMatchObject({ code: 'clock' });
+    keys.setClockOffsetMs(0);
+    await expect(keys.getAppleToken()).resolves.toBeTruthy();
   });
 
   it('takes a clock offset in the options', async () => {

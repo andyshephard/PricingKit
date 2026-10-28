@@ -103,9 +103,9 @@ export const introduction: DocPage = {
           <p>
             Your store key stays in your browser. It is imported there as a key that can sign but can&apos;t be read back out, and kept until you sign
             out or forget it in Settings. The browser signs short-lived access tokens with it (App Store Connect up to 20 minutes, Google Play up to 1
-            hour), and the PricingKit server you use only ever receives those tokens, forwards them to Apple or Google, and keeps nothing. A hosted
-            operator could misuse a token until it expires, but can&apos;t keep access or make new ones;{' '}
-            <DocLink to="run-it-yourself">run it yourself</DocLink> to remove even that. The <DocLink to="security">Security model</DocLink> has the
+            hour), and the published code sends the PricingKit server you use only those tokens, which it forwards to Apple or Google; the server
+            keeps nothing. A hosted instance also serves the page&apos;s JavaScript, so you still trust its operator to serve the published code;{' '}
+            <DocLink to="run-it-yourself">run it yourself</DocLink> to depend on no one else. The <DocLink to="security">Security model</DocLink> has the
             details.
           </p>
           <p>

@@ -81,12 +81,25 @@ export type KeyChangeEvent = { type: 'saved' | 'forgot'; platform: KeyPlatform }
  */
 export type TokenOptions = TokenSlotOptions;
 
-/** Clock offsets beyond a day are a bad Date header, not a wrong clock */
-const MAX_CLOCK_OFFSET_MS = 24 * 60 * 60 * 1000;
+/** Offsets beyond a day are a bad Date header, not a wrong clock: stored capped */
+const MAX_STORED_CLOCK_OFFSET_MS = 24 * 60 * 60 * 1000;
+/**
+ * The largest correction signing accepts. A clock further off than this is
+ * reported (BrowserKeyError 'clock') instead of silently corrected, so a bad
+ * or hostile Date header can't move tokens far into the future or past.
+ */
+export const MAX_CLOCK_OFFSET_MS = 10 * 60 * 1000;
 
 function clampOffset(ms: number): number {
   if (!Number.isFinite(ms)) return 0;
-  return Math.max(-MAX_CLOCK_OFFSET_MS, Math.min(MAX_CLOCK_OFFSET_MS, Math.round(ms)));
+  return Math.max(-MAX_STORED_CLOCK_OFFSET_MS, Math.min(MAX_STORED_CLOCK_OFFSET_MS, Math.round(ms)));
+}
+
+function clockError(): BrowserKeyError {
+  return new BrowserKeyError(
+    'clock',
+    "This computer's clock seems to be more than 10 minutes off. Check your computer's date, time and time zone settings, then try again."
+  );
 }
 
 function toInfo(record: StoredKey): KeyInfo {
@@ -131,8 +144,9 @@ export class BrowserKeys {
 
   /**
    * Correct for a wrong local clock: tokens are signed at local time plus
-   * this offset (capped at a day). Changing it drops cached tokens, which were
-   * signed with the old time.
+   * this offset. Changing it drops cached tokens, which were signed with the
+   * old time. An offset over MAX_CLOCK_OFFSET_MS (10 minutes) is kept but
+   * makes signing fail with BrowserKeyError 'clock' until it is corrected.
    */
   setClockOffsetMs(ms: number): void {
     const next = clampOffset(ms);
@@ -276,6 +290,7 @@ export class BrowserKeys {
    * which throws not_connected when there is none.
    */
   private async token(platform: KeyPlatform, options: TokenOptions, make: () => Promise<CachedToken>): Promise<string> {
+    if (Math.abs(this.clockOffsetMs) > MAX_CLOCK_OFFSET_MS) throw clockError();
     for (let attempt = 0; attempt < 2; attempt++) {
       const version = this.versions[platform];
       const token = await this.slots[platform].get(make, options);

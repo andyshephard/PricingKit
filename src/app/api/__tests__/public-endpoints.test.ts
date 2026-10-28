@@ -97,14 +97,22 @@ describe('public data endpoints', () => {
     });
   });
 
-  describe("the user's Open Exchange Rates key comes from X-PK-OER-Key", () => {
-    it('is passed on when well formed, and ignored otherwise', async () => {
-      await exchangeRatesGET(new Request('http://localhost/api/exchange-rates', { headers: { 'x-pk-oer-key': '0123456789abcdef0123456789abcdef' } }));
-      expect(getExchangeRatesMock).toHaveBeenLastCalledWith(false, '0123456789abcdef0123456789abcdef');
-      await exchangeRatesGET(new Request('http://localhost/api/exchange-rates', { headers: { 'x-pk-oer-key': 'bad key!' } }));
+  describe("the user's Open Exchange Rates key comes from X-PK-OER-Key, with a store token", () => {
+    const key = '0123456789abcdef0123456789abcdef';
+    it('is passed on when well formed and the request carries a store token, and ignored otherwise', async () => {
+      await exchangeRatesGET(new Request('http://localhost/api/exchange-rates', { headers: { ...googleHeaders(null), 'x-pk-oer-key': key } }));
+      expect(getExchangeRatesMock).toHaveBeenLastCalledWith(false, key);
+      await exchangeRatesGET(new Request('http://localhost/api/exchange-rates', { headers: { ...googleHeaders(null), 'x-pk-oer-key': 'bad key!' } }));
       expect(getExchangeRatesMock).toHaveBeenLastCalledWith(false, undefined);
-      await pppGET(new Request('http://localhost/api/ppp', { headers: { 'x-pk-oer-key': '0123456789abcdef0123456789abcdef' } }));
-      expect(getExchangeRatesMock).toHaveBeenLastCalledWith(false, '0123456789abcdef0123456789abcdef');
+      await pppGET(new Request('http://localhost/api/ppp', { headers: { ...appleHeaders(null), 'x-pk-oer-key': key } }));
+      expect(getExchangeRatesMock).toHaveBeenLastCalledWith(false, key);
+    });
+
+    it('is ignored on an anonymous request, so anonymous callers never spend the user-key budget', async () => {
+      await exchangeRatesGET(new Request('http://localhost/api/exchange-rates', { headers: { 'x-pk-oer-key': key } }));
+      expect(getExchangeRatesMock).toHaveBeenLastCalledWith(false, undefined);
+      await pppGET(new Request('http://localhost/api/ppp', { headers: { 'x-pk-oer-key': key } }));
+      expect(getExchangeRatesMock).toHaveBeenLastCalledWith(false, undefined);
     });
   });
 

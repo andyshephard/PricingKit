@@ -12,7 +12,7 @@ let keys: BrowserKeys | null = null;
 /** Another tab forgot a key or signed out: this tab follows */
 function otherTabSignedOut(platform: KeyPlatform | 'all'): void {
   const store = useAuthStore.getState();
-  if (platform === 'all') store.clearAuth();
+  if (platform === 'all') store.signOut();
   else if (platform === 'apple') store.clearAppleAuth();
   else store.clearGoogleAuth();
   if (typeof window === 'undefined') return;

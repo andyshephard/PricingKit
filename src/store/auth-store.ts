@@ -59,6 +59,8 @@ interface AuthState {
   clearGoogleAuth: () => void;
   clearAppleAuth: () => void;
   clearAuth: () => void;
+  /** Sign out on this browser: clearAuth plus the app history and display preferences */
+  signOut: () => void;
   setAppleBaseCountry: (country: string) => void;
   setAppleProductBaseTerritory: (key: string, territory: string | null) => void;
 
@@ -186,6 +188,26 @@ export const useAuthStore = create<AuthState>()(
           issuerId: null,
           // Remembered per-product base territories go with the apps they were for
           appleProductBaseTerritories: {},
+        }),
+
+      // Sign out: everything clearAuth clears, plus the list of recent Google
+      // apps and the App Store base country, so nothing of this person's
+      // stays in the browser for the next one
+      signOut: () =>
+        set({
+          platform: null,
+          isGoogleAuthenticated: false,
+          isAppleAuthenticated: false,
+          isAuthenticated: false,
+          packageName: null,
+          projectId: null,
+          clientEmail: null,
+          bundleId: null,
+          keyId: null,
+          issuerId: null,
+          appleProductBaseTerritories: {},
+          googleAppHistory: [],
+          appleBaseCountry: 'US',
         }),
 
       // Legacy compatibility - maps to setGoogleAuthenticated

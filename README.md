@@ -96,7 +96,7 @@ src/
 
 ## Security
 
-Your App Store Connect or Google Play private key never leaves your browser: it is imported there as a non-extractable key and used to sign short-lived tokens (App Store Connect up to 20 minutes, Google Play up to 1 hour). The PricingKit server only receives those tokens, forwards them to Apple or Google, and keeps nothing. A dishonest or compromised hosted operator could misuse a token until it expires, but can't keep access or make new ones; self-host to remove even that. The key stays in that browser until you sign out or forget it in Settings. The [Security model](https://pricing-kit.com/docs/security) has the details, and [SECURITY.md](SECURITY.md) the policy and how to report a vulnerability.
+Your App Store Connect or Google Play private key never reaches the PricingKit server: it is imported in your browser as a non-extractable key and used to sign short-lived tokens (App Store Connect up to 20 minutes, Google Play up to 1 hour). The published code sends the PricingKit server only those tokens, which it forwards to Apple or Google, and the server keeps nothing. A hosted instance still serves the page's JavaScript, so you trust its operator to serve the published code: modified or injected script could sign tokens for later use and keep access until you revoke the key. Self-host (or use the CLI locally) to depend on no one else, and revoke the key if you suspect a compromise. The key stays in that browser until you sign out or forget it in Settings. The [Security model](https://pricing-kit.com/docs/security) has the details, and [SECURITY.md](SECURITY.md) the policy and how to report a vulnerability.
 
 ## License
 

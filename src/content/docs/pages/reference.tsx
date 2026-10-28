@@ -34,7 +34,8 @@ export const security: DocPage = {
         <>
           <p>
             PricingKit needs store API credentials: an App Store Connect API key (<code>.p8</code> private key, Key ID, Issuer ID) and/or a Google Play
-            service account JSON key. The private key never leaves your browser.
+            service account JSON key. The private key never reaches the PricingKit server: the published code keeps it in your browser and sends
+            the server only short-lived tokens. <a href="#hosted-vs-self-hosted">Hosted or self-hosted</a> says what that relies on.
           </p>
           <ol>
             <li>
@@ -57,7 +58,7 @@ export const security: DocPage = {
             </li>
             <li>
               <strong>Checked, not trusted.</strong> Before using an App Store Connect token the server checks its shape: a JWT signed with ES256, for
-              App Store Connect, valid for at most 20 minutes, not expired and not issued in the future. These checks save a pointless call; Apple and
+              App Store Connect, valid for at most 20 minutes, not expired, and not issued in the future (allowing up to 60 seconds of clock difference). These checks save a pointless call; Apple and
               Google verify every token. Tokens and these headers are never logged, cached or echoed.
             </li>
             <li>
@@ -70,7 +71,8 @@ export const security: DocPage = {
             </li>
             <li>
               <strong>Kept until you remove it.</strong> The key stays in this browser profile until you <strong>Sign out</strong> (both keys) or use{' '}
-              <strong>Forget this key</strong> in Settings. Signing out in one tab signs the other tabs out too. On a shared computer, always sign out.
+              <strong>Forget this key</strong> in Settings. Signing out deletes both store keys, the saved Open Exchange Rates key, the selected apps
+              and the list of recent apps, and signs the other tabs out too. On a shared computer, always sign out.
             </li>
           </ol>
         </>
@@ -93,10 +95,10 @@ export const security: DocPage = {
             </li>
             <li>
               take a body only as <code>application/json</code> (<code>415</code> otherwise), so a cross-site HTML form can&apos;t sign a visitor in to
-              an attacker&apos;s account.
+              act for a visitor.
             </li>
             <li>
-              are size-limited: 16 KB for connecting and app switching, 1 MB for store edits, plans, applies and bulk updates (<code>413</code>),
+              are size-limited: 16 KB for app switching, 1 MB for store edits, plans, applies and bulk updates (<code>413</code>),
               by <code>Content-Length</code> and by the bytes actually read.
             </li>
           </ul>
@@ -117,13 +119,20 @@ export const security: DocPage = {
           <li>
             The optional Open Exchange Rates key entered in Settings is tested from your browser against Open Exchange Rates, kept in this
             browser&apos;s local storage, and sent (in <code>X-PK-OER-Key</code>) only with requests to the exchange-rate routes (
-            <code>/api/exchange-rates</code>, <code>/api/ppp</code>). Rates fetched with it are returned to you only, never cached for other visitors,
-            and such fetches are rate limited per server instance. Signing out deletes it. Settings only ever shows its last four characters. An
-            operator key set through <code>OPEN_EXCHANGE_RATES_APP_ID</code> is never returned to clients.
+            <code>/api/exchange-rates</code>, <code>/api/ppp</code>). The server uses it only on a request that also carries a store token. Rates
+            fetched with it are returned to you only, never cached for other visitors, and such fetches are rate limited per key and per server
+            instance; over the limit, the operator&apos;s cached rates are served. Signing out deletes it. Settings only ever shows its last four
+            characters. An operator key set through <code>OPEN_EXCHANGE_RATES_APP_ID</code> is never returned to clients.
           </li>
-          <li>The selected app (bundle ID or package name) is kept in this browser&apos;s local storage. It isn&apos;t secret.</li>
           <li>
-            Signing out deletes both store keys, that key and the app selection. If the browser can&apos;t delete the keys, it says so instead of
+            The selected app (bundle ID or package name) and a list of recently used apps are kept in this browser&apos;s local storage. They
+            aren&apos;t secret.
+          </li>
+          <li>
+            The connect checks (<code>/api/apple/auth</code>, <code>/api/auth</code>) are rate limited per server instance.
+          </li>
+          <li>
+            Signing out deletes both store keys, that key, the selected apps and the list of recent apps. If the browser can&apos;t delete the keys, it says so instead of
             looking signed out.
           </li>
           <li>
@@ -158,13 +167,16 @@ export const security: DocPage = {
       body: (
         <>
           <p>
-            <strong>Hosted instance.</strong> Your private key stays in your browser, so the operator never has it. The server does see the
-            short-lived tokens it forwards: a dishonest or compromised operator could misuse a token until it expires (at most 20 minutes for App
-            Store Connect, 1 hour for Google Play), but could not keep access after that or make new tokens. Use a dedicated API key with only the
-            permissions PricingKit needs, and revoke it when you are done.
+            <strong>Hosted instance.</strong> Your private key never reaches the PricingKit server, and the published code never sends it there.
+            But the hosted operator serves the page&apos;s JavaScript, so using a hosted instance still means trusting that operator to serve the
+            published code. Modified or injected script running in the page could read the key file while you connect, or use the stored key to sign
+            tokens, including tokens dated for later, and so keep access until you revoke the key. The server also sees the short-lived tokens it
+            forwards (App Store Connect up to 20 minutes, Google Play up to 1 hour). Use a dedicated API key with only the permissions PricingKit
+            needs, revoke it when you are done, and revoke it at once in App Store Connect or Google Cloud if you suspect a compromise.
           </p>
           <p>
-            <strong>Self-hosted.</strong> You run the server, so even the tokens never reach a third party apart from Apple and Google. This is the
+            <strong>Self-hosted.</strong> You run the server and serve the JavaScript yourself, so neither the key nor the tokens depend on anyone
+            else. Running the <code>pricingkit</code> command line locally is the other way to keep everything on your machine. This is the
             recommended setup for production accounts. See <DocLink to="run-it-yourself">Run it yourself</DocLink>.
           </p>
         </>
@@ -177,8 +189,10 @@ export const security: DocPage = {
         <>
           <ul>
             <li>
-              <strong>Script injected into the page.</strong> It couldn&apos;t read the key (it is non-extractable), but while the tab is open it
-              could ask the browser to sign tokens and use them. The Content-Security-Policy is the main defence.
+              <strong>Script running in the page.</strong> Injected script, or a modified copy of the page, can&apos;t read a key already stored (it
+              is non-extractable), but it can ask the browser to sign with it. It could sign App Store Connect tokens dated for later and keep using
+              them after the tab is closed, so it keeps access until you revoke the key. The Content-Security-Policy is the main defence against
+              injected script; self-hosting is the defence against a dishonest host.
             </li>
             <li>
               <strong>Shared computers.</strong> The key stays in that browser profile until you sign out or forget it.

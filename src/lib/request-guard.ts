@@ -17,7 +17,7 @@
 
 import { NextResponse } from 'next/server';
 
-/** Sign-in, app switching and settings */
+/** App switching (the connect checks take no body) */
 export const SMALL_BODY_LIMIT = 16 * 1024;
 /** Store edits, plans, applies and bulk updates */
 export const LARGE_BODY_LIMIT = 1024 * 1024;

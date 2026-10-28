@@ -47,12 +47,28 @@ const SHARED_CACHE_URL = 'https://pricingkit.invalid/cache/exchange-rates/v1';
 /**
  * Upstream requests with users' own keys, per isolate: a user key can be any
  * caller's (the header isn't authenticated), so this server can't be used as
- * an unlimited Open Exchange Rates proxy. Over the limit, cached operator
- * data is served instead (or the request fails when there is none).
+ * an unlimited Open Exchange Rates proxy. Each key gets at most
+ * USER_KEY_FETCHES_PER_KEY_PER_MINUTE, so one caller can't take the whole
+ * budget with one key; the routes only pass a user key along with a store
+ * token header (see readUserOerKey's callers). Someone forging tokens and
+ * rotating keys can still use up the per-isolate total, but the cost of that
+ * is bounded and harmless: everyone is served the cached operator rates for
+ * the rest of the minute (or the request fails when there are none).
  */
 export const USER_KEY_FETCHES_PER_MINUTE = 20;
+export const USER_KEY_FETCHES_PER_KEY_PER_MINUTE = 5;
 function userKeyLimiter(): AttemptLimiter {
-  return new AttemptLimiter({ limit: USER_KEY_FETCHES_PER_MINUTE, globalLimit: USER_KEY_FETCHES_PER_MINUTE, windowMs: 60_000 });
+  return new AttemptLimiter({ limit: USER_KEY_FETCHES_PER_KEY_PER_MINUTE, globalLimit: USER_KEY_FETCHES_PER_MINUTE, windowMs: 60_000 });
+}
+
+/** A limiter key for a user's Open Exchange Rates key, so the key itself isn't kept in the limiter's map (FNV-1a, 32 bits) */
+function limiterKey(apiKey: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < apiKey.length; i++) {
+    hash ^= apiKey.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16);
 }
 let userKeyFetches = userKeyLimiter();
 
@@ -244,11 +260,11 @@ async function fetchWithOperatorKey(): Promise<ExchangeRatesData> {
  * memory, platform or disk caches, so data fetched with a key anyone can
  * send never reaches other visitors. It never shares a promise with other
  * requests or touches the operator key's failure memory either. Limited per
- * isolate (USER_KEY_FETCHES_PER_MINUTE); over the limit, cached operator
- * data is served.
+ * key and per isolate (see USER_KEY_FETCHES_PER_MINUTE); over the limit,
+ * cached operator data is served.
  */
 async function fetchWithUserKey(apiKey: string): Promise<ExchangeRatesData> {
-  if (!userKeyFetches.attempt(undefined).allowed) {
+  if (!userKeyFetches.attempt(limiterKey(apiKey)).allowed) {
     const stale = await staleCached();
     if (stale) return stale;
     throw new UserKeyRateLimitedError();

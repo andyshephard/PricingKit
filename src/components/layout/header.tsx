@@ -36,11 +36,11 @@ export function Header({
 }: HeaderProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const clearAuth = useAuthStore((state) => state.clearAuth);
+  const signOut = useAuthStore((state) => state.signOut);
   const [signingOut, setSigningOut] = useState(false);
 
   // Signing out deletes both store keys from this browser (IndexedDB), the
-  // saved Open Exchange Rates key and the app selection. If the keys can't be
+  // saved Open Exchange Rates key, the app selection and the app history. If the keys can't be
   // deleted that is reported, never treated as signed out.
   const handleLogout = async () => {
     setSigningOut(true);
@@ -53,7 +53,7 @@ export function Header({
     }
     setOerKey(null);
     queryClient.clear();
-    clearAuth();
+    signOut();
     setSigningOut(false);
     router.push('/setup');
   };

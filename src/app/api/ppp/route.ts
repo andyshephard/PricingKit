@@ -57,11 +57,13 @@ export async function GET(request: Request) {
   const now = new Date();
 
   // The user's own Open Exchange Rates key (Settings), sent by the browser in
-  // X-PK-OER-Key and never stored here. Rates fetched with it go back to this
-  // caller only: getExchangeRates never puts them in the memory, platform or
-  // disk caches, and limits such fetches per isolate. Without it the
-  // operator key is used.
-  const userApiKey = readUserOerKey(request);
+  // X-PK-OER-Key and never stored here. It is used only on a request that
+  // also carries a store token header (the app's own requests do), so
+  // anonymous callers can't spend the per-isolate user-key budget. Rates
+  // fetched with it go back to this caller only: getExchangeRates never puts
+  // them in the memory, platform or disk caches, and limits such fetches per
+  // key and per isolate. Without it the operator key is used.
+  const userApiKey = hasStoreTokenHeader(request) ? readUserOerKey(request) : undefined;
 
   // This endpoint is public (index checker), but ?refresh=true bypasses the
   // caches. It needs a store token header that passes the shape checks: a

@@ -3,6 +3,7 @@ import { AppleApiError } from '@/lib/apple-connect/client';
 import { rejectCrossSite } from '@/lib/request-guard';
 import { requireAppleAuth, storeRefusedTokenResponse } from '@/middleware/auth';
 import { listAppleApps } from '../_lib/apps';
+import { limitConnectCheck } from '../../_lib/connect-limit';
 
 function withServerTime(response: NextResponse): NextResponse {
   response.headers.set('Date', new Date().toUTCString());
@@ -20,6 +21,8 @@ export async function POST(request: NextRequest) {
   if (crossSite) return crossSite;
   const auth = requireAppleAuth(request, { app: 'none', long: false });
   if (!auth.ok) return auth.response;
+  const limited = limitConnectCheck();
+  if (limited) return limited;
 
   try {
     const apps = await listAppleApps(auth.connection);
