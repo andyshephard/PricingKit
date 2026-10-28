@@ -35,7 +35,7 @@ const FEATURES = [
   },
   {
     title: 'Your keys stay yours',
-    body: 'Credentials live in an encrypted, short-lived session and are never stored. Run PricingKit yourself if you prefer.',
+    body: "Your key stays in your browser; PricingKit's server only receives short-lived access tokens. Run PricingKit yourself if you prefer.",
   },
 ] as const;
 

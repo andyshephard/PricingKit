@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { PageHeader, pageClass, useAppContextLabel } from '@/components/layout/page-header';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Header } from '@/components/layout';
+import { apiFetch } from '@/lib/web/client';
 
 interface StatsResponse {
   products: {
@@ -59,8 +60,8 @@ export default function AppleDashboardPage() {
     queryKey: ['stats', 'apple'],
     queryFn: async () => {
       const [productsRes, subscriptionsRes] = await Promise.all([
-        fetch('/api/apple/products'),
-        fetch('/api/apple/subscriptions'),
+        apiFetch('/api/apple/products'),
+        apiFetch('/api/apple/subscriptions'),
       ]);
 
       const products = productsRes.ok ? await productsRes.json() : { products: [] };

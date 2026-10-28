@@ -10,6 +10,7 @@ import { BulkUpdateModal } from '@/components/pricing/bulk-update-modal';
 import { Button } from '@/components/ui/button';
 import { useSelectionStore } from '@/store/selection-store';
 import type { SubscriptionsListResponse } from '@/types/api';
+import { apiFetch } from '@/lib/web/client';
 
 export default function GoogleSubscriptionsPage() {
   const context = useAppContextLabel('google');
@@ -19,7 +20,7 @@ export default function GoogleSubscriptionsPage() {
   const { data, isLoading, refetch, isRefetching, error } = useQuery<SubscriptionsListResponse>({
     queryKey: ['subscriptions', 'google'],
     queryFn: async () => {
-      const response = await fetch('/api/subscriptions');
+      const response = await apiFetch('/api/subscriptions');
       if (!response.ok) {
         if (response.status === 401) {
           throw new Error('401: Unauthorized');

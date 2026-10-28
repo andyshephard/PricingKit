@@ -16,6 +16,7 @@ import { PlaySubscriptionOffers } from '@/components/subscriptions/play-subscrip
 import { ExportPricesButton } from '@/components/pricing/export-prices-button';
 import { formatMoney } from '@/lib/google-play/types';
 import type { SubscriptionResponse } from '@/types/api';
+import { apiFetch } from '@/lib/web/client';
 
 export default function GoogleSubscriptionDetailPage({
   params,
@@ -29,7 +30,7 @@ export default function GoogleSubscriptionDetailPage({
   const { data, isLoading, error, refetch, isRefetching } = useQuery<SubscriptionResponse>({
     queryKey: ['subscriptions', 'google', decodedId],
     queryFn: async () => {
-      const response = await fetch(`/api/subscriptions/${encodeURIComponent(decodedId)}`);
+      const response = await apiFetch(`/api/subscriptions/${encodeURIComponent(decodedId)}`);
       if (!response.ok) {
         if (response.status === 401) {
           throw new Error('401: Unauthorized');

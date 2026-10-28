@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Upload, FileJson, Key, AlertCircle, Loader2 } from 'lucide-react';
@@ -15,6 +15,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuthStore } from '@/store/auth-store';
+import { apiFetch, browserKeys } from '@/lib/web/client';
+import { connectApple, connectGoogle, ConnectError } from '@/lib/web/connect';
+import { KEY_STAYS_IN_BROWSER } from '@/components/auth/key-copy';
 
 interface ConnectPlatformModalProps {
   open: boolean;
@@ -44,6 +47,8 @@ export function ConnectPlatformModal({
   );
   const setPlatform = useAuthStore((state) => state.setPlatform);
   const router = useRouter();
+
+  const fileInput = useRef<HTMLInputElement>(null);
 
   // Google-specific state
   const [packageName, setPackageName] = useState('');
@@ -148,6 +153,31 @@ export function ConnectPlatformModal({
     }
   };
 
+  /** Takes the chosen file out of state and the input: it is read once by the connect step, then dropped */
+  const takeFile = (): File | null => {
+    const file = state.file;
+    setState((prev) => ({
+      ...prev,
+      file: null,
+      isLoading: true,
+      error: null,
+      errorHelpHref: null,
+      errorHelpText: null,
+    }));
+    if (fileInput.current) fileInput.current.value = '';
+    return file;
+  };
+
+  const showError = (error: unknown) => {
+    setState((prev) => ({
+      ...prev,
+      error: error instanceof ConnectError ? error.message : 'Failed to connect. Please try again.',
+      errorHelpHref: error instanceof ConnectError ? (error.helpHref ?? null) : null,
+      errorHelpText: error instanceof ConnectError ? (error.helpText ?? null) : null,
+      isLoading: false,
+    }));
+  };
+
   const handleGoogleSubmit = async () => {
     if (!state.file || !packageName.trim()) {
       setState((prev) => ({
@@ -156,66 +186,19 @@ export function ConnectPlatformModal({
       }));
       return;
     }
-
-    setState((prev) => ({
-      ...prev,
-      isLoading: true,
-      error: null,
-      errorHelpHref: null,
-      errorHelpText: null,
-    }));
-
+    const file = takeFile();
+    if (!file) return;
     try {
-      const text = await state.file.text();
-      let credentials: unknown;
-
-      try {
-        credentials = JSON.parse(text);
-      } catch {
-        setState((prev) => ({
-          ...prev,
-          error: 'Invalid JSON file',
-          isLoading: false,
-        }));
-        return;
-      }
-
-      const response = await fetch('/api/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          credentials,
-          packageName: packageName.trim(),
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setState((prev) => ({
-          ...prev,
-          error: data.error || 'Authentication failed',
-          errorHelpHref: data.helpHref ?? null,
-          errorHelpText: data.helpText ?? null,
-          isLoading: false,
-        }));
-        return;
-      }
-
+      const connected = await connectGoogle({ keys: browserKeys(), apiFetch }, { file, packageName: packageName.trim() });
       setGoogleAuthenticated({
-        packageName: packageName.trim(),
-        projectId: data.projectId,
-        clientEmail: data.clientEmail,
+        packageName: connected.packageName,
+        projectId: connected.projectId,
+        clientEmail: connected.clientEmail,
       });
       setPlatform('google');
       handleOpenChange(false);
     } catch (error) {
-      console.error('Upload error:', error);
-      setState((prev) => ({
-        ...prev,
-        error: 'Failed to connect. Please try again.',
-        isLoading: false,
-      }));
+      showError(error);
     }
   };
 
@@ -227,56 +210,20 @@ export function ConnectPlatformModal({
       }));
       return;
     }
-
-    setState((prev) => ({
-      ...prev,
-      isLoading: true,
-      error: null,
-      errorHelpHref: null,
-      errorHelpText: null,
-    }));
-
+    const file = takeFile();
+    if (!file) return;
     try {
-      const privateKey = await state.file.text();
-
-      const response = await fetch('/api/apple/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          privateKey,
-          keyId: keyId.trim(),
-          issuerId: issuerId.trim(),
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setState((prev) => ({
-          ...prev,
-          error: data.error || 'Authentication failed',
-          errorHelpHref: data.helpHref ?? null,
-          errorHelpText: data.helpText ?? null,
-          isLoading: false,
-        }));
-        return;
-      }
-
+      const connected = await connectApple({ keys: browserKeys(), apiFetch }, { file, keyId: keyId.trim(), issuerId: issuerId.trim() });
       setAppleAuthenticated({
         bundleId: null,
-        keyId: keyId.trim(),
-        issuerId: issuerId.trim(),
+        keyId: connected.keyId,
+        issuerId: connected.issuerId,
       });
       setPlatform('apple');
       handleOpenChange(false);
       router.push('/setup/apple/select-app');
     } catch (error) {
-      console.error('Upload error:', error);
-      setState((prev) => ({
-        ...prev,
-        error: 'Failed to connect. Please try again.',
-        isLoading: false,
-      }));
+      showError(error);
     }
   };
 
@@ -366,6 +313,7 @@ export function ConnectPlatformModal({
               `}
             >
               <input
+                ref={fileInput}
                 type="file"
                 accept={platform === 'google' ? '.json' : '.p8'}
                 onChange={handleFileSelect}
@@ -431,6 +379,8 @@ export function ConnectPlatformModal({
               'Connect'
             )}
           </Button>
+
+          <p className="text-center text-xs text-muted-foreground">{KEY_STAYS_IN_BROWSER}</p>
 
           <p className="text-center text-sm text-muted-foreground">
             You can check the{' '}

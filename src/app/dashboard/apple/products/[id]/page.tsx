@@ -14,6 +14,7 @@ import { PricingEditor } from '@/components/products/pricing-editor';
 import { ExportPricesButton } from '@/components/pricing/export-prices-button';
 import { formatMoney, parseMoney, type InAppProduct } from '@/lib/google-play/types';
 import type { RawAppleProduct } from '@/types/api';
+import { apiFetch } from '@/lib/web/client';
 
 function formatAppleProductType(type?: string): string {
   if (!type) return 'Unknown';
@@ -51,7 +52,7 @@ export default function AppleProductDetailPage({
   const { data, isLoading, error, refetch, isRefetching } = useQuery<{ product: InAppProduct & { _appleProduct?: RawAppleProduct } } | null>({
     queryKey: ['products', 'apple', decodedId],
     queryFn: async () => {
-      const response = await fetch(`/api/apple/products/${encodeURIComponent(decodedId)}`);
+      const response = await apiFetch(`/api/apple/products/${encodeURIComponent(decodedId)}`);
       if (!response.ok) {
         if (response.status === 401) {
           throw new Error('401: Unauthorized');

@@ -14,6 +14,7 @@ import { PricingEditor } from '@/components/products/pricing-editor';
 import { ExportPricesButton } from '@/components/pricing/export-prices-button';
 import { formatMoney } from '@/lib/google-play/types';
 import type { ProductResponse } from '@/types/api';
+import { apiFetch } from '@/lib/web/client';
 
 export default function GoogleProductDetailPage({
   params,
@@ -26,7 +27,7 @@ export default function GoogleProductDetailPage({
   const { data, isLoading, error, refetch, isRefetching } = useQuery<ProductResponse>({
     queryKey: ['products', 'google', decodedSku],
     queryFn: async () => {
-      const response = await fetch(`/api/products/${encodeURIComponent(decodedSku)}`);
+      const response = await apiFetch(`/api/products/${encodeURIComponent(decodedSku)}`);
       if (!response.ok) {
         if (response.status === 401) {
           throw new Error('401: Unauthorized');

@@ -1,12 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
 import type { StoreOffer } from '@/lib/pricing';
+import { apiFetch } from '@/lib/web/client';
 
 /** Read-only list of a Google Play subscription's offers, across its base plans */
 export function usePlaySubscriptionOffers(productId: string | undefined) {
   return useQuery<{ offers: StoreOffer[] }>({
     queryKey: ['google', 'subscription-offers', productId],
     queryFn: async () => {
-      const response = await fetch(`/api/subscriptions/${encodeURIComponent(productId!)}/offers`);
+      const response = await apiFetch(`/api/subscriptions/${encodeURIComponent(productId!)}/offers`);
       if (!response.ok) {
         if (response.status === 401) throw new Error('401: Unauthorized');
         const body = await response.json().catch(() => ({}));

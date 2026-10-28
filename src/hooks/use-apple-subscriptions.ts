@@ -3,6 +3,7 @@ import type {
   NormalizedAppleSubscription,
   NormalizedAppleSubscriptionGroup,
 } from '@/lib/apple-connect/types';
+import { apiFetch } from '@/lib/web/client';
 
 export function useAppleSubscriptions() {
   return useQuery<{
@@ -11,7 +12,7 @@ export function useAppleSubscriptions() {
   }>({
     queryKey: ['apple', 'subscriptions'],
     queryFn: async () => {
-      const response = await fetch('/api/apple/subscriptions');
+      const response = await apiFetch('/api/apple/subscriptions');
       if (!response.ok) {
         if (response.status === 401) {
           throw new Error('401: Unauthorized');
@@ -28,7 +29,7 @@ export function useAppleSubscription(productId: string) {
   return useQuery<{ subscription: NormalizedAppleSubscription }>({
     queryKey: ['apple', 'subscriptions', productId],
     queryFn: async () => {
-      const response = await fetch(
+      const response = await apiFetch(
         `/api/apple/subscriptions/${encodeURIComponent(productId)}`
       );
       if (!response.ok) {
@@ -55,7 +56,7 @@ export function useUpdateAppleSubscriptionPrices() {
       productId: string;
       prices: Record<string, { pricePointId: string; startDate?: string }>;
     }) => {
-      const response = await fetch(
+      const response = await apiFetch(
         `/api/apple/subscriptions/${encodeURIComponent(productId)}`,
         {
           method: 'PATCH',
@@ -96,7 +97,7 @@ export function useDeleteAppleSubscriptionPrice() {
       productId: string;
       subscriptionPriceId: string;
     }) => {
-      const response = await fetch(
+      const response = await apiFetch(
         `/api/apple/subscriptions/${encodeURIComponent(productId)}`,
         {
           method: 'DELETE',

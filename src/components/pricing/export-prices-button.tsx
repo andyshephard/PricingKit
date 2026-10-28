@@ -12,6 +12,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { apiFetch } from '@/lib/web/client';
 
 type ExportFormat = 'csv' | 'json' | 'prices-csv';
 
@@ -45,7 +46,7 @@ export function ExportPricesButton({ platform, type, id, basePlanIds }: ExportPr
       const params = new URLSearchParams({ platform, type, id, format });
       if (basePlanId) params.set('basePlanId', basePlanId);
 
-      const response = await fetch(`/api/export?${params.toString()}`);
+      const response = await apiFetch(`/api/export?${params.toString()}`);
       if (!response.ok) {
         const error = await response.json().catch(() => null);
         throw new Error(error?.error || 'Failed to export prices');

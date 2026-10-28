@@ -13,9 +13,9 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { useAuthStore } from '@/store/auth-store';
+import { AUTH_ERROR_EVENT } from '@/lib/web/client';
 
-// Global event for auth errors
-export const AUTH_ERROR_EVENT = 'auth:unauthorized';
+export { AUTH_ERROR_EVENT };
 
 export function AuthErrorDialog() {
   const [open, setOpen] = useState(false);
@@ -33,10 +33,11 @@ export function AuthErrorDialog() {
     };
   }, []);
 
+  // The key stays stored: connecting again replaces it. Sign out deletes it.
   const handleReturnHome = () => {
     clearAuth();
     setOpen(false);
-    router.push('/setup');
+    router.push('/setup?reconnect=1');
   };
 
   return (
@@ -45,16 +46,16 @@ export function AuthErrorDialog() {
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <LogOut className="h-5 w-5 text-muted-foreground" />
-            Session Expired
+            Connect again
           </DialogTitle>
           <DialogDescription>
-            Your session has expired or you are no longer authenticated.
-            Please return to the setup page to reconnect your account.
+            The store didn&apos;t accept the key stored in this browser, or no
+            key is stored here. Connect the store again to continue.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <Button onClick={handleReturnHome} className="w-full">
-            Return to Setup
+            Connect a store
           </Button>
         </DialogFooter>
       </DialogContent>

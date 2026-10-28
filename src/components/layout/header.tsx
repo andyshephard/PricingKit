@@ -6,7 +6,8 @@ import { Loader2, LogOut, RefreshCw, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
-import { DASHBOARD_AUTH_VERIFIED_KEY, useAuthStore } from '@/store/auth-store';
+import { useAuthStore } from '@/store/auth-store';
+import { forgetAllKeys, setOerKey } from '@/lib/web/client';
 import { Breadcrumbs } from './breadcrumbs';
 
 interface HeaderProps {
@@ -19,9 +20,6 @@ interface HeaderProps {
 
 const iconButton =
   'inline-flex size-9 shrink-0 items-center justify-center rounded-full border border-line-strong bg-card text-soft transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50';
-
-/** Every server-side piece of a sign-in: both store sessions and the saved Open Exchange Rates key. */
-const SIGN_OUT_ENDPOINTS = ['/api/auth', '/api/apple/auth', '/api/settings/exchange-rates'] as const;
 
 /**
  * The app screens' top bar: breadcrumb, then the page's search and refresh
@@ -41,25 +39,22 @@ export function Header({
   const clearAuth = useAuthStore((state) => state.clearAuth);
   const [signingOut, setSigningOut] = useState(false);
 
-  // Signing out clears both store sessions and the saved Open Exchange Rates
-  // key (server cookies), then this tab's state. A failed request is reported,
-  // not treated as signed out.
+  // Signing out deletes both store keys from this browser (IndexedDB), the
+  // saved Open Exchange Rates key and the app selection. If the keys can't be
+  // deleted that is reported, never treated as signed out.
   const handleLogout = async () => {
     setSigningOut(true);
-    const results = await Promise.allSettled(SIGN_OUT_ENDPOINTS.map((url) => fetch(url, { method: 'DELETE' })));
-    const failed = results.filter((r) => r.status === 'rejected' || !r.value.ok).length;
     try {
-      sessionStorage.removeItem(DASHBOARD_AUTH_VERIFIED_KEY);
+      await forgetAllKeys();
     } catch {
-      // storage unavailable
+      setSigningOut(false);
+      toast.error("Sign-out failed: this browser could not delete the stored keys. Try again, or clear this site's data in the browser settings.");
+      return;
     }
+    setOerKey(null);
     queryClient.clear();
     clearAuth();
     setSigningOut(false);
-    if (failed > 0) {
-      toast.error('Sign-out may be incomplete: the server did not confirm it. Close the browser or try again.');
-      return;
-    }
     router.push('/setup');
   };
 

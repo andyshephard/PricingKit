@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Upload, FileJson, AlertCircle, Loader2 } from 'lucide-react';
@@ -9,6 +9,9 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuthStore } from '@/store/auth-store';
+import { apiFetch, browserKeys } from '@/lib/web/client';
+import { connectGoogle, ConnectError } from '@/lib/web/connect';
+import { KEY_STAYS_IN_BROWSER } from './key-copy';
 
 interface UploadState {
   isDragging: boolean;
@@ -23,6 +26,7 @@ export function ServiceAccountUpload() {
   const router = useRouter();
   const setGoogleAuthenticated = useAuthStore((state) => state.setGoogleAuthenticated);
   const setPlatform = useAuthStore((state) => state.setPlatform);
+  const fileInput = useRef<HTMLInputElement>(null);
   const [packageName, setPackageName] = useState('');
   const [state, setState] = useState<UploadState>({
     isDragging: false,
@@ -94,63 +98,34 @@ export function ServiceAccountUpload() {
       return;
     }
 
+    // The file is read once, imported as a non-extractable key and dropped:
+    // neither the File nor its text is kept after this
+    const file = state.file;
     setState((prev) => ({
       ...prev,
+      file: null,
       isLoading: true,
       error: null,
       errorHelpHref: null,
       errorHelpText: null,
     }));
+    if (fileInput.current) fileInput.current.value = '';
 
     try {
-      const text = await state.file.text();
-      let credentials: unknown;
-
-      try {
-        credentials = JSON.parse(text);
-      } catch {
-        setState((prev) => ({
-          ...prev,
-          error: 'Invalid JSON file',
-          isLoading: false,
-        }));
-        return;
-      }
-
-      const response = await fetch('/api/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          credentials,
-          packageName: packageName.trim(),
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setState((prev) => ({
-          ...prev,
-          error: data.error || 'Authentication failed',
-          errorHelpHref: data.helpHref ?? null,
-          errorHelpText: data.helpText ?? null,
-          isLoading: false,
-        }));
-        return;
-      }
-
+      const connected = await connectGoogle({ keys: browserKeys(), apiFetch }, { file, packageName: packageName.trim() });
       setGoogleAuthenticated({
-        packageName: packageName.trim(),
-        projectId: data.projectId,
-        clientEmail: data.clientEmail,
+        packageName: connected.packageName,
+        projectId: connected.projectId,
+        clientEmail: connected.clientEmail,
       });
       setPlatform('google');
       router.push('/dashboard');
     } catch (error) {
-      console.error('Upload error:', error);
       setState((prev) => ({
         ...prev,
-        error: 'Failed to upload credentials. Please try again.',
+        error: error instanceof ConnectError ? error.message : 'Failed to connect. Please try again.',
+        errorHelpHref: error instanceof ConnectError ? (error.helpHref ?? null) : null,
+        errorHelpText: error instanceof ConnectError ? (error.helpText ?? null) : null,
         isLoading: false,
       }));
     }
@@ -192,6 +167,7 @@ export function ServiceAccountUpload() {
               `}
             >
               <input
+                ref={fileInput}
                 type="file"
                 accept=".json"
                 onChange={handleFileSelect}
@@ -256,10 +232,7 @@ export function ServiceAccountUpload() {
         </form>
 
         <div className="mt-4 pt-4 border-t">
-          <p className="text-xs text-muted-foreground">
-            Your credentials are sent to this server, encrypted into an HttpOnly
-            cookie, and never stored server-side.
-          </p>
+          <p className="text-xs text-muted-foreground">{KEY_STAYS_IN_BROWSER}</p>
         </div>
       </CardContent>
     </Card>

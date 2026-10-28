@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { Lock } from 'lucide-react';
 import { ServiceAccountUpload } from '@/components/auth/service-account-upload';
 import { AppleConnectUpload } from '@/components/auth/apple-connect-upload';
+import { KEY_STAYS_IN_BROWSER } from '@/components/auth/key-copy';
 import { useAuthStore } from '@/store/auth-store';
 import { Button } from '@/components/ui/button';
 import { SiteHeader } from '@/components/site/site-header';
@@ -49,8 +50,10 @@ export default function SetupPage() {
   const isAppleAuthenticated = useAuthStore((state) => state.isAppleAuthenticated);
   const [activeTab, setActiveTab] = useState<PlatformTab>('apple');
 
+  // Already connected: on to the dashboard, unless sent here to connect again
   useEffect(() => {
-    if (isGoogleAuthenticated || isAppleAuthenticated) {
+    const reconnect = new URLSearchParams(window.location.search).has('reconnect');
+    if (!reconnect && (isGoogleAuthenticated || isAppleAuthenticated)) {
       router.push('/dashboard');
     }
   }, [isGoogleAuthenticated, isAppleAuthenticated, router]);
@@ -117,7 +120,7 @@ export default function SetupPage() {
         <div className="mt-7 flex items-start gap-3 rounded-[14px] border bg-card px-5 py-[18px] text-sm leading-relaxed text-soft">
           <Lock className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />
           <p>
-            Your key is sent to this server, encrypted into a short-lived session cookie, and never stored.{' '}
+            {KEY_STAYS_IN_BROWSER}{' '}
             <Link href={`${DOC_LINKS.security}#how-credentials-are-handled`} className="font-semibold text-link hover:underline">
               How keys are handled
             </Link>

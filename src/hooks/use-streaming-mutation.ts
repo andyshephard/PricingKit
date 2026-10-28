@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, useRef } from 'react';
+import { apiFetch } from '@/lib/web/client';
 
 export interface StreamProgress {
   completed: number;
@@ -31,7 +32,7 @@ export function useStreamingMutation<T = unknown>() {
 
     setState({ isPending: true, progress: null, error: null, data: null });
 
-    const response = await fetch(url, {
+    const response = await apiFetch(url, {
       ...fetchOptions,
       signal: abortController.signal,
     });

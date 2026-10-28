@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/store/auth-store';
 import type { InAppProduct, Money } from '@/lib/google-play/types';
 import type { NormalizedAppleProduct } from '@/lib/apple-connect/types';
+import { apiFetch } from '@/lib/web/client';
 
 // Unified product type that works for both platforms
 export interface PlatformProduct {
@@ -53,7 +54,7 @@ export function usePlatformProducts() {
       }
 
       if (platform === 'google') {
-        const response = await fetch('/api/products');
+        const response = await apiFetch('/api/products');
         if (!response.ok) {
           if (response.status === 401) {
             throw new Error('401: Unauthorized');
@@ -66,7 +67,7 @@ export function usePlatformProducts() {
           products: (data.products || []).map(normalizeGoogleProduct),
         };
       } else {
-        const response = await fetch('/api/apple/products');
+        const response = await apiFetch('/api/apple/products');
         if (!response.ok) {
           if (response.status === 401) {
             throw new Error('401: Unauthorized');
@@ -98,7 +99,7 @@ export function usePlatformProduct(productId: string) {
         ? `/api/products/${encodeURIComponent(productId)}`
         : `/api/apple/products/${encodeURIComponent(productId)}`;
 
-      const response = await fetch(apiPath);
+      const response = await apiFetch(apiPath);
       if (!response.ok) {
         if (response.status === 401) {
           throw new Error('401: Unauthorized');
@@ -141,7 +142,7 @@ export function useUpdatePlatformProductPrices() {
         ? `/api/products/${encodeURIComponent(productId)}`
         : `/api/apple/products/${encodeURIComponent(productId)}`;
 
-      const response = await fetch(apiPath, {
+      const response = await apiFetch(apiPath, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(platform === 'google' ? { prices, defaultPrice } : { prices }),

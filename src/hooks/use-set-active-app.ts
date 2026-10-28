@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/store/auth-store';
+import { apiFetch } from '@/lib/web/client';
 
 type AppleVariables = { platform: 'apple'; bundleId: string };
 type GoogleVariables = { platform: 'google'; packageName: string };
@@ -21,7 +22,7 @@ async function postActiveApp(
       ? { bundleId: variables.bundleId }
       : { packageName: variables.packageName };
 
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

@@ -39,6 +39,7 @@ import {
 import { GOOGLE_PLAY_REGIONS } from '@/lib/google-play/types';
 import { cn } from '@/lib/utils';
 import { ReviewDialog, type ReviewChange } from './review-dialog';
+import { apiFetch } from '@/lib/web/client';
 
 const bulkUpdateFormSchema = z
   .object({
@@ -200,7 +201,7 @@ export function BulkUpdateModal({
   };
 
   const postBulk = async (body: BulkRequestBody & { dryRun?: boolean; expectedPrices?: Record<string, Record<string, string>> }) => {
-    const response = await fetch('/api/bulk', {
+    const response = await apiFetch('/api/bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

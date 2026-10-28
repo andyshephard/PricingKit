@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Upload, Key, AlertCircle, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -14,6 +14,9 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { useAuthStore } from '@/store/auth-store';
+import { apiFetch, browserKeys } from '@/lib/web/client';
+import { connectApple, ConnectError } from '@/lib/web/connect';
+import { KEY_STAYS_IN_BROWSER } from './key-copy';
 
 interface UploadState {
   isDragging: boolean;
@@ -29,6 +32,7 @@ export function AppleConnectUpload() {
   );
   const setPlatform = useAuthStore((state) => state.setPlatform);
 
+  const fileInput = useRef<HTMLInputElement>(null);
   const [keyId, setKeyId] = useState('');
   const [issuerId, setIssuerId] = useState('');
   const [state, setState] = useState<UploadState>({
@@ -102,44 +106,25 @@ export function AppleConnectUpload() {
       return;
     }
 
-    setState((prev) => ({ ...prev, isLoading: true, error: null }));
+    // The file is read once, imported as a non-extractable key and dropped:
+    // neither the File nor its text is kept after this
+    const file = state.file;
+    setState((prev) => ({ ...prev, file: null, isLoading: true, error: null }));
+    if (fileInput.current) fileInput.current.value = '';
 
     try {
-      const privateKey = await state.file.text();
-
-      const response = await fetch('/api/apple/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          privateKey,
-          keyId: keyId.trim(),
-          issuerId: issuerId.trim(),
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setState((prev) => ({
-          ...prev,
-          error: data.error || 'Authentication failed',
-          isLoading: false,
-        }));
-        return;
-      }
-
+      const connected = await connectApple({ keys: browserKeys(), apiFetch }, { file, keyId: keyId.trim(), issuerId: issuerId.trim() });
       setAppleAuthenticated({
         bundleId: null,
-        keyId: keyId.trim(),
-        issuerId: issuerId.trim(),
+        keyId: connected.keyId,
+        issuerId: connected.issuerId,
       });
       setPlatform('apple');
       router.push('/setup/apple/select-app');
     } catch (error) {
-      console.error('Upload error:', error);
       setState((prev) => ({
         ...prev,
-        error: 'Failed to connect. Please check your credentials and try again.',
+        error: error instanceof ConnectError ? error.message : 'Failed to connect. Please try again.',
         isLoading: false,
       }));
     }
@@ -195,6 +180,7 @@ export function AppleConnectUpload() {
               `}
             >
               <input
+                ref={fileInput}
                 type="file"
                 accept=".p8"
                 onChange={handleFileSelect}
@@ -254,10 +240,7 @@ export function AppleConnectUpload() {
         </form>
 
         <div className="mt-4 pt-4 border-t">
-          <p className="text-xs text-muted-foreground">
-            Your API key is sent to this server, encrypted into an HttpOnly
-            cookie, and never stored server-side.
-          </p>
+          <p className="text-xs text-muted-foreground">{KEY_STAYS_IN_BROWSER}</p>
         </div>
       </CardContent>
     </Card>

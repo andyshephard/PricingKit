@@ -7,6 +7,7 @@ import type { AppleProductPrice } from '@/lib/apple-connect/types';
 import { useAuthStore } from '@/store/auth-store';
 import { normalizeAppleSubscriptionList } from '@/lib/base-territory';
 import { useStreamingMutation } from './use-streaming-mutation';
+import { apiFetch } from '@/lib/web/client';
 
 const EMPTY_BASES: Record<string, string> = {};
 
@@ -25,7 +26,7 @@ export function useSubscriptions() {
     queryKey: ['subscriptions', platform],
     queryFn: async () => {
       const url = platform === 'apple' ? '/api/apple/subscriptions' : '/api/subscriptions';
-      const response = await fetch(url);
+      const response = await apiFetch(url);
       if (!response.ok) {
         if (response.status === 401) {
           throw new Error('401: Unauthorized');
@@ -52,7 +53,7 @@ export function useSubscription(productId: string) {
       const url = platform === 'apple'
         ? `/api/apple/subscriptions/${encodeURIComponent(productId)}`
         : `/api/subscriptions/${encodeURIComponent(productId)}`;
-      const response = await fetch(url);
+      const response = await apiFetch(url);
       if (!response.ok) {
         if (response.status === 401) {
           throw new Error('401: Unauthorized');
@@ -114,7 +115,7 @@ export function useUpdateBasePlanPrices(platformOverride?: 'google' | 'apple') {
         ? `/api/apple/subscriptions/${encodeURIComponent(productId)}`
         : `/api/subscriptions/${encodeURIComponent(productId)}`;
 
-      const response = await fetch(url, {
+      const response = await apiFetch(url, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ basePlanId, regionalConfigs }),
@@ -162,7 +163,7 @@ export function useDeleteBasePlanRegionPrice() {
         ? `/api/apple/subscriptions/${encodeURIComponent(productId)}`
         : `/api/subscriptions/${encodeURIComponent(productId)}`;
 
-      const response = await fetch(url, {
+      const response = await apiFetch(url, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ basePlanId, regionCode }),
@@ -202,7 +203,7 @@ export function useSubscriptionPricePoints(subscriptionId: string, territoryCode
   return useQuery<{ pricePoints: SubscriptionPricePoint[] }>({
     queryKey: ['apple', 'subscriptions', subscriptionId, 'pricePoints', territoryCode],
     queryFn: async () => {
-      const response = await fetch(
+      const response = await apiFetch(
         `/api/apple/subscriptions/${encodeURIComponent(subscriptionId)}/price-points?territory=${encodeURIComponent(territoryCode)}`
       );
       if (!response.ok) {
@@ -346,7 +347,7 @@ export function useDeleteAppleSubscriptionPrice() {
       subscriptionId: string;
       subscriptionPriceId: string;
     }) => {
-      const response = await fetch(
+      const response = await apiFetch(
         `/api/apple/subscriptions/${encodeURIComponent(subscriptionId)}`,
         {
           method: 'DELETE',

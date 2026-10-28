@@ -10,6 +10,7 @@ import { Header } from '@/components/layout';
 import { PricingEditor } from '@/components/products/pricing-editor';
 import { formatMoney, parseMoney, type InAppProduct, type Money } from '@/lib/google-play/types';
 import type { AppleProductPrice } from '@/lib/apple-connect/types';
+import { apiFetch } from '@/lib/web/client';
 
 interface AppPriceResponse {
   prices: Record<string, AppleProductPrice>;
@@ -23,7 +24,7 @@ export default function AppleAppPricePage() {
   const { data, isLoading, error, refetch, isRefetching } = useQuery<AppPriceResponse>({
     queryKey: ['apple', 'app-price'],
     queryFn: async () => {
-      const response = await fetch('/api/apple/app-price');
+      const response = await apiFetch('/api/apple/app-price');
       if (!response.ok) {
         if (response.status === 401) {
           throw new Error('401: Unauthorized');
@@ -66,7 +67,7 @@ export default function AppleAppPricePage() {
       : null;
 
   const handleSave = useCallback(async (prices: Record<string, Money>) => {
-    const response = await fetch('/api/apple/app-price', {
+    const response = await apiFetch('/api/apple/app-price', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { PageHeader, pageClass, useAppContextLabel } from '@/components/layout/page-header';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Header } from '@/components/layout';
+import { apiFetch } from '@/lib/web/client';
 
 interface StatsResponse {
   products: {
@@ -59,8 +60,8 @@ export default function GoogleDashboardPage() {
     queryKey: ['stats', 'google'],
     queryFn: async () => {
       const [productsRes, subscriptionsRes] = await Promise.all([
-        fetch('/api/products'),
-        fetch('/api/subscriptions'),
+        apiFetch('/api/products'),
+        apiFetch('/api/subscriptions'),
       ]);
 
       const products = productsRes.ok ? await productsRes.json() : { products: [] };

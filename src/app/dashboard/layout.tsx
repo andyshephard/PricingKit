@@ -2,16 +2,21 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { Sidebar, Footer } from '@/components/layout';
-import { DASHBOARD_AUTH_VERIFIED_KEY, useAuthStore, useHasHydrated } from '@/store/auth-store';
+import { useAuthStore, useHasHydrated } from '@/store/auth-store';
 import { isPlatformRoute } from '@/lib/utils/platform-routes';
+import { browserKeys } from '@/lib/web/client';
+import type { KeyInfo } from '@/lib/browser-keys';
 
-const AUTH_VERIFIED_KEY = DASHBOARD_AUTH_VERIFIED_KEY;
-
-let prevBundleId: string | null = null;
-let prevPackageName: string | null = null;
+/** The stored key's ids for a platform, or null (none stored, or storage unavailable) */
+async function storedKey(platform: 'apple' | 'google'): Promise<KeyInfo | null> {
+  try {
+    return await browserKeys().info(platform);
+  } catch {
+    return null;
+  }
+}
 
 export default function DashboardLayout({
   children,
@@ -20,110 +25,54 @@ export default function DashboardLayout({
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  const queryClient = useQueryClient();
   const hasHydrated = useHasHydrated();
-  const clearAuth = useAuthStore((state) => state.clearAuth);
-  const setGoogleAuthenticated = useAuthStore(
-    (state) => state.setGoogleAuthenticated
-  );
-  const setAppleAuthenticated = useAuthStore(
-    (state) => state.setAppleAuthenticated
-  );
   const [isVerifying, setIsVerifying] = useState(true);
 
+  // The gate is client-side: the dashboard opens when this browser holds a
+  // store key (IndexedDB). There is no server session to check; every API
+  // call carries a fresh token, and the store refuses a bad one.
   useEffect(() => {
     if (!hasHydrated) return;
-
-    // Check sessionStorage for prior verification (survives HMR, resets on full reload)
-    if (typeof window !== 'undefined' && sessionStorage.getItem(AUTH_VERIFIED_KEY) === 'true') {
-      setIsVerifying(false);
-      return;
-    }
-
     let cancelled = false;
 
-    // Verify auth with server on mount
     (async () => {
-      try {
-        // Check both platforms in parallel
-        const [googleResponse, appleResponse] = await Promise.all([
-          fetch('/api/auth'),
-          fetch('/api/apple/auth'),
-        ]);
+      const [apple, google] = await Promise.all([storedKey('apple'), storedKey('google')]);
+      if (cancelled) return;
+      const store = useAuthStore.getState();
 
-        const [googleData, appleData] = await Promise.all([
-          googleResponse.json(),
-          appleResponse.json(),
-        ]);
-
-        if (cancelled) return;
-
-        let hasValidAuth = false;
-
-        // Sync Google auth state
-        if (googleData.authenticated) {
-          // Invalidate queries if packageName changed (prevents stale data)
-          if (prevPackageName && prevPackageName !== googleData.packageName) {
-            queryClient.invalidateQueries();
-          }
-          prevPackageName = googleData.packageName;
-          setGoogleAuthenticated({
-            packageName: googleData.packageName,
-            projectId: googleData.projectId,
-            clientEmail: googleData.clientEmail,
-          });
-          hasValidAuth = true;
-        }
-
-        // Sync Apple auth state
-        if (appleData.authenticated) {
-          // Invalidate queries if bundleId changed (prevents stale data)
-          if (prevBundleId && prevBundleId !== appleData.bundleId) {
-            queryClient.invalidateQueries();
-          }
-          prevBundleId = appleData.bundleId ?? null;
-          setAppleAuthenticated({
-            bundleId: appleData.bundleId ?? null,
-            keyId: appleData.keyId ?? '',
-            issuerId: appleData.issuerId ?? '',
-          });
-          hasValidAuth = true;
-
-          // Authenticated but no app picked yet → force the selector
-          if (!appleData.bundleId) {
-            if (typeof window !== 'undefined') {
-              sessionStorage.removeItem(AUTH_VERIFIED_KEY);
-            }
-            router.replace('/setup/apple/select-app');
-            return;
-          }
-        }
-
-        if (hasValidAuth) {
-          if (typeof window !== 'undefined') {
-            sessionStorage.setItem(AUTH_VERIFIED_KEY, 'true');
-          }
-          setIsVerifying(false);
-        } else {
-          // No valid auth - clear client state and redirect
-          console.log('No valid authentication, redirecting to home');
-          clearAuth();
-          router.push('/setup');
-        }
-      } catch (error) {
-        console.error('Auth verification failed:', error);
-        if (!cancelled) {
-          clearAuth();
-          router.push('/');
-        }
+      let hasGoogle = false;
+      if (google?.platform === 'google' && store.packageName) {
+        store.setGoogleAuthenticated({ packageName: store.packageName, projectId: google.projectId, clientEmail: google.clientEmail });
+        hasGoogle = true;
+      } else if (store.isGoogleAuthenticated) {
+        store.clearGoogleAuth();
       }
+
+      let hasApple = false;
+      if (apple?.platform === 'apple') {
+        store.setAppleAuthenticated({ bundleId: store.bundleId, keyId: apple.keyId, issuerId: apple.issuerId });
+        hasApple = true;
+      } else if (store.isAppleAuthenticated) {
+        store.clearAppleAuth();
+      }
+
+      if (!hasGoogle && !hasApple) {
+        useAuthStore.getState().clearAuth();
+        router.push('/setup');
+        return;
+      }
+      // An Apple key but no app picked yet: the selector first
+      if (hasApple && !useAuthStore.getState().bundleId && (useAuthStore.getState().platform === 'apple' || !hasGoogle)) {
+        router.replace('/setup/apple/select-app');
+        return;
+      }
+      setIsVerifying(false);
     })();
 
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasHydrated]);
+  }, [hasHydrated, router]);
 
   if (!hasHydrated || isVerifying) {
     return (

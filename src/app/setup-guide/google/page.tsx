@@ -453,19 +453,19 @@ export default function SetupGuidePage() {
               <ul className="space-y-2 text-sm text-muted-foreground">
                 <li className="flex items-start gap-2">
                   <CheckCircle2 className="h-4 w-4 text-success-foreground mt-0.5 flex-shrink-0" />
-                  Your service account JSON is never stored on our servers
+                  Your service account key stays in your browser and is never sent to PricingKit&apos;s server
                 </li>
                 <li className="flex items-start gap-2">
                   <CheckCircle2 className="h-4 w-4 text-success-foreground mt-0.5 flex-shrink-0" />
-                  Credentials are encrypted into an HttpOnly session cookie and used in memory per request
+                  Your browser mints a 1-hour Google access token itself; the server only receives that token
                 </li>
                 <li className="flex items-start gap-2">
                   <CheckCircle2 className="h-4 w-4 text-success-foreground mt-0.5 flex-shrink-0" />
-                  Sessions automatically expire after 24 hours
+                  The key is kept in this browser until you sign out
                 </li>
                 <li className="flex items-start gap-2">
                   <CheckCircle2 className="h-4 w-4 text-success-foreground mt-0.5 flex-shrink-0" />
-                  You can disconnect at any time from Settings
+                  You can forget the key at any time from Settings
                 </li>
               </ul>
             </CardContent>

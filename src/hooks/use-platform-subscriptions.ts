@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/store/auth-store';
 import type { Subscription, RegionalBasePlanConfig } from '@/lib/google-play/types';
 import type { NormalizedAppleSubscription } from '@/lib/apple-connect/types';
+import { apiFetch } from '@/lib/web/client';
 
 // Unified subscription type that works for both platforms
 export interface PlatformSubscription {
@@ -72,7 +73,7 @@ export function usePlatformSubscriptions() {
       }
 
       if (platform === 'google') {
-        const response = await fetch('/api/subscriptions');
+        const response = await apiFetch('/api/subscriptions');
         if (!response.ok) {
           if (response.status === 401) {
             throw new Error('401: Unauthorized');
@@ -85,7 +86,7 @@ export function usePlatformSubscriptions() {
           subscriptions: (data.subscriptions || []).map(normalizeGoogleSubscription),
         };
       } else {
-        const response = await fetch('/api/apple/subscriptions');
+        const response = await apiFetch('/api/apple/subscriptions');
         if (!response.ok) {
           if (response.status === 401) {
             throw new Error('401: Unauthorized');
@@ -117,7 +118,7 @@ export function usePlatformSubscription(productId: string) {
         ? `/api/subscriptions/${encodeURIComponent(productId)}`
         : `/api/apple/subscriptions/${encodeURIComponent(productId)}`;
 
-      const response = await fetch(apiPath);
+      const response = await apiFetch(apiPath);
       if (!response.ok) {
         if (response.status === 401) {
           throw new Error('401: Unauthorized');
@@ -168,7 +169,7 @@ export function useUpdatePlatformSubscriptionPrices() {
         ? { basePlanId, regionalConfigs }
         : { prices };
 
-      const response = await fetch(apiPath, {
+      const response = await apiFetch(apiPath, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

@@ -12,6 +12,7 @@ import { useAuthStore } from '@/store/auth-store';
 import { normalizeAppleSubscriptionList } from '@/lib/base-territory';
 import { parseMoney } from '@/lib/google-play/types';
 import type { SubscriptionsListResponse } from '@/types/api';
+import { apiFetch } from '@/lib/web/client';
 
 const EMPTY_BASES: Record<string, string> = {};
 
@@ -29,7 +30,7 @@ export default function AppleSubscriptionsPage() {
   const { data, isLoading, refetch, isRefetching, error } = useQuery<SubscriptionsListResponse>({
     queryKey: ['subscriptions', 'apple'],
     queryFn: async () => {
-      const response = await fetch('/api/apple/subscriptions');
+      const response = await apiFetch('/api/apple/subscriptions');
       if (!response.ok) {
         if (response.status === 401) {
           throw new Error('401: Unauthorized');

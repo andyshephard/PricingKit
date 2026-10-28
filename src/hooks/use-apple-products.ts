@@ -1,11 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { NormalizedAppleProduct } from '@/lib/apple-connect/types';
+import { apiFetch } from '@/lib/web/client';
 
 export function useAppleProducts() {
   return useQuery<{ products: NormalizedAppleProduct[] }>({
     queryKey: ['apple', 'products'],
     queryFn: async () => {
-      const response = await fetch('/api/apple/products');
+      const response = await apiFetch('/api/apple/products');
       if (!response.ok) {
         if (response.status === 401) {
           throw new Error('401: Unauthorized');
@@ -22,7 +23,7 @@ export function useAppleProduct(productId: string) {
   return useQuery<{ product: NormalizedAppleProduct }>({
     queryKey: ['apple', 'products', productId],
     queryFn: async () => {
-      const response = await fetch(
+      const response = await apiFetch(
         `/api/apple/products/${encodeURIComponent(productId)}`
       );
       if (!response.ok) {
@@ -49,7 +50,7 @@ export function useUpdateAppleProductPrices() {
       productId: string;
       prices: Record<string, { pricePointId: string; startDate?: string }>;
     }) => {
-      const response = await fetch(
+      const response = await apiFetch(
         `/api/apple/products/${encodeURIComponent(productId)}`,
         {
           method: 'PATCH',

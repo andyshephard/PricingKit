@@ -2,9 +2,6 @@ import { useState, useEffect } from 'react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-/** sessionStorage flag: the dashboard verified the session with the server in this tab (cleared on sign-out) */
-export const DASHBOARD_AUTH_VERIFIED_KEY = 'dashboard-auth-verified';
-
 export type Platform = 'google' | 'apple' | null;
 
 interface GoogleAuthData {

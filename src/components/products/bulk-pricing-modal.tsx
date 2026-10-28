@@ -66,6 +66,7 @@ import {
   type DynamicExchangeRates,
 } from '@/lib/pricing';
 import { useUpdateProductPrices } from '@/hooks/use-products';
+import { apiFetch } from '@/lib/web/client';
 
 // Re-exported from shared util for backwards compatibility within this module.
 const getCurrencySymbol = sharedGetCurrencySymbol;
@@ -306,7 +307,7 @@ export function BulkPricingModal({
     setPppLoading(true);
     try {
       const url = forceRefresh ? '/api/ppp?refresh=true' : '/api/ppp';
-      const response = await fetch(url);
+      const response = await apiFetch(url);
       const data: PPPApiResponse = await response.json();
 
       if (data.success) {
@@ -326,7 +327,7 @@ export function BulkPricingModal({
     setExchangeRatesLoading(true);
     try {
       const url = forceRefresh ? '/api/exchange-rates?refresh=true' : '/api/exchange-rates';
-      const response = await fetch(url);
+      const response = await apiFetch(url);
       const data: ExchangeRatesApiResponse = await response.json();
 
       if (data.success) {

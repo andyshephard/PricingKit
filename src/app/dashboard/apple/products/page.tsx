@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { useSelectionStore } from '@/store/selection-store';
 import { parseMoney } from '@/lib/google-play/types';
 import type { RawAppleProduct, ProductsListResponse } from '@/types/api';
+import { apiFetch } from '@/lib/web/client';
 
 export default function AppleProductsPage() {
   const context = useAppContextLabel('apple');
@@ -18,7 +19,7 @@ export default function AppleProductsPage() {
   const { data, isLoading, refetch, isRefetching, error } = useQuery<ProductsListResponse>({
     queryKey: ['products', 'apple'],
     queryFn: async () => {
-      const response = await fetch('/api/apple/products');
+      const response = await apiFetch('/api/apple/products');
       if (!response.ok) {
         if (response.status === 401) {
           throw new Error('401: Unauthorized');

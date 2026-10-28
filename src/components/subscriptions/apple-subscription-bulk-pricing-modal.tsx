@@ -68,6 +68,7 @@ import {
   type DynamicExchangeRates,
 } from '@/lib/pricing';
 import { useUpdateAppleSubscriptionPrices, useResolveAppleSubscriptionPricePoints } from '@/hooks/use-subscriptions';
+import { apiFetch } from '@/lib/web/client';
 
 // Format price with currency
 function formatPrice(price: string | number, currency: string): string {
@@ -282,7 +283,7 @@ export function AppleSubscriptionBulkPricingModal({
     setPppLoading(true);
     try {
       const url = forceRefresh ? '/api/ppp?refresh=true' : '/api/ppp';
-      const response = await fetch(url);
+      const response = await apiFetch(url);
       const data: PPPApiResponse = await response.json();
 
       if (data.success) {
@@ -302,7 +303,7 @@ export function AppleSubscriptionBulkPricingModal({
     setExchangeRatesLoading(true);
     try {
       const url = forceRefresh ? '/api/exchange-rates?refresh=true' : '/api/exchange-rates';
-      const response = await fetch(url);
+      const response = await apiFetch(url);
       const data: ExchangeRatesApiResponse = await response.json();
 
       if (data.success) {

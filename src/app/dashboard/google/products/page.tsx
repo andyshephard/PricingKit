@@ -10,6 +10,7 @@ import { BulkUpdateModal } from '@/components/pricing/bulk-update-modal';
 import { Button } from '@/components/ui/button';
 import { useSelectionStore } from '@/store/selection-store';
 import type { ProductsListResponse } from '@/types/api';
+import { apiFetch } from '@/lib/web/client';
 
 export default function GoogleProductsPage() {
   const context = useAppContextLabel('google');
@@ -19,7 +20,7 @@ export default function GoogleProductsPage() {
   const { data, isLoading, refetch, isRefetching, error } = useQuery<ProductsListResponse>({
     queryKey: ['products', 'google'],
     queryFn: async () => {
-      const response = await fetch('/api/products');
+      const response = await apiFetch('/api/products');
       if (!response.ok) {
         if (response.status === 401) {
           throw new Error('401: Unauthorized');

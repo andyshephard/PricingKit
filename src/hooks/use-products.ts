@@ -3,6 +3,7 @@ import type { Money } from '@/lib/google-play/types';
 import { parseMoney } from '@/lib/google-play/types';
 import type { RawAppleProduct, ProductsListResponse, ProductResponse } from '@/types/api';
 import { useAuthStore } from '@/store/auth-store';
+import { apiFetch } from '@/lib/web/client';
 
 export function useProducts() {
   const platform = useAuthStore((state) => state.platform);
@@ -12,7 +13,7 @@ export function useProducts() {
     queryFn: async () => {
       // Use platform-specific API
       const url = platform === 'apple' ? '/api/apple/products' : '/api/products';
-      const response = await fetch(url);
+      const response = await apiFetch(url);
       if (!response.ok) {
         if (response.status === 401) {
           throw new Error('401: Unauthorized');
@@ -60,7 +61,7 @@ export function useProduct(sku: string) {
       const url = platform === 'apple'
         ? `/api/apple/products/${encodeURIComponent(sku)}`
         : `/api/products/${encodeURIComponent(sku)}`;
-      const response = await fetch(url);
+      const response = await apiFetch(url);
       if (!response.ok) {
         if (response.status === 401) {
           throw new Error('401: Unauthorized');
@@ -118,7 +119,7 @@ export function useUpdateProductPrices(platformOverride?: 'google' | 'apple') {
         ? `/api/apple/products/${encodeURIComponent(sku)}`
         : `/api/products/${encodeURIComponent(sku)}`;
 
-      const response = await fetch(url, {
+      const response = await apiFetch(url, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prices, defaultPrice }),
@@ -156,7 +157,7 @@ export function useDeleteRegionPrice(platformOverride?: 'google' | 'apple') {
         ? `/api/apple/products/${encodeURIComponent(sku)}`
         : `/api/products/${encodeURIComponent(sku)}`;
 
-      const response = await fetch(url, {
+      const response = await apiFetch(url, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ regionCode }),

@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ApplyRun, ChangeSet, OfferPlanEntry, OpStatus, StoreOffer } from '@/lib/pricing';
+import { apiFetch } from '@/lib/web/client';
 
 async function getJson<T>(url: string, fallback: string): Promise<T> {
-  const response = await fetch(url);
+  const response = await apiFetch(url);
   if (!response.ok) {
     if (response.status === 401) throw new Error('401: Unauthorized');
     const body = await response.json().catch(() => ({}));
@@ -23,7 +24,7 @@ export function useAppleSubscriptionOffers(subscriptionId: string | undefined) {
 }
 
 async function postJson<T>(url: string, body: unknown, fallback: string): Promise<T> {
-  const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const response = await apiFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!response.ok) {
     if (response.status === 401) throw new Error('401: Unauthorized');
     const data = await response.json().catch(() => ({}));

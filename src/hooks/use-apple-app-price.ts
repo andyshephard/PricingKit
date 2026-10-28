@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { AppleProductPrice } from '@/lib/apple-connect/types';
+import { apiFetch } from '@/lib/web/client';
 
 interface AppPriceData {
   prices: Record<string, AppleProductPrice>;
@@ -11,7 +12,7 @@ export function useAppleAppPrice() {
   return useQuery<AppPriceData>({
     queryKey: ['apple', 'app-price'],
     queryFn: async () => {
-      const response = await fetch('/api/apple/app-price');
+      const response = await apiFetch('/api/apple/app-price');
       if (!response.ok) {
         if (response.status === 401) {
           throw new Error('401: Unauthorized');
@@ -35,7 +36,7 @@ export function useUpdateAppleAppPrice() {
       prices: Record<string, { pricePointId: string } | { currencyCode: string; units: string; nanos?: number }>;
       baseTerritoryId?: string;
     }) => {
-      const response = await fetch('/api/apple/app-price', {
+      const response = await apiFetch('/api/apple/app-price', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prices, baseTerritoryId }),

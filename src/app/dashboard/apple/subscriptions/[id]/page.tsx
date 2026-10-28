@@ -16,6 +16,7 @@ import { AppleSubscriptionOffers } from '@/components/subscriptions/apple-subscr
 import { ExportPricesButton } from '@/components/pricing/export-prices-button';
 import { formatMoney, parseMoney } from '@/lib/google-play/types';
 import type { AppleProductPrice } from '@/lib/apple-connect/types';
+import { apiFetch } from '@/lib/web/client';
 
 interface AppleSubscriptionResponse {
   subscription: {
@@ -65,7 +66,7 @@ export default function AppleSubscriptionDetailPage({
     useQuery<AppleSubscriptionResponse | null>({
       queryKey: ['subscriptions', 'apple', decodedId],
       queryFn: async () => {
-        const response = await fetch(
+        const response = await apiFetch(
           `/api/apple/subscriptions/${encodeURIComponent(decodedId)}`
         );
         if (!response.ok) {
