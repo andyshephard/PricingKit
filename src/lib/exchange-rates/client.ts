@@ -1,6 +1,8 @@
 // Open Exchange Rates API client with caching
 // API Documentation: https://docs.openexchangerates.org/
 
+import { AttemptLimiter } from '../utils/attempt-limiter';
+
 const API_BASE_URL = 'https://openexchangerates.org/api';
 const CACHE_DURATION_MS = 6 * 60 * 60 * 1000; // 6 hours (free tier updates hourly)
 
@@ -42,11 +44,31 @@ export const FAILURE_CACHE_MS = 5 * 60 * 1000;
 export const FETCH_TIMEOUT_MS = 10_000;
 const SHARED_CACHE_URL = 'https://pricingkit.invalid/cache/exchange-rates/v1';
 
-/** Test-only: forget every cached result, failure and in-flight request */
+/**
+ * Upstream requests with users' own keys, per isolate: a user key can be any
+ * caller's (the header isn't authenticated), so this server can't be used as
+ * an unlimited Open Exchange Rates proxy. Over the limit, cached operator
+ * data is served instead (or the request fails when there is none).
+ */
+export const USER_KEY_FETCHES_PER_MINUTE = 20;
+function userKeyLimiter(): AttemptLimiter {
+  return new AttemptLimiter({ limit: USER_KEY_FETCHES_PER_MINUTE, globalLimit: USER_KEY_FETCHES_PER_MINUTE, windowMs: 60_000 });
+}
+let userKeyFetches = userKeyLimiter();
+
+export class UserKeyRateLimitedError extends Error {
+  constructor() {
+    super('Too many exchange-rate requests with a personal key. Try again in a minute.');
+    this.name = 'UserKeyRateLimitedError';
+  }
+}
+
+/** Test-only: forget every cached result, failure and in-flight request, and the user-key limit */
 export function resetExchangeRatesCacheForTests(): void {
   memoryCache = null;
   inFlight = null;
   lastFailure = null;
+  userKeyFetches = userKeyLimiter();
 }
 
 /**
@@ -217,15 +239,22 @@ async function fetchWithOperatorKey(): Promise<ExchangeRatesData> {
 }
 
 /**
- * One upstream request with a user's own key (saved in Settings). Never
- * shares a promise with other requests and never touches the operator key's
- * failure memory: a bogus user key can't make other visitors' requests fail.
+ * One upstream request with a user's own key (kept in their browser, sent in
+ * X-PK-OER-Key). Its result goes to that caller only: it never fills the
+ * memory, platform or disk caches, so data fetched with a key anyone can
+ * send never reaches other visitors. It never shares a promise with other
+ * requests or touches the operator key's failure memory either. Limited per
+ * isolate (USER_KEY_FETCHES_PER_MINUTE); over the limit, cached operator
+ * data is served.
  */
 async function fetchWithUserKey(apiKey: string): Promise<ExchangeRatesData> {
+  if (!userKeyFetches.attempt(undefined).allowed) {
+    const stale = await staleCached();
+    if (stale) return stale;
+    throw new UserKeyRateLimitedError();
+  }
   try {
-    const fresh = await fetchFromApi(apiKey);
-    await store(fresh);
-    return fresh;
+    return await fetchFromApi(apiKey);
   } catch (error) {
     const stale = await staleCached();
     if (stale) return stale;
@@ -236,8 +265,9 @@ async function fetchWithUserKey(apiKey: string): Promise<ExchangeRatesData> {
 /**
  * Exchange rates, from a cache when one is fresh (6 hours).
  *
- * With the user's own key (`apiKey`, saved in Settings) a miss, or a
- * `forceRefresh`, goes upstream with that key, on its own. Otherwise the
+ * With the user's own key (`apiKey`, from X-PK-OER-Key) a miss, or a
+ * `forceRefresh`, goes upstream with that key, on its own and rate limited,
+ * and the result is returned to that caller without being cached. Otherwise the
  * operator's key (OPEN_EXCHANGE_RATES_APP_ID) is used: concurrent misses
  * share one upstream request, and after a failure no request is sent for 5
  * minutes (stale data, if any, is served meanwhile; else the same error).

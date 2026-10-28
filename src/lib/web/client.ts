@@ -3,13 +3,42 @@
 
 import { BrowserKeys, type KeyPlatform } from '@/lib/browser-keys';
 import { useAuthStore } from '@/store/auth-store';
-import { createApiFetch, type ApiFetchInit } from './api-fetch';
+import { createApiFetch, type ApiFetch, type ApiFetchDeps, type ApiFetchInit, type TokenProvider } from './api-fetch';
+import type { ConnectDeps } from './connect';
+import { connectKeyChannel, openKeyChannel } from './key-channel';
 
 let keys: BrowserKeys | null = null;
 
-/** The browser's store keys (IndexedDB). One instance per page, so tokens are shared. */
+/** Another tab forgot a key or signed out: this tab follows */
+function otherTabSignedOut(platform: KeyPlatform | 'all'): void {
+  const store = useAuthStore.getState();
+  if (platform === 'all') store.clearAuth();
+  else if (platform === 'apple') store.clearAppleAuth();
+  else store.clearGoogleAuth();
+  if (typeof window === 'undefined') return;
+  const path = window.location.pathname;
+  const inApp = path.startsWith('/dashboard') || path.startsWith('/setup/apple');
+  const { isAppleAuthenticated, isGoogleAuthenticated } = useAuthStore.getState();
+  if (!inApp) return;
+  // A full page load on purpose: it also drops this tab's cached store data (React Query)
+  // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+  if (!isAppleAuthenticated && !isGoogleAuthenticated) window.location.assign('/setup');
+  // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+  else if (platform !== 'all' && path.startsWith(`/dashboard/${platform}`)) window.location.assign('/dashboard');
+}
+
+/**
+ * The browser's store keys (IndexedDB). One instance per page, so tokens are
+ * shared; other tabs hear about saves and forgets (key-channel.ts).
+ */
 export function browserKeys(): BrowserKeys {
-  if (!keys) keys = new BrowserKeys();
+  if (!keys) {
+    const onChange = connectKeyChannel(openKeyChannel(), {
+      dropCached: (platform) => keys?.dropCached(platform),
+      signedOut: otherTabSignedOut,
+    });
+    keys = new BrowserKeys({ onChange });
+  }
   return keys;
 }
 
@@ -57,8 +86,7 @@ function onAuthFailure(platform: KeyPlatform): void {
   window.dispatchEvent(new CustomEvent(AUTH_ERROR_EVENT, { detail: { platform } }));
 }
 
-const fetchWithKeys = createApiFetch({
-  keys: browserKeys,
+const baseDeps: Omit<ApiFetchDeps, 'keys'> = {
   fetch: (input, init) => fetch(input, init),
   activeApp: (platform) => {
     const state = useAuthStore.getState();
@@ -67,7 +95,19 @@ const fetchWithKeys = createApiFetch({
   activePlatform: () => useAuthStore.getState().platform,
   oerKey: getOerKey,
   onAuthFailure,
-});
+};
+
+const fetchWithKeys = createApiFetch({ ...baseDeps, keys: browserKeys });
+
+/** An apiFetch signing with other keys (a staged key being proved); never opens the Connect prompt */
+export function apiFetchWith(keys: TokenProvider): ApiFetch {
+  return createApiFetch({ ...baseDeps, keys: () => keys, onAuthFailure: () => {} });
+}
+
+/** What the connect flow needs: the real key store, and apiFetch for a staged key */
+export function connectDeps(): ConnectDeps {
+  return { keys: browserKeys(), apiFetchWith };
+}
 
 /** fetch() for this app's /api routes, with the headers each route needs (see api-fetch.ts) */
 export function apiFetch(input: string, init?: ApiFetchInit): Promise<Response> {

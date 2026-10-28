@@ -10,7 +10,7 @@ vi.mock('fs/promises', () => ({
   writeFile: vi.fn(async () => {}),
 }));
 
-import { FAILURE_CACHE_MS, getExchangeRates, NoApiKeyError, resetExchangeRatesCacheForTests } from '../client';
+import { FAILURE_CACHE_MS, getExchangeRates, NoApiKeyError, resetExchangeRatesCacheForTests, USER_KEY_FETCHES_PER_MINUTE, UserKeyRateLimitedError } from '../client';
 
 const NOW = new Date('2030-06-01T00:00:00Z');
 const ratesBody = () => new Response(JSON.stringify({ disclaimer: '', license: '', timestamp: 1, base: 'USD', rates: { USD: 1, EUR: 0.9 } }));
@@ -80,6 +80,28 @@ describe('getExchangeRates', () => {
     await getExchangeRates(true, 'userkey00000000');
     await getExchangeRates(true, 'userkey00000000');
     expect(fetchMock.mock.calls.map(keyOf)).toEqual(['operatorkey0000', 'userkey00000000', 'userkey00000000']);
+  });
+
+  it("a user-key result is never cached for other visitors", async () => {
+    vi.stubEnv('OPEN_EXCHANGE_RATES_APP_ID', '');
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ disclaimer: '', license: '', timestamp: 1, base: 'USD', rates: { USD: 1, EUR: 0.5 } })));
+    await expect(getExchangeRates(false, 'userkey00000000')).resolves.toMatchObject({ rates: { EUR: 0.5 } });
+    // The next anonymous visitor gets nothing from it
+    await expect(getExchangeRates()).rejects.toBeInstanceOf(NoApiKeyError);
+    // And the same user key goes upstream again (no per-key cache either)
+    await getExchangeRates(false, 'userkey00000000');
+    expect(fetchMock.mock.calls.map(keyOf)).toEqual(['userkey00000000', 'userkey00000000']);
+  });
+
+  it('limits user-key upstream requests per isolate, serving cached operator data over the limit', async () => {
+    await getExchangeRates(); // operator data cached
+    for (let i = 0; i < USER_KEY_FETCHES_PER_MINUTE; i++) await getExchangeRates(true, 'userkey00000000');
+    await expect(getExchangeRates(true, 'userkey00000000')).resolves.toMatchObject({ base: 'USD' });
+    expect(fetchMock).toHaveBeenCalledTimes(1 + USER_KEY_FETCHES_PER_MINUTE);
+
+    resetExchangeRatesCacheForTests();
+    for (let i = 0; i < USER_KEY_FETCHES_PER_MINUTE; i++) await getExchangeRates(true, 'userkey00000000');
+    await expect(getExchangeRates(true, 'userkey00000000')).rejects.toBeInstanceOf(UserKeyRateLimitedError);
   });
 
   it('without any key, fails without contacting anyone (and not remembered as an upstream failure)', async () => {

@@ -56,8 +56,11 @@ function setup(responses: Array<(sent: Sent) => Response>, overrides: Partial<Ap
 }
 
 const ok = () => Response.json({ ok: true });
+/** A 401 from the server's own auth check (marked as a precheck) */
 const unauthorized = (code: string, date?: string) => () =>
-  Response.json({ error: 'no', code }, { status: 401, headers: date ? { Date: date } : {} });
+  Response.json({ error: 'no', code, stage: 'precheck' }, { status: 401, headers: { 'X-PK-Auth-Stage': 'precheck', ...(date ? { Date: date } : {}) } });
+/** A 401 the store gave after the route started (no precheck marker), whatever its code */
+const storeRefused = (code = 'STORE_REFUSED_TOKEN') => () => Response.json({ error: 'no', code }, { status: 401 });
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -136,7 +139,7 @@ describe('apiFetch headers', () => {
 
 describe('apiFetch on 401', () => {
   it('retries a read once with a new token, passing the refused one as rejected', async () => {
-    const { apiFetch, sent, keys, onAuthFailure } = setup([unauthorized('NOT_AUTHORIZED'), ok]);
+    const { apiFetch, sent, keys, onAuthFailure } = setup([storeRefused(), ok]);
     const response = await apiFetch('/api/apple/products');
     expect(response.status).toBe(200);
     expect(sent.map((s) => s.headers.get('x-pk-apple-token'))).toEqual(['apple-1', 'apple-2']);
@@ -169,11 +172,31 @@ describe('apiFetch on 401', () => {
     expect(preCheck.sent[1].body).toBe('{"a":1}');
 
     // Refused by the store after the route started: not replayed, Connect prompt
-    const upstream = setup([unauthorized('NOT_AUTHORIZED')]);
+    const upstream = setup([storeRefused()]);
     const refused = await upstream.apiFetch('/api/apple/subscriptions/1/offers/apply', { method: 'POST', body: '{}' });
     expect(refused.status).toBe(401);
     expect(upstream.sent).toHaveLength(1);
     expect(upstream.onAuthFailure).toHaveBeenCalledWith('apple');
+  });
+
+  it('never retries a write on an unmarked 401, even one whose code looks like a precheck code', async () => {
+    for (const code of ['INVALID_TOKEN', 'TOKEN_TOO_SHORT', 'NOT_AUTHENTICATED']) {
+      const { apiFetch, sent, onAuthFailure } = setup([storeRefused(code), ok]);
+      const response = await apiFetch('/api/apple/app-price', { method: 'PATCH', body: '{}' });
+      expect(response.status).toBe(401);
+      expect(sent).toHaveLength(1);
+      expect(onAuthFailure).toHaveBeenCalledWith('apple');
+    }
+  });
+
+  it('CLOCK_SKEW: corrects the clock from Date and retries, writes included', async () => {
+    const serverBehind = new Date(NOW - 10 * 60 * 1000).toUTCString();
+    const { apiFetch, sent, keys } = setup([unauthorized('CLOCK_SKEW', serverBehind), ok]);
+    const response = await apiFetch('/api/apple/subscriptions/1/offers/apply', { method: 'POST', body: '{}' });
+    expect(response.status).toBe(200);
+    expect(keys.offsets).toEqual([-10 * 60 * 1000]);
+    expect(sent).toHaveLength(2);
+    expect(keys.calls[1].options).toMatchObject({ rejected: 'apple-1' });
   });
 
   it('prompts to connect after a second 401, and retries only once', async () => {
@@ -189,6 +212,18 @@ describe('apiFetch on 401', () => {
     await apiFetch('/api/apple/auth', { method: 'POST', quietAuthFailure: true });
     expect(onAuthFailure).not.toHaveBeenCalled();
   });
+});
+
+describe('apiFetch only calls this site', () => {
+  it.each(['https://evil.example/api/apple/products', '//evil.example/api/products', '/api\\..\\x', 'api/products', '/other/path', '/apix/products'])(
+    'refuses %s without asking for a token',
+    async (input) => {
+      const { apiFetch, sent, keys } = setup([]);
+      await expect(apiFetch(input)).rejects.toThrow(TypeError);
+      expect(sent).toHaveLength(0);
+      expect(keys.calls).toHaveLength(0);
+    }
+  );
 });
 
 describe('apiFetch without a usable key', () => {

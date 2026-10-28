@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { googlePlayFetch } from '@/lib/google-play/client';
 import type { TokenSource } from '@/lib/token-source';
-import { unauthorizedResponse } from '@/middleware/auth';
+import { storeRefusedTokenResponse } from '@/middleware/auth';
 
 interface ProbeListResp {
   subscriptions?: Array<{ productId?: string }>;
@@ -27,7 +27,7 @@ export async function probeGooglePackage(tokens: TokenSource, packageName: strin
   } catch (apiError: unknown) {
     const error = apiError as { code?: number; message?: string; errors?: Array<{ reason?: string; message?: string }> };
     if (error.code === 401) {
-      return unauthorizedResponse('Google refused the access token. Check the service account key, or connect again.', 'INVALID_TOKEN');
+      return storeRefusedTokenResponse('Google refused the access token. Check the service account key, or connect again.');
     }
     if (error.code === 403) {
       const reason = error.errors?.[0]?.reason || '';

@@ -9,9 +9,13 @@
 // Writes, applies, bulk updates and exports ask for a token with most of its
 // life left (APPLE_/GOOGLE_APPLY_MIN_VALID_SECONDS). On a 401 it sets the
 // clock offset from the server's Date header and retries once with a new
-// token (the refused one is passed as `rejected`); a write is retried only
-// when the server's auth check refused it, before anything was sent to a
-// store. If that fails too, onAuthFailure runs (the Connect prompt).
+// token (the refused one is passed as `rejected`). A write is retried only
+// when the 401 carries the server's precheck marker (X-PK-Auth-Stage:
+// precheck), which only src/middleware/auth.ts sets, before anything was
+// sent to a store. If that fails too, onAuthFailure runs (the Connect prompt).
+//
+// It only calls this origin's /api/ paths: anything else is refused, so a
+// token can never be attached to a request for another host.
 //
 // Tokens are never logged or kept anywhere but the BrowserKeys slots.
 
@@ -86,8 +90,9 @@ export function planRoute(url: URL): RoutePlan {
   return { platform: null, needsApp: false, publicData: false };
 }
 
-/** Codes from the server's own auth check: nothing reached a store, so a write can be retried */
-const PRE_CHECK_CODES = new Set(['NOT_AUTHENTICATED', 'INVALID_TOKEN', 'TOKEN_EXPIRED', 'TOKEN_TOO_SHORT']);
+/** Set on 401s from the server's own auth check (src/middleware/auth.ts): nothing reached a store */
+const AUTH_STAGE_HEADER = 'x-pk-auth-stage';
+const PRECHECK_STAGE = 'precheck';
 /** Correct the clock only when it is clearly off (Date has 1-second resolution, plus latency) */
 const CLOCK_SKEW_THRESHOLD_MS = 30_000;
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -110,6 +115,11 @@ function tokenFailure(platform: KeyPlatform, error: unknown): { response: Respon
     return { response: jsonResponse(503, { error: error.message, code: 'TOKEN_NETWORK' }), auth: false };
   }
   return { response: jsonResponse(500, { error: `Could not make a ${STORE[platform]} token in this browser.` }), auth: false };
+}
+
+/** Only same-origin /api/ paths: never a full URL, a protocol-relative one, or a path elsewhere */
+export function isApiPath(input: string): boolean {
+  return typeof input === 'string' && input.startsWith('/api/') && !input.startsWith('//') && !input.includes('\\');
 }
 
 async function errorCode(response: Response): Promise<string | undefined> {
@@ -147,7 +157,9 @@ export function createApiFetch(deps: ApiFetchDeps) {
 
   return async function apiFetch(input: string, init: ApiFetchInit = {}): Promise<Response> {
     const { platform: platformOverride, app: appOverride, long: longOverride, quietAuthFailure, ...requestInit } = init;
+    if (!isApiPath(input)) throw new TypeError('apiFetch only calls this site\'s /api/ routes');
     const url = new URL(input, 'http://localhost');
+    if (url.host !== 'localhost') throw new TypeError('apiFetch only calls this site\'s /api/ routes');
     const plan = planRoute(url);
     const method = (requestInit.method ?? 'GET').toUpperCase();
     const headers = new Headers(requestInit.headers);
@@ -194,7 +206,8 @@ export function createApiFetch(deps: ApiFetchDeps) {
     syncClock(first.response);
     const code = await errorCode(first.response);
     const replayable = !(requestInit.body instanceof ReadableStream);
-    const safe = !WRITE_METHODS.has(method) || (code !== undefined && PRE_CHECK_CODES.has(code));
+    const precheck = first.response.headers.get(AUTH_STAGE_HEADER) === PRECHECK_STAGE;
+    const safe = !WRITE_METHODS.has(method) || precheck;
     if (!replayable || !safe) {
       if (!quietAuthFailure) deps.onAuthFailure(platform);
       return first.response;

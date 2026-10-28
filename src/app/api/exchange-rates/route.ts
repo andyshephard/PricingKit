@@ -3,6 +3,7 @@ import {
   getExchangeRates,
   getCacheStatus,
   NoApiKeyError,
+  UserKeyRateLimitedError,
 } from '@/lib/exchange-rates/client';
 import { hasStoreTokenHeader, readUserOerKey } from '@/middleware/auth';
 
@@ -12,8 +13,10 @@ export async function GET(request: Request) {
   const statusOnly = searchParams.get('status') === 'true';
 
   // The user's own Open Exchange Rates key (Settings), sent by the browser in
-  // X-PK-OER-Key and never stored here. It never fills the shared caches
-  // (getExchangeRates); without it the operator key is used.
+  // X-PK-OER-Key and never stored here. Rates fetched with it go back to this
+  // caller only: getExchangeRates never puts them in the memory, platform or
+  // disk caches, and limits such fetches per isolate. Without it the
+  // operator key is used.
   const userApiKey = readUserOerKey(request);
 
   // This endpoint is public (index checker), but ?refresh=true bypasses the
@@ -60,6 +63,10 @@ export async function GET(request: Request) {
         noApiKey: true,
         error: error.message,
       });
+    }
+
+    if (error instanceof UserKeyRateLimitedError) {
+      return NextResponse.json({ success: false, error: error.message }, { status: 429, headers: { 'Retry-After': '60' } });
     }
 
     console.error('Exchange rates API error:', error);

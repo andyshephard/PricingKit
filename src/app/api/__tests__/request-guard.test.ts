@@ -1,4 +1,4 @@
-// Cross-site requests, request body limits, the connect-check limit and the
+// Cross-site requests, request body limits and the
 // service account key size check (CLI). No store is contacted: fetch is stubbed.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
@@ -133,15 +133,5 @@ describe('connect routes', () => {
     );
     expect(apple.status).toBe(403);
     expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('limit App Store Connect connect checks per instance', async () => {
-    const statuses: number[] = [];
-    for (let i = 0; i < 301; i++) {
-      statuses.push((await appleAuthPOST(new Request('http://localhost/api/apple/auth', { method: 'POST', headers: appleHeaders(null) }) as never)).status);
-    }
-    expect(statuses.slice(0, 300).every((s) => s === 401)).toBe(true);
-    expect(statuses[300]).toBe(429);
-    expect(fetchMock).toHaveBeenCalledTimes(300);
   });
 });

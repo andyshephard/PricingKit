@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuthStore } from '@/store/auth-store';
-import { apiFetch, browserKeys } from '@/lib/web/client';
+import { connectDeps } from '@/lib/web/client';
 import { connectApple, connectGoogle, ConnectError } from '@/lib/web/connect';
 import { KEY_STAYS_IN_BROWSER } from '@/components/auth/key-copy';
 
@@ -189,7 +189,7 @@ export function ConnectPlatformModal({
     const file = takeFile();
     if (!file) return;
     try {
-      const connected = await connectGoogle({ keys: browserKeys(), apiFetch }, { file, packageName: packageName.trim() });
+      const connected = await connectGoogle(connectDeps(), { file, packageName: packageName.trim() });
       setGoogleAuthenticated({
         packageName: connected.packageName,
         projectId: connected.projectId,
@@ -213,7 +213,7 @@ export function ConnectPlatformModal({
     const file = takeFile();
     if (!file) return;
     try {
-      const connected = await connectApple({ keys: browserKeys(), apiFetch }, { file, keyId: keyId.trim(), issuerId: issuerId.trim() });
+      const connected = await connectApple(connectDeps(), { file, keyId: keyId.trim(), issuerId: issuerId.trim() });
       setAppleAuthenticated({
         bundleId: null,
         keyId: connected.keyId,

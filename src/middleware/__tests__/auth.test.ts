@@ -65,6 +65,13 @@ describe('checkAppleToken (shape checks only, nothing verified)', () => {
     expect(checkAppleToken(testAppleToken({ iat: t }), t, APPLE_LONG_MIN_REMAINING_SECONDS)).toMatchObject({ ok: true });
   });
 
+  it('refuses a token issued ahead of this clock as CLOCK_SKEW (a minute of slack)', () => {
+    const t = now();
+    expect(checkAppleToken(testAppleToken({ iat: t + 55 }), t)).toMatchObject({ ok: true });
+    expect(checkAppleToken(testAppleToken({ iat: t + 61 }), t)).toMatchObject({ ok: false, code: 'CLOCK_SKEW' });
+    expect(checkAppleToken(testAppleToken({ iat: t + 3600 }), t)).toMatchObject({ ok: false, code: 'CLOCK_SKEW' });
+  });
+
   it('refuses a token over the header size cap', () => {
     expect(checkAppleToken(testAppleToken({ claims: { pad: 'x'.repeat(5000) } }), now())).toMatchObject({ ok: false, code: 'INVALID_TOKEN' });
   });
@@ -82,6 +89,19 @@ describe('requireAppleAuth', () => {
     expect(await result.connection.tokens.getToken()).toBe(token);
     // Logging or serialising the connection never shows the token
     expect(JSON.stringify(result.connection)).not.toContain(token.split('.')[2]);
+  });
+
+  it('marks its 401s as prechecks (header and body), so the browser knows nothing reached a store', async () => {
+    const result = requireAppleAuth(request('POST', appleHeaders('com.example.test', 'junk')));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.response.headers.get('x-pk-auth-stage')).toBe('precheck');
+    expect((await result.response.json()).stage).toBe('precheck');
+    const { storeRefusedTokenResponse } = await import('../auth');
+    const store = storeRefusedTokenResponse('refused');
+    expect(store.headers.get('x-pk-auth-stage')).toBeNull();
+    expect(await store.json()).toEqual({ error: 'refused', code: 'STORE_REFUSED_TOKEN' });
+    expect(store.headers.get('date')).toBeTruthy();
   });
 
   it('answers 401 with the server time when the token is missing or unusable', async () => {

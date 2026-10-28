@@ -51,7 +51,7 @@ const eslintConfig = defineConfig([
         {
           patterns: [
             { group: ["next", "next/*", "react", "react/*", "react-dom", "react-dom/*"], message: "The CLI must not depend on Next.js or React." },
-            { group: ["@/app/*", "@/components/*", "@/hooks/*", "@/store/*", "@/middleware/*", "@/lib/session"], message: "The CLI must not depend on the web app or its sessions." },
+            { group: ["@/app/*", "@/components/*", "@/hooks/*", "@/store/*", "@/middleware/*", "@/lib/web/*", "@/lib/browser-keys", "@/lib/browser-keys/*"], message: "The CLI must not depend on the web app or its browser-side key code." },
           ],
         },
       ],

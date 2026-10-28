@@ -30,6 +30,8 @@ export const OER_KEY_HEADER = 'x-pk-oer-key';
 export const APPLE_AUDIENCE = 'appstoreconnect-v1';
 /** Apple refuses tokens that live longer than 20 minutes */
 export const APPLE_MAX_TOKEN_LIFETIME_SECONDS = 20 * 60;
+/** How far ahead of this server's clock a token may be issued before it reads as a wrong browser clock */
+export const APPLE_MAX_CLOCK_SKEW_SECONDS = 60;
 /**
  * Routes that write or run long (applies, bulk, batches) refuse an Apple
  * token with less than this left, so it can't expire halfway; the browser
@@ -37,18 +39,42 @@ export const APPLE_MAX_TOKEN_LIFETIME_SECONDS = 20 * 60;
  */
 export const APPLE_LONG_MIN_REMAINING_SECONDS = 10 * 60;
 
+/** 401 codes from the checks here: nothing has been sent to a store yet */
 export type AuthErrorCode =
   | 'NOT_AUTHENTICATED'
   | 'INVALID_TOKEN'
   | 'TOKEN_EXPIRED'
-  | 'TOKEN_TOO_SHORT';
+  | 'TOKEN_TOO_SHORT'
+  | 'CLOCK_SKEW';
 
 /**
- * A 401 for a missing or unusable token. Carries the server time (Date) so
- * the browser can correct its clock before signing again.
+ * Marks a 401 from these checks (header and body `stage`): the request was
+ * refused before anything reached a store, so the browser may retry it, even
+ * a write. Only this module sets it.
+ */
+export const AUTH_STAGE_HEADER = 'X-PK-Auth-Stage';
+export const PRECHECK_STAGE = 'precheck';
+
+/** Code for a 401 the store itself gave (after the route started); never marked as a precheck */
+export const STORE_REFUSED_TOKEN = 'STORE_REFUSED_TOKEN';
+
+/**
+ * A 401 from the checks here. Carries the server time (Date) so the browser
+ * can correct its clock before signing again, and the precheck marker.
  */
 export function unauthorizedResponse(message: string = 'Not authenticated', code: AuthErrorCode = 'NOT_AUTHENTICATED') {
-  return NextResponse.json({ error: message, code }, { status: 401, headers: { Date: new Date().toUTCString() } });
+  return NextResponse.json(
+    { error: message, code, stage: PRECHECK_STAGE },
+    { status: 401, headers: { Date: new Date().toUTCString(), [AUTH_STAGE_HEADER]: PRECHECK_STAGE } }
+  );
+}
+
+/**
+ * A 401 because the store refused the token. Not a precheck: the browser
+ * retries it only for reads. Carries the server time too.
+ */
+export function storeRefusedTokenResponse(message: string) {
+  return NextResponse.json({ error: message, code: STORE_REFUSED_TOKEN }, { status: 401, headers: { Date: new Date().toUTCString() } });
 }
 
 /** Standard 403 response for unauthorized requests */
@@ -97,7 +123,8 @@ const invalid = (message: string): AppleTokenCheck => ({ ok: false, code: 'INVAL
 /**
  * Shape checks on an App Store Connect JWT, without verifying it: three
  * base64url parts, alg ES256, a key ID, aud appstoreconnect-v1, an issuer,
- * a lifetime of at most 20 minutes, not expired, and (minRemainingSeconds)
+ * a lifetime of at most 20 minutes, not issued in the future (CLOCK_SKEW),
+ * not expired, and (minRemainingSeconds)
  * enough time left. Apple verifies the signature on every call.
  */
 export function checkAppleToken(token: string, nowSeconds: number, minRemainingSeconds = 0): AppleTokenCheck {
@@ -116,6 +143,10 @@ export function checkAppleToken(token: string, nowSeconds: number, minRemainingS
     return invalid('The App Store Connect token has no valid lifetime.');
   }
   if (exp - iat > APPLE_MAX_TOKEN_LIFETIME_SECONDS) return invalid('The App Store Connect token lives longer than 20 minutes.');
+  // Issued in the future (or valid for longer than a token issued now could be): the browser's clock is ahead
+  if (iat > nowSeconds + APPLE_MAX_CLOCK_SKEW_SECONDS || exp > nowSeconds + APPLE_MAX_TOKEN_LIFETIME_SECONDS + APPLE_MAX_CLOCK_SKEW_SECONDS) {
+    return { ok: false, code: 'CLOCK_SKEW', message: "The App Store Connect token was signed with a clock that is ahead of this server's. Sign a new one." };
+  }
   if (exp <= nowSeconds) return { ok: false, code: 'TOKEN_EXPIRED', message: 'The App Store Connect token has expired.' };
   if (exp - nowSeconds < minRemainingSeconds) {
     return { ok: false, code: 'TOKEN_TOO_SHORT', message: 'The App Store Connect token expires too soon for this request. Sign a new one.' };

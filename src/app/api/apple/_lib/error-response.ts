@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { ApiError } from '@/lib/utils/api-error';
 import { AppleApiError } from '@/lib/apple-connect';
+import { storeRefusedTokenResponse } from '@/middleware/auth';
 
 /**
  * User-facing message for an error thrown by the Apple client.
@@ -23,12 +24,10 @@ export function getAppleErrorMessage(error: unknown, fallback: string): string {
 export function appleErrorResponse(error: unknown, fallback: string): NextResponse {
   if (error instanceof ApiError) {
     if (error.status === 401) {
-      // Apple refused the token: the browser re-signs (correcting its clock
-      // from Date) and retries once
-      return NextResponse.json(
-        { error: 'App Store Connect refused the access token. Connect again if this keeps happening.', code: error.code },
-        { status: 401, headers: { Date: new Date().toUTCString() } }
-      );
+      // Apple refused the token (STORE_REFUSED_TOKEN): the browser retries a
+      // read once with a new token, never a write. Apple's own code isn't
+      // forwarded, so it can't pass for a precheck code.
+      return storeRefusedTokenResponse('App Store Connect refused the access token. Connect again if this keeps happening.');
     }
     if (error.status === 403) {
       return NextResponse.json(

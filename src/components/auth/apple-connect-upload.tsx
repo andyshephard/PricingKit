@@ -14,7 +14,7 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { useAuthStore } from '@/store/auth-store';
-import { apiFetch, browserKeys } from '@/lib/web/client';
+import { connectDeps } from '@/lib/web/client';
 import { connectApple, ConnectError } from '@/lib/web/connect';
 import { KEY_STAYS_IN_BROWSER } from './key-copy';
 
@@ -113,7 +113,7 @@ export function AppleConnectUpload() {
     if (fileInput.current) fileInput.current.value = '';
 
     try {
-      const connected = await connectApple({ keys: browserKeys(), apiFetch }, { file, keyId: keyId.trim(), issuerId: issuerId.trim() });
+      const connected = await connectApple(connectDeps(), { file, keyId: keyId.trim(), issuerId: issuerId.trim() });
       setAppleAuthenticated({
         bundleId: null,
         keyId: connected.keyId,

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { AppleApiError } from '@/lib/apple-connect/client';
-import { requireAppleAuth, unauthorizedResponse } from '@/middleware/auth';
+import { requireAppleAuth, storeRefusedTokenResponse } from '@/middleware/auth';
 import { listAppleApps } from '../_lib/apps';
 
 export type { AppleAppSummary } from '../_lib/apps';
@@ -15,7 +15,7 @@ export async function GET(request: Request) {
   } catch (error) {
     if (error instanceof AppleApiError) {
       if (error.statusCode === 401) {
-        return unauthorizedResponse('Apple credentials are invalid or expired.', 'INVALID_TOKEN');
+        return storeRefusedTokenResponse('App Store Connect refused the access token.');
       }
       if (error.statusCode === 403) {
         return NextResponse.json(

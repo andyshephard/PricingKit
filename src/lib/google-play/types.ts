@@ -1,9 +1,9 @@
 // Google Play Developer API Type Definitions
 
 /**
- * A Google service account key. Requests need client_email, private_key_id
- * and private_key; a web session keeps only those and project_id
- * (src/lib/session-envelope.ts), so the rest is optional here.
+ * A Google service account key, as the CLI and MCP read it from disk.
+ * Signing needs client_email, private_key_id and private_key, so the rest is
+ * optional here. (The web app never sees one: the browser keeps the key.)
  */
 export interface ServiceAccountCredentials {
   type?: string;

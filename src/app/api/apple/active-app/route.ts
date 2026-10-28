@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { appleApiRequest, AppleApiError } from '@/lib/apple-connect/client';
 import type { AppleApiListResponse } from '@/lib/apple-connect/types';
-import { requireAppleAuth, unauthorizedResponse } from '@/middleware/auth';
+import { requireAppleAuth, storeRefusedTokenResponse } from '@/middleware/auth';
 import { readJsonBody, rejectCrossSite, SMALL_BODY_LIMIT } from '@/lib/request-guard';
 import { bundleIdSchema } from '@/lib/validation';
 
@@ -54,7 +54,7 @@ export async function POST(request: NextRequest) {
     }
   } catch (error) {
     if (error instanceof AppleApiError && error.statusCode === 401) {
-      return unauthorizedResponse('Apple credentials are invalid or expired.', 'INVALID_TOKEN');
+      return storeRefusedTokenResponse('App Store Connect refused the access token.');
     }
     console.error('POST /api/apple/active-app verify failed:', error);
     return NextResponse.json(

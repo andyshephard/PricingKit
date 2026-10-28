@@ -74,11 +74,14 @@ describe('Google Play connect check and app switch', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('POST /api/auth maps Google refusing the token to a 401 the browser can retry', async () => {
+  it('POST /api/auth maps Google refusing the token to a store 401 (not a precheck)', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: { code: 401, message: 'Request had invalid authentication credentials.' } }, { status: 401 })));
     const res = await authPOST(post('http://localhost/api/auth', googleHeaders()));
     expect(res.status).toBe(401);
-    expect((await res.json()).code).toBe('INVALID_TOKEN');
+    const body = await res.json();
+    expect(body.code).toBe('STORE_REFUSED_TOKEN');
+    expect(body.stage).toBeUndefined();
+    expect(res.headers.get('x-pk-auth-stage')).toBeNull();
     expect(res.headers.get('date')).toBeTruthy();
   });
 
@@ -137,17 +140,19 @@ describe('App Store Connect connect check and app switch', () => {
     ] as const) {
       const res = await appleAuthPOST(post('http://localhost/api/apple/auth', appleHeaders(null, token)));
       expect(res.status).toBe(401);
-      expect((await res.json()).code).toBe(code);
+      expect(await res.json()).toMatchObject({ code, stage: 'precheck' });
+      expect(res.headers.get('x-pk-auth-stage')).toBe('precheck');
       expect(res.headers.get('date')).toBeTruthy();
     }
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('POST /api/apple/auth maps Apple refusing the token to a 401 with the server time', async () => {
+  it('POST /api/apple/auth maps Apple refusing the token to a store 401 with the server time', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ errors: [{ status: '401', code: 'NOT_AUTHORIZED', detail: 'no' }] }, { status: 401 })));
     const res = await appleAuthPOST(post('http://localhost/api/apple/auth', appleHeaders(null)));
     expect(res.status).toBe(401);
-    expect((await res.json()).code).toBe('INVALID_TOKEN');
+    expect((await res.json()).code).toBe('STORE_REFUSED_TOKEN');
+    expect(res.headers.get('x-pk-auth-stage')).toBeNull();
     expect(res.headers.get('date')).toBeTruthy();
   });
 

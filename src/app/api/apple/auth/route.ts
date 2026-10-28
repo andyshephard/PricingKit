@@ -1,15 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AppleApiError } from '@/lib/apple-connect/client';
 import { rejectCrossSite } from '@/lib/request-guard';
-import { AttemptLimiter } from '@/lib/utils/attempt-limiter';
-import { requireAppleAuth, unauthorizedResponse } from '@/middleware/auth';
+import { requireAppleAuth, storeRefusedTokenResponse } from '@/middleware/auth';
 import { listAppleApps } from '../_lib/apps';
-
-/**
- * Connect checks per instance: 300 per 10 minutes. A brake on using this
- * route to test tokens at speed, not a guarantee (state is per process).
- */
-const connectChecks = new AttemptLimiter({ limit: 300, globalLimit: 300, windowMs: 10 * 60 * 1000 });
 
 function withServerTime(response: NextResponse): NextResponse {
   response.headers.set('Date', new Date().toUTCString());
@@ -28,16 +21,6 @@ export async function POST(request: NextRequest) {
   const auth = requireAppleAuth(request, { app: 'none', long: false });
   if (!auth.ok) return auth.response;
 
-  const decision = connectChecks.attempt(undefined);
-  if (!decision.allowed) {
-    return withServerTime(
-      NextResponse.json(
-        { error: 'Too many connection attempts. Try again later.' },
-        { status: 429, headers: { 'Retry-After': String(decision.retryAfterSeconds) } }
-      )
-    );
-  }
-
   try {
     const apps = await listAppleApps(auth.connection);
     if (apps.length === 0) {
@@ -54,7 +37,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     if (error instanceof AppleApiError) {
       if (error.statusCode === 401) {
-        return unauthorizedResponse('App Store Connect refused the key. Check the Key ID, the Issuer ID and the key file.', 'INVALID_TOKEN');
+        return storeRefusedTokenResponse('App Store Connect refused the key. Check the Key ID, the Issuer ID and the key file.');
       }
       if (error.statusCode === 403) {
         return withServerTime(

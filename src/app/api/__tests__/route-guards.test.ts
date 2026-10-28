@@ -145,12 +145,14 @@ describe('route guards (TypeScript AST and types)', () => {
 //
 // - Every handler of a store route (all but PUBLIC_ROUTES) calls
 //   requireAppleAuth or requireGoogleAuth from src/middleware/auth.ts, directly
-//   or through a function in the same file.
+//   or through a function in the same file. Every such call is bound to a
+//   const whose .ok is checked with an early return (if (!auth.ok) return ...).
 // - Nothing under src/app, src/components, src/hooks, src/store or
 //   src/middleware references the key-backed token sources
 //   (src/lib/key-token-source.ts) or the in-process signers (generateJWT,
 //   getGoogleAccessToken), under any import path or alias, or imports
-//   key-token-source at runtime even indirectly, or reads cookies.
+//   key-token-source at runtime even indirectly, or reads cookies (next/headers
+//   or request.cookies).
 
 const AUTH = join(ROOT, 'src/middleware/auth.ts');
 const KEY_TOKEN_SOURCE = join(ROOT, 'src/lib/key-token-source.ts');
@@ -162,7 +164,7 @@ const HEADER_AUTH = new Set(['requireAppleAuth', 'requireGoogleAuth']);
 /** Routes that never touch a store */
 const PUBLIC_ROUTES = new Set(['ppp/route.ts', 'exchange-rates/route.ts', 'settings/exchange-rates/route.ts']);
 const HANDLERS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
-const WEB_DIRS = ['src/app', 'src/components', 'src/hooks', 'src/store', 'src/middleware'].map((d) => join(ROOT, d));
+const WEB_DIRS = ['src/app', 'src/components', 'src/hooks', 'src/store', 'src/middleware', 'src/lib/web'].map((d) => join(ROOT, d));
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -229,6 +231,38 @@ function analyseHeaderAuth(files: string[], virtual: Record<string, string> = {}
         if (symbol) helpers.add(symbol);
       }
     }
+    // Every header auth call: bound to a const, and `if (!<it>.ok) return ...` in the same function
+    const checkBinding = (node: ts.Node) => {
+      if (ts.isCallExpression(node)) {
+        const symbol = resolved(checker, node.expression);
+        if (symbol && HEADER_AUTH.has(symbol.getName()) && declaredIn(symbol, AUTH)) {
+          const declaration = node.parent;
+          const name = ts.isVariableDeclaration(declaration) && declaration.initializer === node && ts.isIdentifier(declaration.name) ? declaration.name.text : undefined;
+          const list = declaration.parent;
+          const isConst = name !== undefined && ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.Const) !== 0;
+          let fn: ts.Node | undefined = node.parent;
+          while (fn && !ts.isFunctionLike(fn)) fn = fn.parent;
+          let checked = false;
+          const findCheck = (n: ts.Node) => {
+            if (checked) return;
+            if (
+              ts.isIfStatement(n) &&
+              n.expression.getText(source).replace(/\s+/g, '') === `!${name}.ok` &&
+              (ts.isReturnStatement(n.thenStatement) || (ts.isBlock(n.thenStatement) && n.thenStatement.statements.some(ts.isReturnStatement)))
+            ) {
+              checked = true;
+              return;
+            }
+            ts.forEachChild(n, findCheck);
+          };
+          if (isConst && fn) findCheck(fn);
+          if (!isConst || !checked) problems.push(`the result of ${symbol.getName()} must be bound to a const and checked: if (!<it>.ok) return <it>.response`);
+        }
+      }
+      ts.forEachChild(node, checkBinding);
+    };
+    checkBinding(source);
+
     const moduleSymbol = checker.getSymbolAtLocation(source);
     for (const exported of moduleSymbol ? checker.getExportsOfModule(moduleSymbol) : []) {
       if (!HANDLERS.has(exported.name)) continue;
@@ -304,6 +338,11 @@ function analyseKeyHandling(files: string[], virtual: Record<string, string> = {
           if (symbol?.getName() === name && declaredIn(symbol, signerFile)) problems.add(`references the in-process signer ${name}`);
         }
       }
+      if (ts.isPropertyAccessExpression(node) && node.name.text === 'cookies') {
+        const type = checker.getTypeAtLocation(node.expression);
+        const names = [type.getSymbol()?.getName(), ...(type.isUnion() ? type.types.map((t) => t.getSymbol()?.getName()) : [])];
+        if (names.some((n) => n === 'Request' || n === 'NextRequest')) problems.add('reads request.cookies (the server keeps no cookies)');
+      }
       if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && node.moduleSpecifier.text === 'next/headers') {
         problems.add('imports next/headers (no cookies or raw header reads outside src/middleware/auth.ts)');
       }
@@ -338,14 +377,20 @@ describe('the web app never handles store keys (TypeScript AST and types)', () =
     const auth = analyseHeaderAuth([], {
       [route('none')]: `import { NextResponse } from 'next/server';\nexport async function GET(request: Request) { return NextResponse.json({ ok: !!request }); }\n`,
       [route('direct')]: `${head}export async function GET(request: Request) { const auth = requireAppleAuth(request); if (!auth.ok) return auth.response; return NextResponse.json({}); }\n`,
-      [route('delegated')]: `${head}async function build(request: Request) { const auth = requireAppleAuth(request); return auth.ok; }\nexport async function GET(request: Request) { return NextResponse.json({ ok: await build(request) }); }\n`,
+      [route('delegated')]: `${head}async function build(request: Request) { const auth = requireAppleAuth(request); if (!auth.ok) return false; return true; }\nexport async function GET(request: Request) { return NextResponse.json({ ok: await build(request) }); }\n`,
       [route('lookalike')]: `import { NextResponse } from 'next/server';\nfunction requireAppleAuth(_r: Request) { return { ok: true }; }\nexport async function GET(request: Request) { requireAppleAuth(request); return NextResponse.json({}); }\n`,
+      [route('unchecked')]: `${head}export async function GET(request: Request) { const auth = requireAppleAuth(request); return NextResponse.json({ ok: auth.ok }); }\n`,
+      [route('unbound')]: `${head}export async function GET(request: Request) { if (!requireAppleAuth(request).ok) return NextResponse.json({}); return NextResponse.json({}); }\n`,
+      [route('let')]: `${head}export async function GET(request: Request) { let auth = requireAppleAuth(request); if (!auth.ok) return auth.response; auth = requireAppleAuth(request); return NextResponse.json({}); }\n`,
     });
     const authOf = (name: string) => auth[relative(API, route(name)).split('\\').join('/')];
     expect(authOf('none')).toEqual([expect.stringMatching(/must call requireAppleAuth or requireGoogleAuth/)]);
     expect(authOf('direct')).toEqual([]);
     expect(authOf('delegated')).toEqual([]);
     expect(authOf('lookalike')).toEqual([expect.stringMatching(/must call/)]);
+    expect(authOf('unchecked')).toEqual([expect.stringMatching(/must be bound to a const and checked/)]);
+    expect(authOf('unbound')).toEqual([expect.stringMatching(/must be bound to a const and checked/)]);
+    expect(authOf('let')).toEqual(expect.arrayContaining([expect.stringMatching(/must be bound to a const and checked/)]));
 
     // In a directory that exists, so relative imports between them resolve
     const web = (name: string) => join(API, '__tests__', `virtual-${name}.ts`);
@@ -359,6 +404,7 @@ describe('the web app never handles store keys (TypeScript AST and types)', () =
       [web('cookies')]: "import { cookies } from 'next/headers';\nexport const c = cookies;\n",
       [web('types-only')]: "import type { AppleKeyCredentials } from '@/lib/apple-connect/client';\nexport type T = AppleKeyCredentials | null;\n",
       [web('fine')]: "import { appleApiRequest } from '@/lib/apple-connect/client';\nexport const r = appleApiRequest;\n",
+      [web('request-cookies')]: "import type { NextRequest } from 'next/server';\nexport const read = (request: NextRequest) => request.cookies.get('x');\n",
     });
     const keysOf = (name: string) => keys[relative(ROOT, web(name))];
     expect(keysOf('direct')).toEqual(expect.arrayContaining([expect.stringMatching(/references appleKeyConnection/), expect.stringMatching(/at runtime/)]));
@@ -369,5 +415,6 @@ describe('the web app never handles store keys (TypeScript AST and types)', () =
     expect(keysOf('cookies')).toEqual([expect.stringMatching(/next\/headers/)]);
     expect(keysOf('types-only')).toEqual([]);
     expect(keysOf('fine')).toEqual([]);
+    expect(keysOf('request-cookies')).toEqual([expect.stringMatching(/request\.cookies/)]);
   }, 120_000);
 });

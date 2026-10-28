@@ -31,7 +31,8 @@ const FORBIDDEN_PATHS = [
   'lib/google-play/client.ts',
   'lib/exchange-rates/',
   'lib/world-bank/',
-  'lib/encryption.ts',
+  'lib/web/',
+  'lib/browser-keys/',
 ];
 
 function listCoreFiles(dir: string): string[] {
@@ -65,10 +66,10 @@ function resolveLocal(from: string, spec: string): string | undefined {
   return undefined;
 }
 
-// The CLI may reach the store clients and adapters, but not the web app or cookie sessions.
+// The CLI may reach the store clients and adapters, but not the web app or its browser-side key code.
 // yaml: YAML spec and rules files (src/cli/spec-file.ts); no dependencies of its own.
 const CLI_ALLOWED_PACKAGES = new Set(['zod', 'yaml']);
-const CLI_FORBIDDEN_PATHS = ['app/', 'components/', 'hooks/', 'store/', 'middleware/', 'lib/session.ts'];
+const CLI_FORBIDDEN_PATHS = ['app/', 'components/', 'hooks/', 'store/', 'middleware/', 'lib/web/', 'lib/browser-keys/'];
 
 interface Boundary {
   allowedPackages: Set<string>;

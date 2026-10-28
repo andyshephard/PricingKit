@@ -9,7 +9,7 @@
 // here logs.
 
 import { importAppleKey, importGoogleKey, type AppleKeyInput } from './import';
-import { IndexedDbKeyStore, type KeyStore } from './store';
+import { IndexedDbKeyStore, MemoryKeyStore, type KeyStore } from './store';
 import {
   APPLE_MAX_MIN_VALID_SECONDS,
   APPLE_RESIGN_MARGIN_SECONDS,
@@ -41,6 +41,19 @@ export {
   GOOGLE_TOKEN_ENDPOINT,
 } from './sign';
 
+/**
+ * A key imported into memory only, not stored yet: sign tokens with `keys`
+ * to prove it, then commit() it into the real store, or drop it (just let it
+ * go). Any earlier key stays stored until commit().
+ */
+export interface StagedKey<I extends KeyInfo = KeyInfo> {
+  info: I;
+  /** Signs with the staged key only (memory-backed) */
+  keys: BrowserKeys;
+  /** Store the key (replacing any earlier one) and adopt the staged clock offset */
+  commit(): Promise<I>;
+}
+
 export interface BrowserKeysOptions {
   /** Defaults to IndexedDB */
   store?: KeyStore;
@@ -50,7 +63,15 @@ export interface BrowserKeysOptions {
   clock?: Clock;
   /** Added to the clock, e.g. the server's Date minus local time when this computer's clock is wrong */
   clockOffsetMs?: number;
+  /**
+   * Called after this instance stores, forgets or forgets all keys, e.g. to
+   * tell other tabs (which then call dropCached). Never carries key material.
+   */
+  onChange?: (event: KeyChangeEvent) => void;
 }
+
+/** What changed in the key store; ids only */
+export type KeyChangeEvent = { type: 'saved' | 'forgot'; platform: KeyPlatform } | { type: 'forgotAll' };
 
 /**
  * - rejected: the token the server just refused (after a 401). A new one is
@@ -94,8 +115,10 @@ export class BrowserKeys {
   /** Bumped on every save or forget, so a slow read can't bring back a replaced or forgotten key */
   private readonly versions: Record<KeyPlatform, number> = { apple: 0, google: 0 };
   private readonly slots: Record<KeyPlatform, TokenSlot>;
+  private readonly onChange: (event: KeyChangeEvent) => void;
 
   constructor(options: BrowserKeysOptions = {}) {
+    this.onChange = options.onChange ?? (() => {});
     this.store = options.store ?? new IndexedDbKeyStore();
     this.fetchFn = options.fetch ?? ((input, init) => fetch(input, init));
     this.baseClock = options.clock ?? Date.now;
@@ -128,6 +151,7 @@ export class BrowserKeys {
     const imported = await importAppleKey(input);
     const record: StoredKey = { platform: 'apple', keyId: imported.keyId, issuerId: imported.issuerId, createdAt: this.clock(), key: imported.key };
     await this.save(record);
+    this.emit({ type: 'saved', platform: 'apple' });
     return toInfo(record) as AppleKeyInfo;
   }
 
@@ -143,7 +167,35 @@ export class BrowserKeys {
       key: imported.key,
     };
     await this.save(record);
+    this.emit({ type: 'saved', platform: 'google' });
     return toInfo(record) as GoogleKeyInfo;
+  }
+
+  /** Import an App Store Connect key into memory only, to prove before storing (see StagedKey) */
+  async stageApple(input: AppleKeyInput): Promise<StagedKey<AppleKeyInfo>> {
+    const staged = this.stagingInstance();
+    const info = await staged.importApple(input);
+    return { info, keys: staged, commit: () => this.commitFrom(staged, 'apple') as Promise<AppleKeyInfo> };
+  }
+
+  /** Import a Google service account key into memory only, to prove before storing (see StagedKey) */
+  async stageGoogle(json: string | object): Promise<StagedKey<GoogleKeyInfo>> {
+    const staged = this.stagingInstance();
+    const info = await staged.importGoogle(json);
+    return { info, keys: staged, commit: () => this.commitFrom(staged, 'google') as Promise<GoogleKeyInfo> };
+  }
+
+  private stagingInstance(): BrowserKeys {
+    return new BrowserKeys({ store: new MemoryKeyStore(), fetch: this.fetchFn, clock: this.baseClock, clockOffsetMs: this.clockOffsetMs });
+  }
+
+  private async commitFrom(staged: BrowserKeys, platform: KeyPlatform): Promise<KeyInfo> {
+    const record = await staged.load(platform);
+    if (!record) throw notConnected(platform);
+    this.setClockOffsetMs(staged.getClockOffsetMs());
+    await this.save(record);
+    this.emit({ type: 'saved', platform });
+    return toInfo(record);
   }
 
   /** The stored key's ids, or null when none is stored */
@@ -183,6 +235,7 @@ export class BrowserKeys {
   async forget(platform: KeyPlatform): Promise<void> {
     await this.store.delete(platform);
     this.drop(platform);
+    this.emit({ type: 'forgot', platform });
   }
 
   /** Delete every stored key and token (sign out). Throws, dropping nothing, if the store can't be cleared; callers must show that. */
@@ -190,6 +243,24 @@ export class BrowserKeys {
     await this.store.clear();
     this.drop('apple');
     this.drop('google');
+    this.emit({ type: 'forgotAll' });
+  }
+
+  /**
+   * Drop this instance's cached key and tokens for a platform, so the next
+   * use reads the store again. For another tab's change (see onChange); the
+   * store itself is untouched.
+   */
+  dropCached(platform: KeyPlatform): void {
+    this.drop(platform);
+  }
+
+  private emit(event: KeyChangeEvent): void {
+    try {
+      this.onChange(event);
+    } catch {
+      // a listener's failure never undoes or hides the change
+    }
   }
 
   private drop(platform: KeyPlatform): void {
