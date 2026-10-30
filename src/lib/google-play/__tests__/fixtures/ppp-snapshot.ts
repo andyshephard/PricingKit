@@ -51,6 +51,16 @@ export const TEST_PPP_DATA: DynamicPPPData = {
     suggestedRounding: 0.99,
     source: 'world-bank',
   },
+  IS: {
+    // Real World Bank 2025 factor: Iceland is dearer than the US (151.37 / 126.05 ≈ 1.2)
+    // and Apple bills it in USD, so it takes the mixed-currency branch without being
+    // a hyperinflation case.
+    pppMultiplier: 151.37 / 126.05,
+    pppConversionFactor: 151.37,
+    minPrice: 0.99,
+    suggestedRounding: 0.99,
+    source: 'world-bank',
+  },
   JP: {
     pppMultiplier: 95.0 / 156.31,
     pppConversionFactor: 95.0,
@@ -70,15 +80,17 @@ export const TEST_EXCHANGE_RATES: DynamicExchangeRates = {
     TRY: 45.2557,
     INR: 94.668,
     ARS: 100, // synthetic: lower than PPP factor 400 → hyperinflation override path
+    ISK: 126.05,
     JPY: 156.31,
     BRL: 4.917,
   },
 };
 
 /**
- * Apple-style billing currency overrides — make Argentina bill in USD so we
- * trigger the mixed-currency branch in calculateRegionalPrice.
+ * Apple-style billing currency overrides — make Argentina and Iceland bill in USD
+ * so we trigger the mixed-currency branch in calculateRegionalPrice.
  */
 export const APPLE_BILLED_IN_USD = {
   AR: 'USD',
+  IS: 'USD',
 };
