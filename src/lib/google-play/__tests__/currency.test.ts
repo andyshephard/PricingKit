@@ -128,6 +128,44 @@ describe('calculateRegionalPrice — PPP strategy, mixed billing/local currency'
     expect(result.multiplier).toBe(0.25);
     expect(result.multiplierSource).toBe('static');
   });
+
+  it('IS billed in USD: dearer than the US, but not hyperinflation → real PPP multiplier', () => {
+    // IS pppFactor = 151.37, ISK rate = 126.05 → rawRealMultiplier ≈ 1.2009
+    // Before the fix any rawRealMultiplier > 1 took the 0.25 override, pricing Iceland at a quarter of the US.
+    const result = calculateRegionalPrice(
+      49.99,
+      'IS',
+      'ppp',
+      'none',
+      undefined,
+      TEST_PPP_DATA,
+      APPLE_BILLED_IN_USD,
+      TEST_EXCHANGE_RATES
+    );
+    expect(result.currencyCode).toBe('USD');
+    expect(result.multiplier).toBeCloseTo(151.37 / 126.05, 4);
+    expect(result.rawPrice).toBeCloseTo((49.99 * 151.37) / 126.05, 2);
+    expect(result.multiplierSource).toBe('world-bank');
+  });
+
+  it('IS billed in USD from a GB base: normalised to GB, not the 0.25 override', () => {
+    const result = calculateRegionalPrice(
+      19.99,
+      'IS',
+      'ppp',
+      'none',
+      undefined,
+      TEST_PPP_DATA,
+      APPLE_BILLED_IN_USD,
+      TEST_EXCHANGE_RATES,
+      'GBP',
+      'GB'
+    );
+    const isReal = 151.37 / 126.05;
+    const gbReal = 0.6698 / 0.735;
+    expect(result.multiplier).toBeCloseTo(isReal / gbReal, 4);
+    expect(result.rawPrice).toBeCloseTo((19.99 / 0.735) * (isReal / gbReal), 1);
+  });
 });
 
 describe('calculateRegionalPrice — PPP, non-USD base region', () => {

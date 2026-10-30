@@ -8,6 +8,11 @@ import { FALLBACK_EXCHANGE_RATES } from '../conversion-indexes/exchange-rates';
 import { alpha3ToAlpha2 } from '../apple-connect/territories';
 
 export type PricingStrategy = 'direct' | 'ppp' | 'bigmac' | 'netflix' | 'custom';
+
+// A PPP-vs-market multiplier above this means a stale PPP factor against a collapsed
+// currency (hyperinflation), not a genuinely expensive country. Real price levels top
+// out around 1.5 (Switzerland, Iceland, Bermuda); hyperinflation readings run far higher.
+const HYPERINFLATION_REAL_MULTIPLIER = 2.0;
 export type RoundingMode = 'nearest-tier' | 'nearest-99' | 'round-up' | 'none';
 
 export interface RoundingTier {
@@ -328,8 +333,9 @@ export function calculateRegionalPrice(
             effectiveMultiplier = rawRealMultiplier / baseRealMultiplier;
 
             // For hyperinflation countries where PPP produces HIGHER prices than base,
-            // use a low default multiplier to make apps affordable.
-            if (effectiveMultiplier > 1.0 && rawRealMultiplier > 1.0) {
+            // use a low default multiplier to make apps affordable. An expensive country
+            // billed in a foreign currency (Iceland: ISK priced in USD/EUR) is not one.
+            if (effectiveMultiplier > 1.0 && rawRealMultiplier > HYPERINFLATION_REAL_MULTIPLIER) {
               const affordabilityMultiplier = 0.25;
               effectiveMultiplier = affordabilityMultiplier;
               calculatedPrice = baseUsdPrice * effectiveMultiplier * exchangeRate;
